@@ -13,6 +13,9 @@
  * @var string $announcement 站点公告（后台可配，留空不显示）
  * @var string $icp          备案号（后台可配，留空不显示）
  * @var string $footer       页脚署名（后台可配，留空用内置文案）
+ * @var bool   $loggedIn     当前访客是否已登录用户账号
+ * @var bool   $registerOpen 是否开放自助注册
+ * @var bool   $rechargeEnabled 在线充值是否可用
  */
 require_once __DIR__ . '/admin/_icons.html';
 ?>
@@ -145,7 +148,19 @@ require_once __DIR__ . '/admin/_icons.html';
     </p>
 
     <div class="actions">
-        <a class="btn" href="/admin"><?= icon('dashboard', 16) ?>进入管理后台</a>
+        <?php if (!empty($loggedIn)): ?>
+            <a class="btn" href="/console"><?= icon('dashboard', 16) ?>进入控制台</a>
+            <?php if (!empty($rechargeEnabled)): ?>
+                <a class="btn ghost" href="/recharge"><?= icon('card', 16) ?>充值</a>
+            <?php endif; ?>
+        <?php else: ?>
+            <a class="btn" href="/login"><?= icon('lock', 16) ?>登录</a>
+            <?php if (!empty($registerOpen)): ?>
+                <a class="btn ghost" href="/register"><?= icon('user', 16) ?>注册</a>
+            <?php endif; ?>
+        <?php endif; ?>
+
+        <a class="btn ghost" href="/admin"><?= icon('settings', 16) ?>管理后台</a>
         <?php if ($isWelfare): ?>
             <a class="btn ghost" href="/healthz"><?= icon('pulse', 16) ?>服务状态</a>
         <?php endif; ?>

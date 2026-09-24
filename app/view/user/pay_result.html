@@ -1,0 +1,84 @@
+<?php
+/**
+ * 用户侧 · 支付返回页（同步跳回）
+ *
+ * ⚠️ 这一页的数据只用于**展示**。真正的到账依据是异步回调
+ * （RechargeController::notify），因为用户付完钱直接关掉页面
+ * 是完全正常的行为，那时同步跳回根本不会发生。
+ *
+ * 所以这里的文案必须留有余地：显示「待支付」不代表没付成功，
+ * 而应该引导用户「稍后刷新控制台确认」。
+ *
+ * @var string $siteName
+ * @var string $siteMode
+ * @var array<string, mixed>|null $user
+ * @var string $orderNo
+ * @var bool   $found
+ * @var bool   $paid
+ * @var bool   $pending
+ * @var float  $amount
+ * @var float  $credit
+ * @var string $currency
+ */
+?>
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title>支付结果 · <?= htmlspecialchars((string) $siteName, ENT_QUOTES, 'UTF-8') ?></title>
+    <?php include __DIR__ . '/../admin/_style.html'; ?>
+</head>
+<body>
+<div class="wrap">
+    <?php $active = 'recharge'; include __DIR__ . '/_header.html'; ?>
+
+    <section style="max-width:680px">
+        <h2>
+            <?php if ($paid): ?>
+                <?= icon('check', 18) ?>支付成功，余额已到账
+            <?php elseif (!$found): ?>
+                <?= icon('alert', 18) ?>订单号无效
+            <?php else: ?>
+                <?= icon('pulse', 18) ?>支付结果确认中
+            <?php endif; ?>
+        </h2>
+
+        <?php if ($paid): ?>
+            <div class="alert ok">
+                <?= icon('check', 17) ?>
+                <span>
+                    充值 <b><?= number_format($amount, 2) ?> <?= htmlspecialchars((string) $currency, ENT_QUOTES, 'UTF-8') ?></b>，
+                    已到账 <b><?= rtrim(rtrim(number_format($credit, 6, '.', ''), '0'), '.') ?></b> 余额。
+                </span>
+            </div>
+        <?php elseif (!$found): ?>
+            <div class="alert err">
+                <?= icon('alert', 17) ?>
+                <span>
+                    没有找到这个订单（订单号：<code><?= htmlspecialchars((string) $orderNo, ENT_QUOTES, 'UTF-8') ?></code>）。
+                    如果你确实已经付款，请把这个订单号发给站长核对。
+                </span>
+            </div>
+        <?php else: ?>
+            <div class="alert info">
+                <?= icon('info', 17) ?>
+                <span>
+                    订单 <code><?= htmlspecialchars((string) $orderNo, ENT_QUOTES, 'UTF-8') ?></code> 目前仍是<b>待支付</b>状态。<br>
+                    支付网关的通知可能还在路上（通常几秒内到），
+                    <b>稍等片刻后刷新控制台或本页即可</b>。<br>
+                    如果你已经付款但十分钟后仍未到账，请把这个订单号发给站长核对 ——
+                    我们在库里保留了网关回调的原始记录，可以查清楚。
+                </span>
+            </div>
+        <?php endif; ?>
+
+        <div class="actions-bar">
+            <a class="primary" href="/console"><?= icon('dashboard', 16) ?>返回控制台</a>
+            <a class="ghost" href="/recharge"><?= icon('refresh', 15) ?>刷新本页</a>
+        </div>
+    </section>
+</div>
+</body>
+</html>

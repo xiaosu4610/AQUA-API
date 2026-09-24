@@ -1,0 +1,48 @@
+<?php
+/**
+ * 用户侧 · 认证类页面的样式（放在 <head> 里）
+ *
+ * 登录、注册、找回密码、提示页长得都是「一个居中的卡片」，
+ * 所以把样式抽到这一处 —— 改一处即可全站一致。
+ *
+ * 复用后台的 _style.html（背景色、卡片、按钮、语义色都一致），
+ * 只补认证页特有的那几行。这样前台和后台看起来是同一个产品，
+ * 而不是两套临时拼出来的界面。
+ */
+require_once __DIR__ . '/../admin/_icons.html';
+
+include __DIR__ . '/../admin/_style.html';
+?>
+<link rel="icon" href="/favicon.ico" sizes="any">
+<style>
+    body {
+        display: flex; align-items: center; justify-content: center;
+        min-height: 100vh; padding: 24px;
+        background-color: #f5f7fa;
+        background-image: radial-gradient(circle at 16% 10%, #e0f3f9 0, transparent 45%),
+                          radial-gradient(circle at 86% 90%, #e6f6fa 0, transparent 45%);
+    }
+    .auth-card {
+        width: 100%; max-width: 400px; margin: 0; padding: 32px 30px;
+        background: #fff;
+        border: 1px solid #e3e8ef; border-radius: 16px;
+        box-shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 14px 36px -14px rgba(16, 24, 40, .16);
+    }
+    .auth-head { display: flex; align-items: center; gap: 11px; margin-bottom: 22px; }
+    .auth-head img { width: 38px; height: 38px; border-radius: 10px; display: block; flex: none; }
+    .auth-head .name { font-size: 15px; font-weight: 650; color: #1b2733; }
+    .auth-head .sub { font-size: 12px; color: #6b7d8f; }
+    .auth-card h1 { margin: 0 0 6px; font-size: 19px; font-weight: 650; }
+    .auth-card .lead { margin: 0 0 22px; font-size: 13px; color: #6b7d8f; line-height: 1.75; }
+    .auth-card .field { margin-bottom: 16px; }
+    .auth-card button.primary { width: 100%; justify-content: center; padding: 11px; font-size: 15px; }
+    .auth-foot { margin-top: 20px; padding-top: 16px; border-top: 1px solid #e3e8ef; font-size: 12.5px; color: #6b7d8f; }
+    .auth-foot a { color: #0a7f9c; }
+    .token-box {
+        display: block; width: 100%; margin: 8px 0 4px; padding: 12px 13px;
+        background: #f6f9fb; border: 1px dashed #cdd5df; border-radius: 9px;
+        font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+        font-size: 12.5px; word-break: break-all; color: #1b2733;
+    }
+    .big-mark { text-align: center; margin-bottom: 12px; }
+</style>

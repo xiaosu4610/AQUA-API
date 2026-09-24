@@ -17,6 +17,7 @@ declare(strict_types=1);
 
 namespace app\controller;
 
+use app\common\Epay;
 use app\common\Settings;
 use support\Request;
 use support\Response;
@@ -41,6 +42,11 @@ class HomeController
             'announcement' => trim((string) Settings::get('site.announcement', '')),
             'icp' => trim((string) Settings::get('site.icp', '')),
             'footer' => trim((string) Settings::get('site.footer', '')),
+            // 用户侧入口：已登录直接给「控制台」，否则给「登录 / 注册」。
+            // 注册开关由站长控制，没开就不显示注册入口
+            'loggedIn' => \app\controller\AuthController::currentUserId() > 0,
+            'registerOpen' => Settings::bool('register.open', false),
+            'rechargeEnabled' => Epay::enabled(),
         ], '');
     }
 }

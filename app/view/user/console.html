@@ -1,0 +1,305 @@
+<?php
+/**
+ * 用户侧 · 控制台
+ *
+ * 一页放三件事：我的余额与用量、我的令牌、最近调用记录。
+ * 用户的日常操作就是「拿令牌去用」，因此令牌区必须最好找。
+ *
+ * ⚠️ 令牌列表只显示掩码（key_mask）。完整令牌只在创建那一刻出现过一次，
+ * 这里永远拿不到 —— 也正因如此，库里存的是哈希而不是密文。
+ *
+ * @var string $csrf
+ * @var string $siteName
+ * @var string $siteMode
+ * @var array<string, mixed> $user
+ * @var array<int, array<string, mixed>> $tokens
+ * @var array<string, mixed> $today
+ * @var array<string, mixed> $month
+ * @var array<int, array<string, mixed>> $recent
+ * @var string $currency
+ * @var bool   $rechargeEnabled
+ * @var string $notice
+ * @var string $noticeType
+ */
+$noticeType = $noticeType ?? 'info';
+
+/** 金额格式化：去掉无意义的小数尾巴 */
+$money = static function (mixed $value): string {
+    $float = (float) $value;
+    if ($float === 0.0) {
+        return '0';
+    }
+
+    return rtrim(rtrim(number_format($float, 6, '.', ''), '0'), '.');
+};
+?>
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title>控制台 · <?= htmlspecialchars((string) $siteName, ENT_QUOTES, 'UTF-8') ?></title>
+    <?php include __DIR__ . '/../admin/_style.html'; ?>
+</head>
+<body>
+<div class="wrap">
+    <?php $active = 'console'; include __DIR__ . '/_header.html'; ?>
+
+    <?php if (($notice ?? '') !== ''): ?>
+        <div class="alert <?= htmlspecialchars((string) $noticeType, ENT_QUOTES, 'UTF-8') ?>">
+            <?= icon($noticeType === 'err' ? 'alert' : 'check', 17) ?>
+            <span><?= htmlspecialchars((string) $notice, ENT_QUOTES, 'UTF-8') ?></span>
+        </div>
+    <?php endif; ?>
+
+    <section>
+        <h2><?= icon('chart', 18) ?>我的用量</h2>
+        <div class="stats">
+            <div class="stat accent">
+                <div class="n" style="font-size:20px"><?= $money($user['balance'] ?? 0) ?></div>
+                <div class="l">余额（<?= htmlspecialchars((string) $currency, ENT_QUOTES, 'UTF-8') ?>）</div>
+            </div>
+            <div class="stat"><div class="n"><?= (int) $today['requests'] ?></div><div class="l">今日请求</div></div>
+            <div class="stat"><div class="n" style="font-size:20px"><?= $money($today['downstream_cost']) ?></div><div class="l">今日消费</div></div>
+            <div class="stat"><div class="n"><?= (int) $month['requests'] ?></div><div class="l">近 30 天请求</div></div>
+            <div class="stat"><div class="n" style="font-size:20px"><?= $money($month['downstream_cost']) ?></div><div class="l">近 30 天消费</div></div>
+            <div class="stat"><div class="n" style="font-size:20px"><?= $money($user['total_spent'] ?? 0) ?></div><div class="l">累计消费</div></div>
+        </div>
+        <p class="note">
+            <?php if (!empty($rechargeEnabled)): ?>
+                余额不足时可在<a href="/recharge">充值</a>页在线充值。
+            <?php else: ?>
+                本站当前未开放在线充值，需要余额请联系站长。
+            <?php endif; ?>
+            <?php if ((int) $today['estimated'] > 0 || (int) $month['estimated'] > 0): ?>
+                <br>注意：部分用量的 token 数是按文本<b>估算</b>的（上游未返回用量），
+                估算值仅供你自己参考，不适合用于严格对账。
+            <?php endif; ?>
+        </p>
+    </section>
+
+    <section>
+        <div class="between" style="margin-bottom:16px">
+            <h2 class="mb-0"><?= icon('keys-pool', 18) ?>我的令牌（<?= count($tokens) ?>）</h2>
+        </div>
+
+        <details class="adv" <?= $tokens === [] ? 'open' : '' ?>>
+            <summary><?= icon('plus', 16) ?>新建令牌</summary>
+            <div class="adv-body">
+                <form method="post" action="/console/token/create">
+                    <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
+
+                    <div class="two-col">
+                        <div class="field">
+                            <div class="lbl">名称</div>
+                            <input type="text" name="name" maxlength="64" placeholder="例如：我的脚本">
+                            <div class="tip">只用于你自己区分不同用途的令牌</div>
+                        </div>
+                        <div class="field">
+                            <div class="lbl">额度上限</div>
+                            <input type="number" step="any" min="0" name="quota_limit" value="0">
+                            <div class="tip">0 表示不限。额度只限制消费速度，不影响余额</div>
+                        </div>
+                        <div class="field">
+                            <div class="lbl">有效期（天）</div>
+                            <input type="number" min="0" name="expires_days" value="0">
+                            <div class="tip">0 表示永不过期</div>
+                        </div>
+                    </div>
+
+                    <div class="field">
+                        <div class="lbl">可用模型（可选）</div>
+                        <input type="text" name="models" maxlength="1024" placeholder="留空表示不限，例如 gpt-4o,gemini-*">
+                        <div class="tip">逗号分隔，支持末尾通配（如 <code>gpt-4*</code>）</div>
+                    </div>
+
+                    <div class="actions-bar" style="margin-top:6px">
+                        <button class="primary" type="submit"><?= icon('key', 16) ?>创建令牌</button>
+                    </div>
+                </form>
+            </div>
+        </details>
+
+        <?php if ($tokens === []): ?>
+            <div class="empty">
+                <?= icon('key', 28) ?>
+                <div>还没有任何令牌。展开上面的「新建令牌」创建一个即可开始使用。</div>
+            </div>
+        <?php else: ?>
+            <div class="table-scroll">
+                <table class="compact">
+                    <thead>
+                    <tr>
+                        <th style="width:16%">名称</th>
+                        <th style="width:20%">令牌</th>
+                        <th style="width:14%">状态</th>
+                        <th style="width:20%">额度</th>
+                        <th style="width:14%">有效期</th>
+                        <th style="width:16%">操作</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($tokens as $t): ?>
+                        <tr>
+                            <td><?= htmlspecialchars((string) $t['name'], ENT_QUOTES, 'UTF-8') ?></td>
+                            <td class="mono"><?= htmlspecialchars((string) $t['mask'], ENT_QUOTES, 'UTF-8') ?></td>
+                            <td>
+                                <?php if ($t['usable']): ?>
+                                    <span class="pill ok">可用</span>
+                                <?php elseif ($t['enabled']): ?>
+                                    <span class="pill warn" title="<?= htmlspecialchars((string) $t['reason'], ENT_QUOTES, 'UTF-8') ?>">
+                                        <?= htmlspecialchars((string) $t['reason'], ENT_QUOTES, 'UTF-8') ?>
+                                    </span>
+                                <?php else: ?>
+                                    <span class="pill danger">已停用</span>
+                                <?php endif; ?>
+                            </td>
+                            <td class="src"><?= htmlspecialchars((string) $t['quotaLabel'], ENT_QUOTES, 'UTF-8') ?></td>
+                            <td class="src"><?= htmlspecialchars((string) $t['expiresAt'], ENT_QUOTES, 'UTF-8') ?></td>
+                            <td>
+                                <div class="row-actions">
+                                    <?php if ($t['enabled']): ?>
+                                        <button class="ghost" type="submit" form="tk<?= (int) $t['id'] ?>"
+                                                name="disable_id" value="<?= (int) $t['id'] ?>"
+                                                formaction="/console/token/toggle">停用</button>
+                                    <?php else: ?>
+                                        <button class="ghost" type="submit" form="tk<?= (int) $t['id'] ?>"
+                                                name="enable_id" value="<?= (int) $t['id'] ?>"
+                                                formaction="/console/token/toggle">启用</button>
+                                    <?php endif; ?>
+
+                                    <button class="ghost" type="submit" form="tk<?= (int) $t['id'] ?>"
+                                            name="reset_id" value="<?= (int) $t['id'] ?>"
+                                            formaction="/console/token/reset"
+                                            onclick="return confirm('把该令牌的「已用额度」清零？');">清额度</button>
+
+                                    <button class="ghost danger" type="submit" form="tk<?= (int) $t['id'] ?>"
+                                            name="delete_id" value="<?= (int) $t['id'] ?>"
+                                            formaction="/console/token/delete"
+                                            onclick="return confirm('确定删除该令牌？用它发起的调用会立即失效。');">删除</button>
+                                </div>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+
+            <?php /* 整张表共用一个 form，按钮通过 formaction + name/value 携带动作（同后台密钥池的做法） */ ?>
+            <form id="tk0" method="post" action="/console/token/toggle">
+                <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
+            </form>
+            <?php foreach ($tokens as $t): ?>
+                <form id="tk<?= (int) $t['id'] ?>" method="post" action="/console/token/toggle">
+                    <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
+                </form>
+            <?php endforeach; ?>
+        <?php endif; ?>
+
+        <p class="note">
+            调用时把令牌放进请求头 <code>Authorization: Bearer &lt;令牌&gt;</code>，
+            与 OpenAI 的用法一致。<br>
+            <b>令牌只在创建时显示一次</b>，之后只能看到掩码 —— 这是刻意的：
+            库里存的是哈希而不是密文，连我们都无法还原它。
+        </p>
+    </section>
+
+    <section>
+        <h2><?= icon('chart', 18) ?>最近调用</h2>
+
+        <?php if ($recent === []): ?>
+            <div class="empty">
+                <?= icon('chart', 26) ?>
+                <div>还没有调用记录。用令牌发起第一次请求后，这里会显示明细。</div>
+            </div>
+        <?php else: ?>
+            <div class="table-scroll">
+                <table class="compact">
+                    <thead>
+                    <tr>
+                        <th style="width:14%">时间</th>
+                        <th style="width:28%">模型</th>
+                        <th style="width:14%">Token</th>
+                        <th style="width:14%">消费</th>
+                        <th style="width:12%">状态</th>
+                        <th style="width:18%">说明</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($recent as $row): ?>
+                        <tr>
+                            <td class="src"><?= htmlspecialchars((string) $row['time'], ENT_QUOTES, 'UTF-8') ?></td>
+                            <td class="mono"><?= htmlspecialchars((string) $row['model'], ENT_QUOTES, 'UTF-8') ?></td>
+                            <td class="mono">
+                                <?= (int) $row['tokens'] ?>
+                                <?php if ($row['estimated']): ?>
+                                    <span class="pill warn" title="上游未返回用量，此数字是按文本估算的">估算</span>
+                                <?php endif; ?>
+                            </td>
+                            <td class="mono"><?= $money($row['cost']) ?></td>
+                            <td>
+                                <?php if ($row['status'] === 'ok'): ?>
+                                    <span class="pill ok">成功</span>
+                                <?php else: ?>
+                                    <span class="pill danger">失败</span>
+                                <?php endif; ?>
+                            </td>
+                            <td class="src" title="<?= htmlspecialchars((string) $row['error'], ENT_QUOTES, 'UTF-8') ?>">
+                                <?= htmlspecialchars(mb_substr((string) $row['error'], 0, 30), ENT_QUOTES, 'UTF-8') ?>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        <?php endif; ?>
+    </section>
+
+    <section>
+        <h2><?= icon('user', 18) ?>账号设置</h2>
+
+        <div class="two-col">
+            <form method="post" action="/console/profile">
+                <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
+
+                <div class="field">
+                    <div class="lbl">邮箱（登录名，不可修改）</div>
+                    <input type="text" value="<?= htmlspecialchars((string) $user['email'], ENT_QUOTES, 'UTF-8') ?>" disabled>
+                </div>
+
+                <div class="field">
+                    <div class="lbl">显示名</div>
+                    <input type="text" name="display_name" maxlength="64"
+                           value="<?= htmlspecialchars((string) $user['display_name'], ENT_QUOTES, 'UTF-8') ?>">
+                </div>
+
+                <button class="primary" type="submit"><?= icon('check', 16) ?>保存资料</button>
+            </form>
+
+            <form method="post" action="/console/password">
+                <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
+
+                <div class="field">
+                    <div class="lbl">当前密码</div>
+                    <input type="password" name="current_password" required autocomplete="current-password">
+                </div>
+
+                <div class="field">
+                    <div class="lbl">新密码（至少 8 位）</div>
+                    <input type="password" name="new_password" required autocomplete="new-password">
+                </div>
+
+                <div class="field">
+                    <div class="lbl">再次输入新密码</div>
+                    <input type="password" name="confirm_password" required autocomplete="new-password">
+                </div>
+
+                <button class="primary" type="submit"><?= icon('lock', 16) ?>修改密码</button>
+                <div class="tip">修改成功后会自动退出登录，需要用新密码重新登录</div>
+            </form>
+        </div>
+    </section>
+</div>
+</body>
+</html>

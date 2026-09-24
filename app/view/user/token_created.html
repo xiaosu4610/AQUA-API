@@ -1,0 +1,93 @@
+<?php
+/**
+ * 用户侧 · 令牌创建成功（明文只显示这一次）
+ *
+ * 这一页是用户唯一能看到完整令牌的机会 —— 库里存的是 SHA-256 哈希，
+ * 之后任何地方（包括我们自己）都还原不出来。
+ * 因此页面上必须把这件事说得非常清楚，并给出一键复制的便利。
+ *
+ * @var string $csrf
+ * @var string $siteName
+ * @var string $siteMode
+ * @var string $plain 令牌明文
+ * @var string $name  令牌名称
+ * @var array<string, mixed>|null $user
+ */
+?>
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title>令牌已创建 · <?= htmlspecialchars((string) $siteName, ENT_QUOTES, 'UTF-8') ?></title>
+    <?php include __DIR__ . '/../admin/_style.html'; ?>
+</head>
+<body>
+<div class="wrap">
+    <?php $active = 'console'; include __DIR__ . '/_header.html'; ?>
+
+    <section style="max-width:760px">
+        <h2><?= icon('key', 18) ?>令牌已创建：「<?= htmlspecialchars((string) $name, ENT_QUOTES, 'UTF-8') ?>」</h2>
+
+        <div class="alert err">
+            <?= icon('alert', 17) ?>
+            <span>
+                <b>这串令牌只会显示这一次。</b>
+                库里保存的是它的哈希值，连我们、以及任何数据库管理员都无法还原 ——
+                请现在就复制保存到安全的地方。丢失后只能删掉重建。
+            </span>
+        </div>
+
+        <div class="field">
+            <div class="lbl">你的令牌</div>
+            <input type="text" id="token" value="<?= htmlspecialchars((string) $plain, ENT_QUOTES, 'UTF-8') ?>" readonly
+                   style="font-family:ui-monospace,Consolas,monospace;font-size:13px">
+            <div class="actions-bar" style="margin-top:10px">
+                <button class="primary" type="button" id="copy-btn"><?= icon('check', 16) ?>复制令牌</button>
+                <a class="ghost" href="/console"><?= icon('dashboard', 15) ?>返回控制台</a>
+            </div>
+        </div>
+
+        <hr class="sep">
+
+        <h2><?= icon('info', 17) ?>怎么用</h2>
+        <p class="note" style="margin-top:0">
+            请求时把它放进 <code>Authorization</code> 头，与 OpenAI 完全一致：
+        </p>
+        <textarea readonly rows="6" style="min-height:auto">curl <?= htmlspecialchars((string) ($siteDomain ?? ''), ENT_QUOTES, 'UTF-8') ?> \
+  -H "Authorization: Bearer <?= htmlspecialchars((string) $plain, ENT_QUOTES, 'UTF-8') ?>" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"你的模型名","messages":[{"role":"user","content":"你好"}]}'</textarea>
+
+        <p class="note">
+            ⚠️ 接口路由（<code>/v1/chat/completions</code>）仍在开发中。
+            转发引擎落地后，上面这把令牌即可直接使用 —— 令牌体系已经就绪。
+        </p>
+    </section>
+</div>
+<script>
+    document.getElementById('copy-btn').addEventListener('click', function () {
+        var input = document.getElementById('token');
+        input.select();
+        input.setSelectionRange(0, 999);
+
+        var done = function () {
+            var btn = document.getElementById('copy-btn');
+            var original = btn.textContent;
+            btn.textContent = '已复制';
+            setTimeout(function () { btn.textContent = original; }, 1800);
+        };
+
+        // navigator.clipboard 在 http（非安全上下文）下不可用，
+        // 因此保留 execCommand 兜底 —— 本地用 http://127.0.0.1 调试时会走到这里
+        if (navigator.clipboard && window.isSecureContext) {
+            navigator.clipboard.writeText(input.value).then(done, done);
+        } else {
+            try { document.execCommand('copy'); } catch (e) { /* 用户可手工复制 */ }
+            done();
+        }
+    });
+</script>
+</body>
+</html>

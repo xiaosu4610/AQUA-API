@@ -115,6 +115,75 @@ final class UsageLog
     }
 
     /**
+     * 某个用户的用量汇总（用户控制台用）。
+     *
+     * 与 summary() 同样的聚合 SQL，只是多一个 user_id 条件。
+     * 不合并成一个方法是因为那样每个调用点都要传一堆可选参数，
+     * 反而更容易传错。
+     *
+     * @return array{requests:int, prompt_tokens:int, completion_tokens:int,
+     *               upstream_cost:float, downstream_cost:float, profit:float,
+     *               errors:int, estimated:int}
+     */
+    public static function summaryForUser(int $userId, int $sinceTs): array
+    {
+        $empty = [
+            'requests' => 0, 'prompt_tokens' => 0, 'completion_tokens' => 0,
+            'upstream_cost' => 0.0, 'downstream_cost' => 0.0, 'profit' => 0.0,
+            'errors' => 0, 'estimated' => 0,
+        ];
+
+        try {
+            $row = Db::selectOne(
+                'SELECT
+                    COUNT(*) AS requests,
+                    SUM(prompt_tokens) AS prompt_tokens,
+                    SUM(completion_tokens) AS completion_tokens,
+                    SUM(upstream_cost) AS upstream_cost,
+                    SUM(downstream_cost) AS downstream_cost,
+                    SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS errors,
+                    SUM(usage_estimated) AS estimated
+                 FROM usage_logs
+                 WHERE user_id = ? AND created_at >= ?',
+                [self::STATUS_ERROR, $userId, $sinceTs]
+            );
+        } catch (Throwable) {
+            return $empty;
+        }
+
+        if ($row === null || $row['requests'] === null) {
+            return $empty;
+        }
+
+        $upstream = (float) $row['upstream_cost'];
+        $downstream = (float) $row['downstream_cost'];
+
+        return [
+            'requests' => (int) $row['requests'],
+            'prompt_tokens' => (int) $row['prompt_tokens'],
+            'completion_tokens' => (int) $row['completion_tokens'],
+            'upstream_cost' => $upstream,
+            'downstream_cost' => $downstream,
+            'profit' => $downstream - $upstream,
+            'errors' => (int) $row['errors'],
+            'estimated' => (int) $row['estimated'],
+        ];
+    }
+
+    /**
+     * 某个用户最近的用量记录。
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public static function recentForUser(int $userId, int $limit = 20): array
+    {
+        return Db::select(
+            'SELECT * FROM usage_logs WHERE user_id = ? ORDER BY id DESC LIMIT ' . max(1, min(100, $limit)),
+            [$userId]
+        );
+    }
+
+    /**
      * 某时间点以来的汇总（仪表盘用）。
      *
      * 用一条聚合 SQL 而不是把记录取回 PHP 再算：

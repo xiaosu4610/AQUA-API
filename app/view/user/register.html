@@ -1,0 +1,82 @@
+<?php
+/**
+ * 用户侧 · 注册
+ *
+ * @var string $csrf
+ * @var string $siteName
+ * @var string $siteMode
+ * @var string $email
+ * @var string $inviteCode
+ * @var string $error
+ * @var bool   $needVerify 是否需要邮箱验证
+ * @var bool   $needInvite 是否启用了邀请码
+ * @var bool   $mailReady  邮件服务是否可用（不可用时注册后会直接放行，页面上要说明）
+ */
+?>
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title>注册 · <?= htmlspecialchars((string) $siteName, ENT_QUOTES, 'UTF-8') ?></title>
+    <?php include __DIR__ . '/_auth_style.html'; ?>
+</head>
+<body>
+<form class="auth-card" method="post" action="/register">
+    <?php include __DIR__ . '/_auth_head.html'; ?>
+
+    <h1>注册</h1>
+    <p class="lead">
+        <?php if (!empty($needVerify) && !empty($mailReady)): ?>
+            注册后需要点击邮件里的链接验证邮箱
+        <?php elseif (!empty($needVerify) && empty($mailReady)): ?>
+            注册后即可直接使用（本站的邮件服务尚未配置，暂不强制邮箱验证）
+        <?php else: ?>
+            注册后即可直接使用
+        <?php endif; ?>
+    </p>
+
+    <?php if (($error ?? '') !== ''): ?>
+        <div class="alert err">
+            <?= icon('alert', 17) ?>
+            <span><?= htmlspecialchars((string) $error, ENT_QUOTES, 'UTF-8') ?></span>
+        </div>
+    <?php endif; ?>
+
+    <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
+
+    <div class="field">
+        <div class="lbl">邮箱</div>
+        <input type="email" name="email" required autocomplete="username"
+               value="<?= htmlspecialchars((string) ($email ?? ''), ENT_QUOTES, 'UTF-8') ?>">
+    </div>
+
+    <div class="field">
+        <div class="lbl">密码（至少 8 位）</div>
+        <input type="password" name="password" required autocomplete="new-password">
+    </div>
+
+    <div class="field">
+        <div class="lbl">再次输入密码</div>
+        <input type="password" name="password2" required autocomplete="new-password">
+    </div>
+
+    <?php if (!empty($needInvite)): ?>
+        <div class="field">
+            <div class="lbl">邀请码</div>
+            <input type="text" name="invite_code" required
+                   value="<?= htmlspecialchars((string) ($inviteCode ?? ''), ENT_QUOTES, 'UTF-8') ?>">
+            <div class="tip">本站为邀请制，请填入站长提供的邀请码</div>
+        </div>
+    <?php endif; ?>
+
+    <button class="primary" type="submit"><?= icon('check', 16) ?>注 册</button>
+
+    <div class="auth-foot">
+        已有账号？<a href="/login">去登录</a>
+        &nbsp;·&nbsp;<a href="/">返回首页</a>
+    </div>
+</form>
+</body>
+</html>

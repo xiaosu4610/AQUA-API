@@ -1,0 +1,60 @@
+<?php
+/**
+ * 用户侧 · 登录
+ *
+ * @var string $csrf
+ * @var string $siteName
+ * @var string $siteMode
+ * @var string $email 上次填的邮箱（失败回显，省得重打）
+ * @var string $error
+ * @var bool   $registerOpen 是否开放注册（决定要不要显示注册入口）
+ */
+?>
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title>登录 · <?= htmlspecialchars((string) $siteName, ENT_QUOTES, 'UTF-8') ?></title>
+    <?php include __DIR__ . '/_auth_style.html'; ?>
+</head>
+<body>
+<form class="auth-card" method="post" action="/login">
+    <?php include __DIR__ . '/_auth_head.html'; ?>
+
+    <h1>登录</h1>
+    <p class="lead">用注册时的邮箱与密码登录</p>
+
+    <?php if (($error ?? '') !== ''): ?>
+        <div class="alert err">
+            <?= icon('alert', 17) ?>
+            <span><?= htmlspecialchars((string) $error, ENT_QUOTES, 'UTF-8') ?></span>
+        </div>
+    <?php endif; ?>
+
+    <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
+
+    <div class="field">
+        <div class="lbl">邮箱</div>
+        <input type="email" name="email" required autocomplete="username"
+               value="<?= htmlspecialchars((string) ($email ?? ''), ENT_QUOTES, 'UTF-8') ?>">
+    </div>
+
+    <div class="field">
+        <div class="lbl">密码</div>
+        <input type="password" name="password" required autocomplete="current-password">
+    </div>
+
+    <button class="primary" type="submit"><?= icon('lock', 16) ?>登 录</button>
+
+    <div class="auth-foot">
+        <a href="/forgot">忘记密码？</a>
+        <?php if (!empty($registerOpen)): ?>
+            &nbsp;·&nbsp;<a href="/register">注册新账号</a>
+        <?php endif; ?>
+        &nbsp;·&nbsp;<a href="/">返回首页</a>
+    </div>
+</form>
+</body>
+</html>

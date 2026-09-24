@@ -1,0 +1,162 @@
+<?php
+/**
+ * 用户侧 · 充值
+ *
+ * @var string $csrf
+ * @var string $siteName
+ * @var string $siteMode
+ * @var array<string, mixed>|null $user
+ * @var array<int, array<string, mixed>> $orders
+ * @var string $currency
+ * @var bool   $enabled     在线充值是否开启且配置完整
+ * @var bool   $configured  仅「配置是否完整」（区分「没开」与「配错了」）
+ * @var array<int, string> $payTypes
+ * @var array<string, string> $payTypeLabels
+ * @var float  $minAmount
+ * @var float  $creditRate
+ * @var string $notice
+ * @var string $noticeType
+ */
+$noticeType = $noticeType ?? 'info';
+
+$money = static function (mixed $value): string {
+    $float = (float) $value;
+    if ($float === 0.0) {
+        return '0';
+    }
+
+    return rtrim(rtrim(number_format($float, 6, '.', ''), '0'), '.');
+};
+?>
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title>充值 · <?= htmlspecialchars((string) $siteName, ENT_QUOTES, 'UTF-8') ?></title>
+    <?php include __DIR__ . '/../admin/_style.html'; ?>
+</head>
+<body>
+<div class="wrap">
+    <?php $active = 'recharge'; include __DIR__ . '/_header.html'; ?>
+
+    <?php if (($notice ?? '') !== ''): ?>
+        <div class="alert <?= htmlspecialchars((string) $noticeType, ENT_QUOTES, 'UTF-8') ?>">
+            <?= icon($noticeType === 'err' ? 'alert' : 'check', 17) ?>
+            <span><?= htmlspecialchars((string) $notice, ENT_QUOTES, 'UTF-8') ?></span>
+        </div>
+    <?php endif; ?>
+
+    <section>
+        <h2><?= icon('card', 18) ?>在线充值</h2>
+
+        <?php if (!$enabled): ?>
+            <div class="alert <?= $configured ? 'info' : 'err' ?>">
+                <?= icon('alert', 17) ?>
+                <span>
+                    <?php if ($configured): ?>
+                        在线充值<b>尚未开启</b>。站长可以在「配置管理 → 支付」里打开。
+                    <?php else: ?>
+                        在线充值<b>尚未配置</b>：缺少支付接口地址、商户 PID 或密钥。
+                        请站长到「配置管理 → 支付」里填写（易支付 V1 / V2 均已支持）。
+                    <?php endif; ?>
+                    <br>需要充值可以直接联系站长手工加余额。
+                </span>
+            </div>
+        <?php else: ?>
+            <form method="post" action="/recharge/create">
+                <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
+
+                <div class="two-col">
+                    <div class="field">
+                        <div class="lbl">充值金额（<?= htmlspecialchars((string) $currency, ENT_QUOTES, 'UTF-8') ?>）</div>
+                        <input type="number" step="0.01" min="<?= number_format((float) $minAmount, 2, '.', '') ?>"
+                               name="amount" required value="<?= number_format((float) $minAmount, 2, '.', '') ?>">
+                        <div class="tip">
+                            单笔最低 <?= number_format((float) $minAmount, 2) ?>；
+                            到账倍率 <code><?= number_format((float) $creditRate, 4, '.', '') ?></code>
+                            （充值 1 <?= htmlspecialchars((string) $currency, ENT_QUOTES, 'UTF-8') ?>
+                            = <?= number_format((float) $creditRate, 4, '.', '') ?> 余额）
+                        </div>
+                    </div>
+
+                    <div class="field">
+                        <div class="lbl">支付方式</div>
+                        <select name="pay_type" required>
+                            <?php foreach ($payTypes as $type): ?>
+                                <option value="<?= htmlspecialchars($type, ENT_QUOTES, 'UTF-8') ?>">
+                                    <?= htmlspecialchars($payTypeLabels[$type] ?? $type, ENT_QUOTES, 'UTF-8') ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="actions-bar">
+                    <button class="primary" type="submit"><?= icon('card', 16) ?>去支付</button>
+                </div>
+
+                <p class="note">
+                    点击后会跳转到支付页面。付款完成后余额<b>由支付网关的回调自动到账</b>，
+                    通常几秒内完成；若长时间未到账，请把下面的订单号发给站长核对。
+                </p>
+            </form>
+        <?php endif; ?>
+    </section>
+
+    <section>
+        <h2><?= icon('chart', 18) ?>订单记录</h2>
+
+        <?php if ($orders === []): ?>
+            <div class="empty">
+                <?= icon('card', 26) ?>
+                <div>还没有充值订单。</div>
+            </div>
+        <?php else: ?>
+            <div class="table-scroll">
+                <table class="compact">
+                    <thead>
+                    <tr>
+                        <th style="width:26%">订单号</th>
+                        <th style="width:12%">金额</th>
+                        <th style="width:12%">到账</th>
+                        <th style="width:14%">支付方式</th>
+                        <th style="width:12%">状态</th>
+                        <th style="width:12%">创建时间</th>
+                        <th style="width:12%">到账时间</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($orders as $o): ?>
+                        <tr>
+                            <td class="mono"><?= htmlspecialchars((string) $o['orderNo'], ENT_QUOTES, 'UTF-8') ?></td>
+                            <td class="mono"><?= $money($o['amount']) ?></td>
+                            <td class="mono"><?= $money($o['credit']) ?></td>
+                            <td class="src"><?= htmlspecialchars($payTypeLabels[$o['payType']] ?? (string) $o['payType'], ENT_QUOTES, 'UTF-8') ?></td>
+                            <td>
+                                <?php if ($o['status'] === 'paid'): ?>
+                                    <span class="pill ok">已到账</span>
+                                <?php elseif ($o['status'] === 'failed'): ?>
+                                    <span class="pill danger">已作废</span>
+                                <?php else: ?>
+                                    <span class="pill warn">待支付</span>
+                                <?php endif; ?>
+                            </td>
+                            <td class="src"><?= htmlspecialchars((string) $o['createdAt'], ENT_QUOTES, 'UTF-8') ?></td>
+                            <td class="src"><?= htmlspecialchars((string) $o['paidAt'], ENT_QUOTES, 'UTF-8') ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        <?php endif; ?>
+
+        <p class="note">
+            「待支付」的订单如果最终没付款，会一直留在这里，不影响余额 ——
+            可以忽略它，或让站长标记作废。
+        </p>
+    </section>
+</div>
+</body>
+</html>

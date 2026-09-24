@@ -37,7 +37,7 @@ use Throwable;
 final class Schema
 {
     /** 当前期望的表结构版本。新增迁移时递增。 */
-    public const VERSION = 6;
+    public const VERSION = 7;
 
     /**
      * 确保表结构存在且为最新版本。
@@ -76,6 +76,10 @@ final class Schema
 
         if ($current < 6) {
             self::createV6();
+        }
+
+        if ($current < 7) {
+            self::createV7();
         }
 
         Settings::put('schema_version', (string) self::VERSION);
@@ -367,6 +371,111 @@ final class Schema
         self::createIndexIfMissing('usage_logs', 'idx_usage_model', ['model']);
         self::createIndexIfMissing('usage_logs', 'idx_usage_channel', ['channel_id']);
         self::createIndexIfMissing('usage_logs', 'idx_usage_user', ['user_id']);
+    }
+
+    /**
+     * v7：下游用户、令牌与支付订单
+     *
+     * 前面几版都在做「上游」——渠道、密钥池、定价。
+     * 这一版开始做「下游」：谁能用、用什么凭证用、钱怎么进来。
+     * 没有这三张表，`usage_logs` 里的 user_id / token_id 永远是空的，
+     * 也就谈不上「下游成本」的归属。
+     *
+     * ═══ 三张表的分工 ═══
+     *
+     *   users           —— 谁在用（余额、状态、邮箱验证）
+     *   tokens          —— 用什么凭证调用（可多个、可限额、可设有效期）
+     *   payment_orders  —— 钱怎么进来（充值订单，含回调原文便于对账）
+     *
+     * ═══ 几个刻意的取舍 ═══
+     *
+     * 1. **余额用 DECIMAL(20,10)**，与定价表同一套精度。
+     *    钱绝不用浮点累加：0.1 + 0.2 这类误差在余额上就是事故。
+     *
+     * 2. **令牌只存哈希 + 掩码**（key_hash / key_mask），不存明文。
+     *    与渠道 API Key 必须可逆不同：令牌是我们自己签发的，
+     *    验证时只需比对哈希，**永不需要还原原文** ——
+     *    所以用哈希而不是加密，泄露面更小（库被拖走也无法直接使用）。
+     *
+     * 3. **订单里保留回调原文**（notify_raw）。
+     *    支付回调是对账时唯一的一手证据。上游说「我通知过了」、
+     *    我们这边却没到账，靠的就是这个字段。截断保存，够用即可。
+     *
+     * 4. **邮箱验证 / 找回密码用同一个 token 字段**，不做成两张表。
+     *    两者都是「一次性、有期限的凭据」，语义相同，分开存只会多一处维护。
+     */
+    private static function createV7(): void
+    {
+        $pdo = Db::pdo();
+        $autoId = self::autoId();
+
+        // ── users：下游用户 ──────────────────────────────────
+        $pdo->exec(<<<SQL
+            CREATE TABLE IF NOT EXISTS users (
+                id                {$autoId},
+                email             VARCHAR(191) NOT NULL,
+                password_hash     VARCHAR(255) NOT NULL,
+                display_name      VARCHAR(64)  NOT NULL DEFAULT '',
+                balance           DECIMAL(20,10) NOT NULL DEFAULT 0,
+                total_spent       DECIMAL(20,10) NOT NULL DEFAULT 0,
+                status            INTEGER      NOT NULL DEFAULT 1,
+                email_verified_at INTEGER      NULL,
+                verify_token      VARCHAR(64)  NULL,
+                reset_token       VARCHAR(64)  NULL,
+                reset_expires_at  INTEGER      NULL,
+                last_login_at     INTEGER      NULL,
+                last_login_ip     VARCHAR(45)  NULL,
+                register_ip       VARCHAR(45)  NULL,
+                created_at        INTEGER      NOT NULL,
+                updated_at        INTEGER      NOT NULL,
+                CONSTRAINT uq_users_email UNIQUE (email)
+            )
+        SQL);
+
+        // ── tokens：调用凭证 ─────────────────────────────────
+        $pdo->exec(<<<SQL
+            CREATE TABLE IF NOT EXISTS tokens (
+                id           {$autoId},
+                user_id      INTEGER      NOT NULL,
+                name         VARCHAR(64)  NOT NULL,
+                key_hash     VARCHAR(64)  NOT NULL,
+                key_mask     VARCHAR(32)  NOT NULL,
+                quota_limit  DECIMAL(20,10) NOT NULL DEFAULT 0,
+                quota_used   DECIMAL(20,10) NOT NULL DEFAULT 0,
+                models       VARCHAR(1024) NULL,
+                expires_at   INTEGER      NULL,
+                status       INTEGER      NOT NULL DEFAULT 1,
+                last_used_at INTEGER      NULL,
+                created_at   INTEGER      NOT NULL,
+                updated_at   INTEGER      NOT NULL,
+                CONSTRAINT uq_tokens_hash UNIQUE (key_hash)
+            )
+        SQL);
+
+        // ── payment_orders：充值订单 ─────────────────────────
+        $pdo->exec(<<<SQL
+            CREATE TABLE IF NOT EXISTS payment_orders (
+                id         {$autoId},
+                order_no   VARCHAR(64)  NOT NULL,
+                user_id    INTEGER      NOT NULL,
+                amount     DECIMAL(20,10) NOT NULL,
+                credit     DECIMAL(20,10) NOT NULL,
+                gateway    VARCHAR(16)  NOT NULL,
+                pay_type   VARCHAR(16)  NOT NULL DEFAULT 'alipay',
+                trade_no   VARCHAR(64)  NULL,
+                status     VARCHAR(16)  NOT NULL DEFAULT 'pending',
+                notify_raw VARCHAR(2000) NULL,
+                created_at INTEGER      NOT NULL,
+                paid_at    INTEGER      NULL,
+                CONSTRAINT uq_orders_no UNIQUE (order_no)
+            )
+        SQL);
+
+        self::createIndexIfMissing('tokens', 'idx_tokens_user', ['user_id']);
+        self::createIndexIfMissing('payment_orders', 'idx_orders_user', ['user_id']);
+        self::createIndexIfMissing('payment_orders', 'idx_orders_status', ['status']);
+        self::createIndexIfMissing('users', 'idx_users_verify', ['verify_token']);
+        self::createIndexIfMissing('users', 'idx_users_reset', ['reset_token']);
     }
 
     /**
