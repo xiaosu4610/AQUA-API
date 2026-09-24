@@ -119,12 +119,34 @@ class ChannelController
         $id = (int) $request->post('id', 0);
         $isUpdate = $id > 0;
 
+        // 高级配置：把表单里的多行文本解析成结构化数组。
+        // 解析失败不抛异常，而是逐项收集错误，一次全部反馈给站长 ——
+        // 让站长改一项、提交、发现还有一项错、再改……是最烦人的体验。
+        $adv = Channel::parseAdvForm([
+            'auth_type' => $request->post('auth_type', ''),
+            'auth_name' => $request->post('auth_name', ''),
+            'auth_prefix' => $request->post('auth_prefix', ''),
+            'extra_headers' => $request->post('extra_headers', ''),
+            'extra_query' => $request->post('extra_query', ''),
+            'extra_body' => $request->post('extra_body', ''),
+            'strip_body' => $request->post('strip_body', ''),
+            'model_map' => $request->post('model_map', ''),
+            'connect_timeout' => $request->post('connect_timeout', '0'),
+            'total_timeout' => $request->post('total_timeout', '0'),
+            'proxy' => $request->post('proxy', ''),
+        ]);
+
+        if ($adv['errors'] !== []) {
+            return $this->back('高级配置有误：' . implode('；', $adv['errors']), 'err');
+        }
+
         $data = [
             'name' => trim((string) $request->post('name', '')),
             'type' => (string) $request->post('type', ''),
             'base_url' => rtrim(trim((string) $request->post('base_url', '')), '/'),
             'api_key' => trim((string) $request->post('api_key', '')),
             'models' => (string) $request->post('models', ''),
+            'config' => $adv['config'],
             'priority' => (int) $request->post('priority', 0),
             'weight' => (int) $request->post('weight', 1),
             'status' => (int) $request->post('status', Channel::STATUS_ENABLED),
@@ -222,15 +244,27 @@ class ChannelController
 
         // 只显示掩码。完整 Key 绝不进入 HTML —— 这一页渲染的是几百条记录，
         // 一旦把明文送进浏览器，泄露面会被放大几百倍。
+        $now = time();
+
         $rows = [];
         foreach (ChannelKey::allForChannel($id) as $row) {
+            $enabled = (int) $row['status'] === ChannelKey::STATUS_ENABLED;
+            $disabledUntil = (int) ($row['disabled_until'] ?? 0);
+
             $rows[] = [
                 'id' => (int) $row['id'],
                 'masked' => ChannelKey::masked($row),
-                'enabled' => (int) $row['status'] === ChannelKey::STATUS_ENABLED,
+                'enabled' => $enabled,
+                // 冷却中：当前停用、但设了到期时间，届时会自动恢复。
+                // 与「永久停用」在界面上必须区分开，否则站长会以为
+                // 掉了一批 Key 而手忙脚乱地去人工启用
+                'cooling' => !$enabled && $disabledUntil > $now,
+                'coolingText' => !$enabled && $disabledUntil > $now
+                    ? '约 ' . (int) ceil(($disabledUntil - $now) / 60) . ' 分钟后自动恢复'
+                    : '',
                 'rpmLimit' => (int) $row['rpm_limit'],
                 'used' => (int) $row['used_requests'],
-                'inWindow' => (int) $row['window_start'] === (int) (floor(time() / 60) * 60),
+                'inWindow' => (int) $row['window_start'] === (int) (floor($now / 60) * 60),
                 'lastUsedAt' => self::formatTime($row['last_used_at'] ?? null),
                 'failCount' => (int) $row['fail_count'],
                 'lastError' => (string) ($row['last_error'] ?? ''),
@@ -246,7 +280,7 @@ class ChannelController
             // 每把密钥的默认限额：优先用渠道自己的设置，没有则用全局默认
             'defaultRpm' => (int) $channel['rpm_limit'] > 0
                 ? (int) $channel['rpm_limit']
-                : Settings::int('nim.rpm_limit', 40),
+                : Settings::int('key_pool.default_rpm', 40),
             'stats' => ChannelKey::statsForChannel($id),
             'keys' => $rows,
             'notice' => (string) session()->pull(self::FLASH_NOTICE, ''),
@@ -413,6 +447,21 @@ class ChannelController
             'adapters' => Channel::ADAPTERS,
             'providersAvailable' => $available,
             'providersReserved' => $reserved,
+            // 高级配置：字段清单（决定渲染什么控件）+ 当前值的文本形式（回显）
+            'advFields' => Channel::ADV_FIELDS,
+            'advText' => Channel::advFormText(Channel::advConfig(
+                $isEdit ? $channel : ['type' => 'nim']
+            )),
+            // 纯字段默认值（不含适配器与渠道的覆盖）。
+            // 前端在切换适配器时用它兜底：适配器没声明的字段回落到这里，
+            // 否则会出现「切一下供应商，Bearer 前缀就没了」这种坑
+            'advDefaults' => Channel::advFormText([]),
+            // 各适配器的默认高级配置，交给前端在切换协议时自动带出。
+            // 传 JSON 而不是让前端自己拼，是为了让默认值只有一处定义
+            'adapterDefaults' => (string) json_encode(
+                array_map(static fn (array $a): array => (array) ($a['defaults'] ?? []), Channel::ADAPTERS),
+                JSON_UNESCAPED_UNICODE
+            ),
             // 解密失败时给出提示，避免站长面对一个「Key 明明存了却报没权限」的谜题
             'keyBroken' => $isEdit && (string) ($channel['api_key_enc'] ?? '') !== '' && Channel::plainKey($channel) === '',
             'keyConfigured' => Crypto::isConfigured(),

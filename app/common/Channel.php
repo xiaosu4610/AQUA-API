@@ -55,68 +55,191 @@ final class Channel
             'label' => 'OpenAI 兼容（/v1/chat/completions + SSE）',
             'implemented' => true,
             'hint' => '标准协议，绝大多数国内外厂商都兼容它',
+            // defaults：这个协议下「绝大多数厂商」的样子。
+            // 选供应商后会自动带出，用户仍可在高级配置里逐项改写。
+            'defaults' => ['auth_type' => 'bearer'],
         ],
         'nim' => [
             'label' => 'NVIDIA NIM',
             'implemented' => true,
             'hint' => '协议上兼容 OpenAI，但限流、thinking 字段名等行为有特殊性，故单独成类',
+            'defaults' => ['auth_type' => 'bearer'],
         ],
 
         // ── 待实现：协议与 OpenAI 差异较大，需要独立的解码/编码实现 ──
+        // 这些虽然暂时选不了，但**默认配置照旧声明** ——
+        // 一是便于将来实现时直接用，二是让「差异长什么样」在代码里可见。
         'azure' => [
             'label' => 'Azure OpenAI',
             'implemented' => false,
             'hint' => '鉴权用 api-key 头，地址需带 api-version 查询参数',
+            'defaults' => [
+                'auth_type' => 'header',
+                'auth_name' => 'api-key',
+                'auth_prefix' => '',
+                'extra_query' => ['api-version' => '2024-10-21'],
+            ],
         ],
         'anthropic' => [
             'label' => 'Anthropic Messages',
             'implemented' => false,
             'hint' => '事件类型与字段名与 OpenAI 完全不同',
+            'defaults' => [
+                'auth_type' => 'header',
+                'auth_name' => 'x-api-key',
+                'auth_prefix' => '',
+                'extra_headers' => ['anthropic-version' => '2023-06-01'],
+            ],
         ],
         'gemini' => [
             'label' => 'Google Gemini',
             'implemented' => false,
             'hint' => 'generateContent 协议，流式结构差异大',
+            'defaults' => ['auth_type' => 'query', 'auth_name' => 'key', 'auth_prefix' => ''],
         ],
         'vertex' => [
             'label' => 'Google Vertex AI',
             'implemented' => false,
             'hint' => 'GCP 服务账号鉴权',
+            'defaults' => ['auth_type' => 'bearer'],
         ],
         'aws' => [
             'label' => 'AWS Bedrock',
             'implemented' => false,
             'hint' => 'SigV4 签名鉴权',
+            'defaults' => ['auth_type' => 'none'],
         ],
         'baidu' => [
             'label' => '百度文心（access_token 流程）',
             'implemented' => false,
             'hint' => '需先用 API Key 换取 access_token',
+            'defaults' => ['auth_type' => 'query', 'auth_name' => 'access_token', 'auth_prefix' => ''],
         ],
         'xunfei' => [
             'label' => '讯飞星火（WebSocket）',
             'implemented' => false,
             'hint' => '非 HTTP 协议',
+            'defaults' => ['auth_type' => 'header', 'auth_name' => 'Authorization'],
         ],
         'coze' => [
             'label' => '扣子 Coze（机器人 / 工作流）',
             'implemented' => false,
             'hint' => '以会话/工作流为中心，不是对话补全',
+            'defaults' => ['auth_type' => 'bearer'],
         ],
         'replicate' => [
             'label' => 'Replicate（异步任务）',
             'implemented' => false,
             'hint' => '提交任务 + 轮询结果',
+            'defaults' => ['auth_type' => 'header', 'auth_name' => 'Authorization', 'auth_prefix' => 'Token '],
         ],
         'chatgpt_sub' => [
             'label' => 'ChatGPT 订阅账号（会话凭证）',
             'implemented' => false,
             'hint' => '用订阅账号凭证而非 API Key，凭证会过期需换新',
+            'defaults' => ['auth_type' => 'bearer'],
         ],
         'ollama' => [
             'label' => 'Ollama 原生协议',
             'implemented' => false,
             'hint' => '非 OpenAI 格式；如需即刻可用请选它的 OpenAI 兼容层',
+            'defaults' => ['auth_type' => 'none'],
+        ],
+    ];
+
+    /**
+     * 渠道「高级配置」的字段清单 —— 单一事实来源。
+     *
+     * 这一张表同时驱动三件事，因此加一个可配置项只需要改这里一处：
+     *   1. 渠道表单长什么样（控件类型、标签、说明）
+     *   2. 保存时怎么解析与校验
+     *   3. 构造上游请求时怎么取值
+     *
+     * 设计原则：**能数据化的差异就不要写死在代码里**。
+     * 各家上游在「鉴权方式、额外参数、超时」上的差异是无穷的，
+     * 为每一种都加一列或加一段 if，正是同类项目代码膨胀到几十万行的原因。
+     *
+     * type 的含义：
+     *   text     单行文本
+     *   int      整数（0 表示「用全局默认」）
+     *   select   下拉（选项见 options）
+     *   headers  多行 `Name: Value` → 存成对象
+     *   pairs    多行 `k=v` → 存成对象
+     *   json     一个 JSON 对象 → 存成对象
+     *   csv      逗号分隔 → 存成数组
+     */
+    public const ADV_FIELDS = [
+        'auth_type' => [
+            'label' => '鉴权方式',
+            'type' => 'select',
+            'default' => 'bearer',
+            'options' => [
+                'bearer' => 'Authorization: Bearer <Key>（最通用）',
+                'header' => '自定义请求头，如 api-key: <Key>',
+                'query' => 'URL 查询参数，如 ?key=<Key>',
+                'none' => '不带鉴权（本地模型 / 免鉴权网关）',
+            ],
+            'hint' => '选供应商后会自动带出该家常用的方式',
+        ],
+        'auth_name' => [
+            'label' => '鉴权字段名',
+            'type' => 'text',
+            'default' => '',
+            'hint' => '留空用默认：Bearer 模式固定 Authorization；自定义头/查询参数模式默认 api-key',
+        ],
+        'auth_prefix' => [
+            'label' => '鉴权值前缀',
+            'type' => 'text',
+            'default' => 'Bearer ',
+            'hint' => '拼在 Key 前面的字符串。留空表示「沿用默认」（Bearer 模式为 "Bearer "，其余为空）',
+        ],
+        'extra_headers' => [
+            'label' => '附加请求头',
+            'type' => 'headers',
+            'default' => [],
+            'hint' => '每行一个，格式 名称: 值。用于上游要求的版本头、组织标识等',
+        ],
+        'extra_query' => [
+            'label' => '附加查询参数',
+            'type' => 'pairs',
+            'default' => [],
+            'hint' => '每行一个，格式 键=值。Azure OpenAI 的 api-version 就填这里',
+        ],
+        'extra_body' => [
+            'label' => '附加请求体参数',
+            'type' => 'json',
+            'default' => [],
+            'hint' => '一个 JSON 对象，会合并进请求体。例如 {"top_p":1,"stream_options":{"include_usage":true}}',
+        ],
+        'strip_body' => [
+            'label' => '剔除请求体字段',
+            'type' => 'csv',
+            'default' => [],
+            'hint' => '逗号分隔。有些上游收到无法识别的参数会直接报错，这里把它们去掉',
+        ],
+        'model_map' => [
+            'label' => '模型名映射',
+            'type' => 'pairs',
+            'default' => [],
+            'hint' => '每行一个 对外名=上游真实名。用于把统一模型名映射到各家不同的命名',
+        ],
+        'connect_timeout' => [
+            'label' => '连接超时（秒）',
+            'type' => 'int',
+            'default' => 0,
+            'hint' => '0 表示用全局默认',
+        ],
+        'total_timeout' => [
+            'label' => '总超时（秒）',
+            'type' => 'int',
+            'default' => 0,
+            'hint' => '0 表示用全局默认；流式请求的总时长上限',
+        ],
+        'proxy' => [
+            'label' => '上游代理',
+            'type' => 'text',
+            'default' => '',
+            'hint' => '如 http://127.0.0.1:7890 或 socks5h://127.0.0.1:1080。留空表示直连',
         ],
     ];
 
@@ -168,14 +291,15 @@ final class Channel
 
         Db::execute(
             'INSERT INTO channels
-                (name, type, base_url, api_key_enc, models, priority, weight, status, rpm_limit, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                (name, type, base_url, api_key_enc, models, config, priority, weight, status, rpm_limit, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             [
                 (string) $data['name'],
                 (string) $data['type'],
                 (string) $data['base_url'],
                 self::encryptKey((string) ($data['api_key'] ?? '')),
                 self::encodeModels($data['models'] ?? []),
+                self::encodeConfig($data['config'] ?? []),
                 (int) ($data['priority'] ?? 0),
                 (int) ($data['weight'] ?? 1),
                 (int) ($data['status'] ?? self::STATUS_ENABLED),
@@ -204,6 +328,7 @@ final class Channel
             'type = ?',
             'base_url = ?',
             'models = ?',
+            'config = ?',
             'priority = ?',
             'weight = ?',
             'status = ?',
@@ -216,6 +341,7 @@ final class Channel
             (string) $data['type'],
             (string) $data['base_url'],
             self::encodeModels($data['models'] ?? []),
+            self::encodeConfig($data['config'] ?? []),
             (int) ($data['priority'] ?? 0),
             (int) ($data['weight'] ?? 1),
             (int) ($data['status'] ?? self::STATUS_ENABLED),
@@ -354,7 +480,7 @@ final class Channel
         // 优先用**密钥池**里的一把。
         // 官方部署下渠道可能挂几百把 Key，测活从池子取才能同时验证两件事：
         // 「池子取得到 Key」以及「取出来的这把 Key 确实有效」。
-        $acquired = self::acquireKey($channel, Settings::int('nim.rpm_limit', 40));
+        $acquired = self::acquireKey($channel, Settings::int('key_pool.default_rpm', 40));
 
         if ($acquired === null) {
             $poolTotal = ChannelKey::statsForChannel((int) $channel['id'])['total'];
@@ -374,10 +500,8 @@ final class Channel
 
         $key = $acquired['key'];
 
-        $baseUrl = rtrim((string) $channel['base_url'], '/');
-
         // ── 第一步：拉取模型清单，确认网络可达 ──
-        $listResponse = self::request('GET', $baseUrl . '/models', $key);
+        $listResponse = self::send(self::buildSpec($channel, $key, '/models'));
 
         if ($listResponse['error'] !== '') {
             $result = [
@@ -420,17 +544,12 @@ final class Channel
 
         // ── 第二步：用最小推理请求真正校验 Key ──
         $probeModel = self::pickProbeModel($channel, $models);
-        $chatResponse = self::request(
-            'POST',
-            $baseUrl . '/chat/completions',
-            $key,
-            (string) json_encode([
-                'model' => $probeModel,
-                'messages' => [['role' => 'user', 'content' => 'hi']],
-                'max_tokens' => 1,
-                'stream' => false,
-            ], JSON_UNESCAPED_UNICODE)
-        );
+        $chatResponse = self::send(self::buildSpec($channel, $key, '/chat/completions', [
+            'model' => $probeModel,
+            'messages' => [['role' => 'user', 'content' => 'hi']],
+            'max_tokens' => 1,
+            'stream' => false,
+        ]));
 
         $result = self::interpretProbe($chatResponse, $probeModel, $models);
         self::recordTest($id, $result);
@@ -548,55 +667,6 @@ final class Channel
     }
 
     /**
-     * 发起一次 HTTP 请求。
-     *
-     * ⚠️ 这里是**阻塞式 curl**。与本项目主线要求的非阻塞转发相反，
-     * 但测活是站长手动点一次的操作，可以接受。
-     * 若将来要做「定时批量探测」，必须改为非阻塞实现并放到独立进程，
-     * 否则会把工作进程卡住（详见项目文档的待办）。
-     *
-     * @return array{code:int, body:string, error:string}
-     */
-    private static function request(string $method, string $url, string $bearer, ?string $jsonBody = null): array
-    {
-        $headers = [
-            'Authorization: Bearer ' . $bearer,
-            'Accept: application/json',
-        ];
-
-        $ch = curl_init($url);
-
-        $options = [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_CUSTOMREQUEST => $method,
-            // 测活是给人看的，宁可快速失败也不要让人干等
-            CURLOPT_CONNECTTIMEOUT => 8,
-            CURLOPT_TIMEOUT => 20,
-            CURLOPT_SSL_VERIFYPEER => true,
-        ];
-
-        if ($jsonBody !== null) {
-            $headers[] = 'Content-Type: application/json';
-            $options[CURLOPT_POSTFIELDS] = $jsonBody;
-        }
-
-        $options[CURLOPT_HTTPHEADER] = $headers;
-
-        curl_setopt_array($ch, $options);
-
-        $body = curl_exec($ch);
-        $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $error = curl_error($ch);
-        curl_close($ch);
-
-        return [
-            'code' => $code,
-            'body' => $body === false ? '' : (string) $body,
-            'error' => $error,
-        ];
-    }
-
-    /**
      * 把测试结果写入渠道记录（成功/失败/时间/错误摘要）。
      */
     private static function recordTest(int $id, array $result): void
@@ -686,5 +756,439 @@ final class Channel
         $decoded = json_decode($raw, true);
 
         return is_array($decoded) ? array_values($decoded) : [];
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 渠道级高级配置
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * 取出渠道的**最终生效**高级配置。
+     *
+     * 三层合并，后者覆盖前者：
+     *   ① Channel::ADV_FIELDS 里声明的默认值（保底，任何适配器都有）
+     *   ② 该渠道所用适配器的 defaults（例如 Azure 的 api-key 头 + api-version）
+     *   ③ 渠道自身 config 列里的值（站长在高级配置里填的，优先级最高）
+     *
+     * 为什么要做「三层」而不是直接用渠道里的值：
+     *   绝大多数渠道只需要「地址 + Key」，高级配置全为空。
+     *   靠适配器默认值兜底，这些渠道不必写任何配置也能正确鉴权；
+     *   而真遇到怪癖上游时，站长又能逐项覆盖。
+     *
+     * @return array<string, mixed>
+     */
+    public static function advConfig(array $channel): array
+    {
+        $result = [];
+        foreach (self::ADV_FIELDS as $name => $spec) {
+            $result[$name] = $spec['default'];
+        }
+
+        $adapterDefaults = (array) (self::ADAPTERS[(string) ($channel['type'] ?? '')]['defaults'] ?? []);
+        foreach ($adapterDefaults as $name => $value) {
+            if (array_key_exists($name, $result)) {
+                $result[$name] = $value;
+            }
+        }
+
+        $stored = self::decodeConfig($channel['config'] ?? null);
+        foreach ($stored as $name => $value) {
+            if (array_key_exists($name, $result)) {
+                $result[$name] = $value;
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * 存库前的配置编码：空配置存空串（而不是 '{}'）。
+     *
+     * 与 models 字段的处理不同，这里不做「空值也算有值」的兼容 ——
+     * 因为 config 是新增列，历史数据本来就是空串，
+     * 统一成空串可以让「是否有自定义配置」的判断保持一行。
+     *
+     * @param array<string, mixed>|string|null $config
+     */
+    private static function encodeConfig(array|string|null $config): string
+    {
+        if ($config === null || $config === '') {
+            return '';
+        }
+
+        if (is_string($config)) {
+            $decoded = json_decode($config, true);
+            $config = is_array($decoded) ? $decoded : [];
+        }
+
+        $config = array_filter($config, static fn ($v) => $v !== '' && $v !== [] && $v !== 0 && $v !== '0');
+
+        return $config === []
+            ? ''
+            : (string) json_encode($config, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
+
+    /**
+     * 读取渠道的原始配置。兼容「列还不存在」的历史库结构。
+     *
+     * @return array<string, mixed>
+     */
+    public static function decodeConfig(mixed $raw): array
+    {
+        if (!is_string($raw) || $raw === '') {
+            return [];
+        }
+
+        $decoded = json_decode($raw, true);
+
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    /**
+     * 把表单提交的高级配置文本解析成结构化数组。
+     *
+     * 解析放在「保存时」而不是「每次请求时」：
+     * 请求转发是热路径，每毫秒都值得省；
+     * 而保存是站长手动点一次的操作，慢一点无所谓。
+     * 代价是解析规则变更后旧数据不会自动重解析 ——
+     * 但解析规则本身足够稳定，这个取舍是划算的。
+     *
+     * 非法输入不抛异常，而是**丢弃该项并收集错误信息**：
+     * 让站长一次看到全部问题，而不是改一个报一个。
+     *
+     * @param array<string, mixed> $post 表单原始提交（$_POST 风格）
+     * @return array{config: array<string, mixed>, errors: array<int, string>}
+     */
+    public static function parseAdvForm(array $post): array
+    {
+        $config = [];
+        $errors = [];
+
+        foreach (self::ADV_FIELDS as $name => $spec) {
+            $raw = $post[$name] ?? null;
+
+            // 下拉：只接受清单内的取值，防止表单被改出脏值
+            if ($spec['type'] === 'select') {
+                $value = trim((string) $raw);
+                if ($value !== '' && !isset($spec['options'][$value])) {
+                    $errors[] = "「{$spec['label']}」的取值不在允许范围内";
+                    continue;
+                }
+                $config[$name] = $value === '' ? (string) $spec['default'] : $value;
+                continue;
+            }
+
+            if ($spec['type'] === 'int') {
+                $value = (int) $raw;
+                $config[$name] = $value >= 0 ? $value : 0;
+                continue;
+            }
+
+            if (in_array($spec['type'], ['text'], true)) {
+                $config[$name] = trim((string) $raw);
+                continue;
+            }
+
+            // 以下都是多行/结构化输入，统一按文本处理
+            $text = trim((string) $raw);
+
+            if ($text === '') {
+                $config[$name] = [];
+                continue;
+            }
+
+            switch ($spec['type']) {
+                case 'headers':
+                    $parsed = self::parseHeaderLines($text);
+                    if ($parsed === null) {
+                        $errors[] = "「{$spec['label']}」格式不正确，每行应为 名称: 值";
+                        continue 2;
+                    }
+                    $config[$name] = $parsed;
+                    break;
+
+                case 'pairs':
+                    $parsed = self::parsePairLines($text);
+                    if ($parsed === null) {
+                        $errors[] = "「{$spec['label']}」格式不正确，每行应为 键=值";
+                        continue 2;
+                    }
+                    $config[$name] = $parsed;
+                    break;
+
+                case 'csv':
+                    $config[$name] = array_values(array_filter(array_map(
+                        'trim',
+                        preg_split('/[\s,]+/', $text) ?: []
+                    )));
+                    break;
+
+                default: // json
+                    $decoded = json_decode($text, true);
+                    if (!is_array($decoded)) {
+                        $errors[] = "「{$spec['label']}」必须是合法的 JSON 对象，当前内容无法解析";
+                        continue 2;
+                    }
+                    $config[$name] = $decoded;
+            }
+        }
+
+        return ['config' => $config, 'errors' => $errors];
+    }
+
+    /**
+     * 解析 `名称: 值` 多行文本。
+     * 含「没有冒号的行」时返回 null（表示输入有误），由调用方给出提示。
+     *
+     * @return array<string, string>|null
+     */
+    private static function parseHeaderLines(string $text): ?array
+    {
+        $result = [];
+
+        foreach (preg_split('/\r\n|\r|\n/', $text) ?: [] as $line) {
+            $line = trim($line);
+            if ($line === '') {
+                continue;
+            }
+
+            $pos = strpos($line, ':');
+            if ($pos === false) {
+                return null;
+            }
+
+            $name = trim(substr($line, 0, $pos));
+            if ($name === '') {
+                return null;
+            }
+
+            $result[$name] = trim(substr($line, $pos + 1));
+        }
+
+        return $result;
+    }
+
+    /**
+     * 解析 `键=值` 多行文本。
+     *
+     * @return array<string, string>|null
+     */
+    private static function parsePairLines(string $text): ?array
+    {
+        $result = [];
+
+        foreach (preg_split('/\r\n|\r|\n/', $text) ?: [] as $line) {
+            $line = trim($line);
+            if ($line === '') {
+                continue;
+            }
+
+            $pos = strpos($line, '=');
+            if ($pos === false) {
+                return null;
+            }
+
+            $key = trim(substr($line, 0, $pos));
+            if ($key === '') {
+                return null;
+            }
+
+            $result[$key] = trim(substr($line, $pos + 1));
+        }
+
+        return $result;
+    }
+
+    /**
+     * 把结构化配置还原成表单可编辑的文本（用于编辑页回显）。
+     *
+     * @param array<string, mixed> $config
+     * @return array<string, string> 字段名 => 文本值
+     */
+    public static function advFormText(array $config): array
+    {
+        $text = [];
+
+        foreach (self::ADV_FIELDS as $name => $spec) {
+            $value = $config[$name] ?? $spec['default'];
+
+            $text[$name] = match ($spec['type']) {
+                'headers' => implode("\n", array_map(
+                    static fn ($k, $v) => $k . ': ' . $v,
+                    array_keys((array) $value),
+                    array_values((array) $value)
+                )),
+                'pairs' => implode("\n", array_map(
+                    static fn ($k, $v) => $k . '=' . $v,
+                    array_keys((array) $value),
+                    array_values((array) $value)
+                )),
+                'csv' => implode(', ', (array) $value),
+                'json' => $value === [] ? '' : (string) json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                'int' => (string) (int) $value,
+                default => (string) $value,
+            };
+        }
+
+        return $text;
+    }
+
+    /**
+     * 模型名映射：把「对外统一模型名」翻译成「上游要求的真实模型名」。
+     *
+     * 例：对外都叫 `gpt-4o`，而某中转站要求写 `openai/gpt-4o`，
+     * 在 model_map 里配一行 `gpt-4o=openai/gpt-4o` 即可，调用方无感。
+     * 没配映射时原样返回，因此这个能力对未使用它的渠道零成本。
+     */
+    public static function upstreamModel(array $channel, string $model): string
+    {
+        $map = (array) (self::advConfig($channel)['model_map'] ?? []);
+
+        return isset($map[$model]) ? (string) $map[$model] : $model;
+    }
+
+    /**
+     * 构造一次上游请求的完整规格（URL / 请求头 / 请求体 / curl 选项）。
+     *
+     * 抽成独立方法的理由：**流式转发与测活必须用同一套构造逻辑**。
+     * 若各写一份，迟早会出现「测活能通、线上转发报 401」这类
+     * 极难定位的不一致 —— 鉴权头的拼法尤其容易写歪。
+     *
+     * 注意这里**不发起请求**，只产出规格，因此可以被未来的
+     * 非阻塞流式引擎直接复用（它需要的是规格，不是 curl 句柄）。
+     *
+     * @param array<string, mixed> $channel 渠道记录
+     * @param string $key    明文 Key（可为空，例如本地免鉴权模型）
+     * @param string $path   相对路径，如 /chat/completions
+     * @param array<string, mixed>|null $body 请求体；null 表示无请求体（GET）
+     * @return array{url:string, headers:array<int,string>, body:?string, connect_timeout:int, total_timeout:int, proxy:string}
+     */
+    public static function buildSpec(array $channel, string $key, string $path, ?array $body = null): array
+    {
+        $adv = self::advConfig($channel);
+
+        $baseUrl = rtrim((string) $channel['base_url'], '/');
+        $url = $baseUrl . $path;
+
+        // ── 附加查询参数 ──
+        // 用 http_build_query 而不是手工拼 &，以便正确处理需要转义的值
+        $extraQuery = (array) ($adv['extra_query'] ?? []);
+        if ($extraQuery !== []) {
+            $url .= (str_contains($url, '?') ? '&' : '?') . http_build_query($extraQuery);
+        }
+
+        // ── 鉴权 ──
+        $headers = ['Accept: application/json'];
+        $authType = (string) ($adv['auth_type'] ?? 'bearer');
+        $authName = trim((string) ($adv['auth_name'] ?? ''));
+        $authPrefix = (string) ($adv['auth_prefix'] ?? '');
+
+        if ($key !== '') {
+            switch ($authType) {
+                case 'bearer':
+                    $headers[] = 'Authorization: ' . $authPrefix . $key;
+                    break;
+
+                case 'header':
+                    $headers[] = ($authName !== '' ? $authName : 'api-key') . ': ' . $authPrefix . $key;
+                    break;
+
+                case 'query':
+                    $url .= (str_contains($url, '?') ? '&' : '?')
+                        . rawurlencode($authName !== '' ? $authName : 'api-key')
+                        . '=' . rawurlencode($key);
+                    break;
+
+                case 'none':
+                default:
+                    // 明确不带鉴权：本地自建模型、内网网关常见
+                    break;
+            }
+        }
+
+        // ── 附加请求头（放在鉴权之后，允许覆盖同名头）──
+        foreach ((array) ($adv['extra_headers'] ?? []) as $name => $value) {
+            $headers[] = $name . ': ' . $value;
+        }
+
+        // ── 请求体 ──
+        $encodedBody = null;
+
+        if ($body !== null) {
+            // 0) 剔除上游不接受的字段
+            foreach ((array) ($adv['strip_body'] ?? []) as $strip) {
+                unset($body[$strip]);
+            }
+
+            // 1) 合并附加参数。顺序很关键：先铺附加参数，再写业务参数 ——
+            //    这样业务参数（model/messages/stream）永远压过附加配置，
+            //    站长不可能用一个手填的 {"model":"x"} 把真实模型名顶掉。
+            $body = array_merge((array) ($adv['extra_body'] ?? []), $body);
+
+            // 2) 模型名映射
+            if (isset($body['model']) && is_string($body['model'])) {
+                $body['model'] = self::upstreamModel($channel, $body['model']);
+            }
+
+            $headers[] = 'Content-Type: application/json';
+            $encodedBody = (string) json_encode($body, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        }
+
+        // 超时：渠道级没配（0）就用全局默认，全局默认来自函数签名之外的调用方
+        $connect = (int) ($adv['connect_timeout'] ?? 0);
+        $total = (int) ($adv['total_timeout'] ?? 0);
+
+        return [
+            'url' => $url,
+            'headers' => $headers,
+            'body' => $encodedBody,
+            'connect_timeout' => $connect > 0 ? $connect : Settings::int('gateway.connect_timeout', 8),
+            'total_timeout' => $total > 0 ? $total : Settings::int('gateway.probe_timeout', 20),
+            'proxy' => trim((string) ($adv['proxy'] ?? '')),
+        ];
+    }
+
+    /**
+     * 按规格发起一次阻塞式 HTTP 请求。
+     *
+     * ⚠️ 与项目主线的「非阻塞流式转发」相反 —— 这里只服务于测活
+     * （站长手动点一次，可接受阻塞）。定时批量探测必须改成非阻塞实现。
+     *
+     * @param array{url:string, headers:array<int,string>, body:?string, connect_timeout:int, total_timeout:int, proxy:string} $spec
+     * @return array{code:int, body:string, error:string}
+     */
+    private static function send(array $spec): array
+    {
+        $ch = curl_init($spec['url']);
+
+        $options = [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CUSTOMREQUEST => $spec['body'] === null ? 'GET' : 'POST',
+            CURLOPT_HTTPHEADER => $spec['headers'],
+            CURLOPT_CONNECTTIMEOUT => $spec['connect_timeout'],
+            CURLOPT_TIMEOUT => $spec['total_timeout'],
+            CURLOPT_SSL_VERIFYPEER => true,
+        ];
+
+        if ($spec['body'] !== null) {
+            $options[CURLOPT_POSTFIELDS] = $spec['body'];
+        }
+
+        if ($spec['proxy'] !== '') {
+            $options[CURLOPT_PROXY] = $spec['proxy'];
+        }
+
+        curl_setopt_array($ch, $options);
+
+        $body = curl_exec($ch);
+        $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+        curl_close($ch);
+
+        return [
+            'code' => $code,
+            'body' => $body === false ? '' : (string) $body,
+            'error' => $error,
+        ];
     }
 }

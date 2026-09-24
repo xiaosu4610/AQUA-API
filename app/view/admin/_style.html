@@ -232,6 +232,31 @@
         font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12.5px;
     }
 
+    /* ── 折叠区（用于「高级配置」这类不必每次看的字段）────── */
+    /* 折叠而不隐藏：默认收起能保持主表单清爽，但高级功能仍然可发现，
+       不用去翻文档才知道有这些选项 */
+    details.adv {
+        margin: 0 0 20px; border: 1px solid var(--border);
+        border-radius: var(--radius); background: #fafcfe;
+    }
+    details.adv > summary {
+        display: flex; align-items: center; gap: 8px;
+        padding: 13px 16px; cursor: pointer;
+        font-size: 13.5px; font-weight: 600; list-style: none;
+    }
+    details.adv > summary::-webkit-details-marker { display: none; }
+    details.adv > summary .ico { color: var(--muted); }
+    details.adv > summary::after {
+        content: '展开'; margin-left: auto;
+        font-size: 12px; font-weight: 400; color: var(--accent-dark);
+    }
+    details.adv[open] > summary { border-bottom: 1px solid var(--border); }
+    details.adv[open] > summary::after { content: '收起'; }
+    details.adv .adv-body { padding: 18px 16px 2px; }
+    details.adv .field { margin-bottom: 16px; }
+    details.adv textarea { min-height: 84px; }
+    .adv-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 0 16px; }
+
     /* ── 小工具 ─────────────────────────────────────────── */
     .between { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
     .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }

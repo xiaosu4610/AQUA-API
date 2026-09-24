@@ -32,10 +32,12 @@ declare(strict_types=1);
 
 namespace app\common;
 
+use Throwable;
+
 final class Schema
 {
     /** 当前期望的表结构版本。新增迁移时递增。 */
-    public const VERSION = 3;
+    public const VERSION = 5;
 
     /**
      * 确保表结构存在且为最新版本。
@@ -62,6 +64,14 @@ final class Schema
 
         if ($current < 3) {
             self::createV3();
+        }
+
+        if ($current < 4) {
+            self::createV4();
+        }
+
+        if ($current < 5) {
+            self::createV5();
         }
 
         Settings::put('schema_version', (string) self::VERSION);
@@ -216,6 +226,98 @@ final class Schema
                 CONSTRAINT uq_channel_key UNIQUE (channel_id, key_hash)
             )
         SQL);
+    }
+
+    /**
+     * v4：渠道级「高级配置」
+     *
+     * 为什么需要这一列：
+     *   不同上游的差异远不止「地址不同」—— 鉴权方式（Bearer / api-key 头 /
+     *   查询参数）、额外的查询参数（Azure 的 api-version）、额外的请求体参数、
+     *   超时、代理、模型名映射，各家都不一样。
+     *   如果为每一种差异都新增一个数据库列，列会无限膨胀；
+     *   而如果写死在代码里，加一个新上游就要改代码 —— 这正是本项目
+     *   要避免的「接口支持代码化」。
+     *
+     *   因此：**差异收敛成一个 JSON 列**。
+     *   字段清单与默认值声明在 Channel::ADV_FIELDS（单一事实来源），
+     *   表单据此渲染、请求构造据此取值，加字段只改那一处。
+     *
+     * 为什么允许 JSON 而不是更严格的结构：
+     *   这是「用户可自由扩展」的逃生口。将来遇到一个谁都没想到的上游怪癖，
+     *   站长可以自己填附加请求头/参数解决，不需要等我们发版。
+     *
+     * 注意：这里存的是**配置**，不是凭据 —— API Key 仍然单独加密存在
+     * api_key_enc 里，绝不混进这一列。
+     */
+    private static function createV4(): void
+    {
+        self::addColumnIfMissing('channels', 'config', 'TEXT NULL');
+    }
+
+    /**
+     * v5：密钥池的「冷却恢复」时间点
+     *
+     * 自治愈需要区分两种停用，而这两者原本都用 status=0 表示、分不出来：
+     *
+     *   · **永久停用**（凭据确实失效，401/403）—— 等再久也不会变好，
+     *     只能人工换 Key。disabled_until 留 NULL 表示这一类。
+     *   · **冷却停用**（连续瞬时失败，如上游抖动）—— 上游恢复后这把 Key
+     *     其实是好的。设一个到期时间，到点自动放出来再试一次。
+     *
+     * 不加这列的话，站长每次上游抖一下就得手工把几十把 Key 一个个点回来 ——
+     * 而这本可以是自动的。
+     */
+    private static function createV5(): void
+    {
+        self::addColumnIfMissing('channel_keys', 'disabled_until', 'INTEGER NULL');
+    }
+
+    /**
+     * 给已有表加一列（幂等）。
+     *
+     * 为什么要先探测列是否存在：
+     *   迁移要求可重复执行，而 SQLite / MySQL 都**没有**
+     *   `ADD COLUMN IF NOT EXISTS` 这个通用语法。
+     *   直接 ALTER 在列已存在时会报错，整段迁移就断了。
+     *
+     * 探测方式按方言分流：
+     *   · SQLite  —— PRAGMA table_info
+     *   · MySQL   —— information_schema.columns
+     * 若该表压根不存在（理论上不会：createV2 已先于本步执行），
+     * 则跳过 —— 宁可少加一列，也不要让整个启动流程在这里抛异常。
+     */
+    private static function addColumnIfMissing(string $table, string $column, string $definition): void
+    {
+        $pdo = Db::pdo();
+
+        try {
+            if (Db::isSqlite()) {
+                $exists = false;
+                foreach ($pdo->query("PRAGMA table_info({$table})") as $row) {
+                    if (($row['name'] ?? '') === $column) {
+                        $exists = true;
+                        break;
+                    }
+                }
+            } else {
+                $row = Db::selectOne(
+                    'SELECT COUNT(*) AS c FROM information_schema.columns
+                     WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?',
+                    [$table, $column]
+                );
+                $exists = ((int) ($row['c'] ?? 0)) > 0;
+            }
+
+            if ($exists) {
+                return;
+            }
+        } catch (Throwable) {
+            // 表不存在（全新库）—— 建表语句里已含该列，无需补
+            return;
+        }
+
+        $pdo->exec("ALTER TABLE {$table} ADD COLUMN {$column} {$definition}");
     }
 
     /**
