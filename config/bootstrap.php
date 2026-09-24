@@ -1,17 +1,18 @@
 <?php
 /**
- * This file is part of webman.
+ * 启动引导
  *
- * Licensed under The MIT License
- * For full copyright and license information, please see the MIT-LICENSE.txt
- * Redistributions of files must retain the above copyright notice.
- *
- * @author    walkor<walkor@workerman.net>
- * @copyright walkor<walkor@workerman.net>
- * @link      http://www.workerman.net/
- * @license   http://www.opensource.org/licenses/mit-license.php MIT License
+ * 这里列出的类会在 Webman 启动时（每个工作进程）各执行一次 start()，
+ * 用于做「服务开始接受请求之前必须完成」的准备工作。
  */
 
 return [
+    // 会话支持。后台登录依赖它，必须保留。
     support\bootstrap\Session::class,
+
+    // 数据库初始化：建表 + 首次创建管理员密码。
+    // 放在引导阶段执行，是为了让「第一次访问后台」时表已经就绪，
+    // 而不是让第一个请求去承担建表的工作（那样并发首次访问会互相打架）。
+    // 内部实现是幂等的，多进程重复执行无副作用。
+    app\bootstrap\InitDb::class,
 ];

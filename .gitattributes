@@ -1,0 +1,23 @@
+# 换行符策略
+#
+# 本项目主要部署目标是 Linux（Windows 只作辅助），因此仓库内统一使用 LF。
+# 如果不做这个约束，在 Windows 上 clone 后工作区会变成 CRLF，
+# 再打包上传到 Linux 时，.sh 之类的脚本会因 `\r` 而直接执行失败 ——
+# 这类问题的报错信息通常很隐晦（形如 "no such file or directory" 但其实文件存在）。
+* text=auto eol=lf
+
+# Windows 批处理必须用 CRLF，否则 cmd 解析会出错
+*.bat text eol=crlf
+
+# 二进制文件不做任何换行转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.phar binary
+*.sqlite binary
+*.gz binary
+*.zip binary
