@@ -35,6 +35,12 @@ class HomeController
             // 站点模式用中文展示，便于访客理解这个站点是商业站还是公益站
             'modeLabel' => $mode === 'public_welfare' ? '公益站' : '商业站',
             'isWelfare' => $mode === 'public_welfare',
+            // 以下四项都可在后台配置。简介留空时由模板回落到内置文案，
+            // 而不是在这里拼一段默认值 —— 默认文案属于展示层
+            'description' => trim((string) Settings::get('site.description', '')),
+            'announcement' => trim((string) Settings::get('site.announcement', '')),
+            'icp' => trim((string) Settings::get('site.icp', '')),
+            'footer' => trim((string) Settings::get('site.footer', '')),
         ], '');
     }
 }

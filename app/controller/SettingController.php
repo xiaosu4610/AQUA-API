@@ -42,6 +42,24 @@ class SettingController
         'none' => '未配置',
     ];
 
+    /**
+     * 分组的中文名与一句话说明。
+     *
+     * 分组由配置键的「点号前缀」决定（site.xxx 属于 site 组），
+     * 因此新增配置项只要放进 config/settings.php 的合适分组，
+     * 这里就会自动归类，不需要改代码。
+     *
+     * 未在此登记的前缀会以「其他」呈现 —— 这是刻意留的口子：
+     * 手工写进数据库的自定义配置项也能被看到，而不是消失在页面上。
+     */
+    private const GROUP_LABELS = [
+        'site' => ['label' => '站点', 'hint' => '站点名称、模式、公告、备案号等对外展示信息'],
+        'gateway' => ['label' => '网关', 'hint' => '转发行为：超时分层、重试、SSE 心跳'],
+        'key_pool' => ['label' => '密钥池', 'hint' => '多 Key 轮换的限流与失效治理策略'],
+        'security' => ['label' => '安全', 'hint' => '后台登录防爆破与登录态有效期'],
+        'session' => ['label' => '会话', 'hint' => '会话 Cookie 的安全属性'],
+    ];
+
     /** Session 中存放提示信息的键 */
     private const FLASH_NOTICE = 'settings_notice';
     private const FLASH_TYPE = 'settings_notice_type';
@@ -55,7 +73,7 @@ class SettingController
             'csrf'       => Csrf::token(),
             'siteName'   => Settings::siteName(),
             'siteMode'   => Settings::siteModeLabel(),
-            'items'      => $this->buildItems(),
+            'groups'     => $this->buildGroups(),
             // pull 会读取并删除，保证提示只显示一次
             'notice'     => (string) session()->pull(self::FLASH_NOTICE, ''),
             'noticeType' => (string) session()->pull(self::FLASH_TYPE, 'info'),
@@ -136,22 +154,38 @@ class SettingController
     }
 
     /**
-     * 构造配置列表，供模板渲染。
+     * 按分组构造配置列表，供模板渲染。
      *
      * 每一项都带上：当前生效值、来源、类型、能否恢复默认。
      * 模板据此决定用复选框还是输入框、以及要不要显示「恢复默认」按钮。
      *
-     * @return array<int, array{key:string, display:string, raw:mixed, type:string, source:string, sourceLabel:string, canReset:bool}>
+     * 分组的意义在于**可发现性**：配置项会越来越多，
+     * 一长条平铺的表格会让人找不到东西，也让「这个项目到底能配什么」变得不可知。
+     *
+     * @return array<int, array{key:string, label:string, hint:string, items:array<int, array{key:string, display:string, raw:mixed, type:string, source:string, sourceLabel:string, canReset:bool}>}>
      */
-    private function buildItems(): array
+    private function buildGroups(): array
     {
-        $items = [];
+        $groups = [];
 
         foreach (Settings::keys() as $key) {
             $raw = Settings::get($key);
             $source = Settings::source($key);
 
-            $items[] = [
+            // 分组名 = 键的第一个点号前缀；没有点号则归入「其他」
+            $prefix = str_contains($key, '.') ? substr($key, 0, strpos($key, '.')) : '_other';
+
+            if (!isset($groups[$prefix])) {
+                $meta = self::GROUP_LABELS[$prefix] ?? ['label' => '其他', 'hint' => '未归类的配置项'];
+                $groups[$prefix] = [
+                    'key' => $prefix,
+                    'label' => $meta['label'],
+                    'hint' => $meta['hint'],
+                    'items' => [],
+                ];
+            }
+
+            $groups[$prefix]['items'][] = [
                 'key'         => $key,
                 'raw'         => $raw,
                 'display'     => $this->stringify($raw),
@@ -163,7 +197,7 @@ class SettingController
             ];
         }
 
-        return $items;
+        return array_values($groups);
     }
 
     /**

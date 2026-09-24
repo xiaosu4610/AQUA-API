@@ -45,11 +45,11 @@ class AdminController
     private const DASHBOARD_CONFIG_KEYS = [
         'site.name',
         'site.mode',
-        'nim.base_url',
-        'nim.rpm_limit',
-        'nim.ttft_timeout',
-        'nim.idle_timeout',
-        'nim.total_timeout',
+        'gateway.ttft_timeout',
+        'gateway.idle_timeout',
+        'gateway.total_timeout',
+        'gateway.max_retries',
+        'key_pool.default_rpm',
         'session.secure',
     ];
 
@@ -107,9 +107,10 @@ class AdminController
         }
 
         // ③ 登录成功，只往 Session 写一个标记。
-        //    额外存一个时间戳，方便将来做「闲置超时自动登出」。
+        //    额外存一个时间戳，中间件据此判定「登录态是否已超时」
+        //    （超时分钟数可在配置页调整）。
         session()->set(AdminAuth::SESSION_KEY, 1);
-        session()->set('admin_login_at', time());
+        session()->set(AdminAuth::LOGIN_AT_KEY, time());
 
         return response('', 302, ['Location' => '/admin']);
     }
@@ -240,7 +241,11 @@ class AdminController
     /**
      * 组装仪表盘要展示的配置清单（含生效值与来源）。
      *
-     * @return array<int, array{key: string, value: string, source: string}>
+     * source 与 sourceLabel 都要给：前者是机器可读的类别（'database' / 'env' /
+     * 'default'），模板用它决定徽标配色；后者是给人看的中文。
+     * 只给中文的话，模板就得拿中文字符串去匹配配色，改一个字就配色失效。
+     *
+     * @return array<int, array{key: string, value: string, source: string, sourceLabel: string}>
      */
     private function dashboardConfigs(): array
     {
@@ -252,10 +257,10 @@ class AdminController
             $rows[] = [
                 'key'    => $key,
                 'value'  => $this->stringify(Settings::get($key)),
-                'source' => self::SOURCE_LABELS[$source] ?? $source,
+                'source' => $source,
                 // 只有来自数据库的值才允许在后台直接改；
                 // 环境变量与默认值需要改文件，这里标出来避免站长白找
-                'editable' => $source === 'database',
+                'sourceLabel' => self::SOURCE_LABELS[$source] ?? $source,
             ];
         }
 

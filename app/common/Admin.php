@@ -26,11 +26,29 @@ use support\Log;
 
 final class Admin
 {
-    /** 连续失败多少次后锁定 */
-    public const MAX_FAILED_ATTEMPTS = 5;
+    /**
+     * 连续失败多少次后锁定。
+     *
+     * 不再是写死的常量，而是可配置项 —— 站长可以在后台调。
+     * 但**读取时机是「每次判定时」而不是「类加载时」**，
+     * 因为常驻内存下类只会加载一次，写成常量就永远读不到后台的修改。
+     */
+    private static function maxFailedAttempts(): int
+    {
+        $value = Settings::int('security.login_max_attempts', 5);
 
-    /** 锁定时长（秒） */
-    public const LOCK_SECONDS = 900; // 15 分钟
+        // 夹到合理区间：0 会让「锁定」彻底失效（等于关掉防爆破），
+        // 过大的值又等于没有保护，都不是站长真正想要的
+        return max(1, min(100, $value));
+    }
+
+    /** 锁定时长（秒），同样来自可配置项 */
+    private static function lockSeconds(): int
+    {
+        $minutes = Settings::int('security.login_lock_minutes', 15);
+
+        return max(1, min(10080, $minutes)) * 60;
+    }
 
     /**
      * 读取管理员记录（不存在返回 null）。
@@ -150,8 +168,9 @@ final class Admin
         $failed = (int) $admin['failed_attempts'] + 1;
         $now = time();
 
-        if ($failed >= self::MAX_FAILED_ATTEMPTS) {
-            $lockUntil = $now + self::LOCK_SECONDS;
+        if ($failed >= self::maxFailedAttempts()) {
+            $lockSeconds = self::lockSeconds();
+            $lockUntil = $now + $lockSeconds;
             Db::execute(
                 'UPDATE admins SET failed_attempts = ?, locked_until = ?, updated_at = ? WHERE id = 1',
                 [$failed, $lockUntil, $now]
@@ -162,7 +181,7 @@ final class Admin
             Log::warning(sprintf(
                 '后台登录连续失败 %d 次，已锁定 %d 分钟，来源 IP：%s',
                 $failed,
-                (int) (self::LOCK_SECONDS / 60),
+                (int) ($lockSeconds / 60),
                 $ip
             ));
 

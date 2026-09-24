@@ -21,10 +21,11 @@
  * @var int    $channelId
  * @var string $channelName
  * @var int    $defaultRpm
- * @var array{total:int,enabled:int,disabled:int,exhausted:int} $stats
+ * @var array{total:int,enabled:int,disabled:int,exhausted:int,cooling:int} $stats
  * @var array<int, array{
- *     id:int, masked:string, enabled:bool, rpmLimit:int, used:int,
- *     inWindow:bool, lastUsedAt:string, failCount:int, lastError:string
+ *     id:int, masked:string, enabled:bool, cooling:bool, coolingText:string,
+ *     rpmLimit:int, used:int, inWindow:bool, lastUsedAt:string,
+ *     failCount:int, lastError:string
  * }> $keys
  * @var string $notice
  * @var string $noticeType
@@ -75,6 +76,11 @@ $window = (int) (floor(time() / 60) * 60);
             <div class="stat"><div class="n"><?= (int) $stats['total'] ?></div><div class="l">密钥总数</div></div>
             <div class="stat ok"><div class="n"><?= (int) $stats['enabled'] ?></div><div class="l">可用</div></div>
             <div class="stat danger"><div class="n"><?= (int) $stats['disabled'] ?></div><div class="l">已停用</div></div>
+            <?php /* 冷却中是「已停用」的子集。单独展示是因为处置动作完全不同：
+                     冷却会自动恢复，不需要（也不应该）人工干预 */ ?>
+            <?php if ((int) $stats['cooling'] > 0): ?>
+                <div class="stat"><div class="n" style="color:var(--warn)"><?= (int) $stats['cooling'] ?></div><div class="l">其中冷却中</div></div>
+            <?php endif; ?>
             <div class="stat accent">
                 <div class="n"><?= (int) $stats['enabled'] * $defaultRpm ?></div>
                 <div class="l">聚合限额（次/分钟）</div>
@@ -84,7 +90,9 @@ $window = (int) (floor(time() / 60) * 60);
 
         <p class="note">
             当前时间窗口：<code><?= date('H:i', $window) ?></code> ~ <code><?= date('H:i', $window + 59) ?></code>
-            （窗口「已用」次数会在下一分钟自动归零；也可用下方「重置限流计数」立即清零）
+            （窗口「已用」次数会在下一分钟自动归零；也可用下方「重置限流计数」立即清零）<br>
+            上游抖动导致的连续失败达到阈值后，该 Key 会被<b>临时冷却</b>并自动恢复；
+            只有确认凭据失效（401/403）才会<b>永久停用</b>，需要人工处理。
         </p>
     </section>
 
@@ -163,6 +171,8 @@ $window = (int) (floor(time() / 60) * 60);
                                 <td>
                                     <?php if ($k['enabled']): ?>
                                         <span class="pill ok">可用</span>
+                                    <?php elseif ($k['cooling']): ?>
+                                        <span class="pill warn" title="<?= htmlspecialchars($k['coolingText'], ENT_QUOTES, 'UTF-8') ?>">冷却中</span>
                                     <?php else: ?>
                                         <span class="pill danger">停用</span>
                                     <?php endif; ?>

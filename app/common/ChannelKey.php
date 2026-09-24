@@ -130,6 +130,12 @@ final class ChannelKey
     {
         $window = self::currentWindow();
 
+        // 先把「冷却到期」的 Key 放出来。
+        // 放在取用之前而不是起一个定时任务，是因为定时任务在多进程下
+        // 要么重复执行、要么需要额外的调度机制；而这里反正是要查库的，
+        // 顺手一条 UPDATE 就完成了自治愈，成本几乎为零。
+        self::reviveCooled($channelId);
+
         $candidates = Db::select(
             'SELECT * FROM channel_keys
              WHERE channel_id = ?
@@ -205,31 +211,99 @@ final class ChannelKey
     }
 
     /**
-     * 记录一次失败。
+     * 记录一次失败，并按配置决定是否停用这把 Key。
      *
-     * @param bool $permanent 是否为「永久性失败」（如 401/403：Key 本身无效）。
-     *        只有永久性失败才停用 Key。
-     *        ⚠️ 这条区分非常重要：若把 429（限流）、5xx、网络抖动也当作永久失败，
-     *        上游一次故障就会把几百把 Key 全部停用，而它们其实都是好的 ——
-     *        这正是项目文档里「瞬时故障禁止进 retired」那条原则的具体落实。
+     * 两条不同的处置路径，对应两类完全不同的故障：
+     *
+     *   1. **永久性失败**（401/403：Key 本身无效/无权限）
+     *      → **立即停用**，且不设恢复时间。等再久也不会变好，只能人工换 Key。
+     *      不设阈值的理由：这是确定性结论，不是概率问题。
+     *
+     *   2. **瞬时失败**（429 限流、5xx、网络抖动）
+     *      → 只累加计数；连续失败达到 `key_pool.fail_threshold` 且开启了
+     *        `key_pool.auto_disable` 时，停用 `key_pool.cooldown_seconds` 秒。
+     *        到期由 reviveCooled() 自动放出来再试。
+     *
+     * ⚠️ 把第 2 类当成第 1 类处理是本项目明确禁止的做法：
+     *    上游抖动一次就会把几百把本来好好的 Key 全部永久停用，
+     *    而站长完全不知道发生了什么。这条原则写进了项目文档。
+     *
+     * @param bool $permanent 是否为「永久性失败」（如 401/403：Key 本身无效）
      */
     public static function markFailure(int $id, string $error, bool $permanent): void
     {
         $now = time();
+        $message = mb_substr($error, 0, 450);
 
         if ($permanent) {
             Db::execute(
-                'UPDATE channel_keys SET fail_count = fail_count + 1, last_error = ?, status = ?, updated_at = ? WHERE id = ?',
-                [mb_substr($error, 0, 450), self::STATUS_DISABLED, $now, $id]
+                'UPDATE channel_keys
+                 SET fail_count = fail_count + 1, last_error = ?, status = ?, disabled_until = NULL, updated_at = ?
+                 WHERE id = ?',
+                [$message, self::STATUS_DISABLED, $now, $id]
             );
 
             return;
         }
 
+        // 瞬时失败：先累加计数
         Db::execute(
             'UPDATE channel_keys SET fail_count = fail_count + 1, last_error = ?, updated_at = ? WHERE id = ?',
-            [mb_substr($error, 0, 450), $now, $id]
+            [$message, $now, $id]
         );
+
+        if (!Settings::bool('key_pool.auto_disable', true)) {
+            return;
+        }
+
+        $threshold = max(1, Settings::int('key_pool.fail_threshold', 5));
+
+        // 用带条件的 UPDATE 一次性完成「判断是否达到阈值 + 停用」，
+        // 而不是先 SELECT 再判断再 UPDATE ——
+        // 后者在并发下会漏掉或重复处置（与 tryAcquire 同样的原子性理由）
+        $cooldown = max(0, Settings::int('key_pool.cooldown_seconds', 600));
+
+        Db::execute(
+            'UPDATE channel_keys
+             SET status = ?, disabled_until = ?, updated_at = ?
+             WHERE id = ? AND status = ? AND fail_count >= ?',
+            [
+                self::STATUS_DISABLED,
+                $cooldown > 0 ? $now + $cooldown : null,
+                $now,
+                $id,
+                self::STATUS_ENABLED,
+                $threshold,
+            ]
+        );
+    }
+
+    /**
+     * 把「冷却到期」的 Key 重新启用。
+     *
+     * 只碰 disabled_until 非空且已到期的行：
+     *   · 永久停用的 Key（disabled_until 为 NULL）不会被误放出来；
+     *   · 站长手工停用的 Key（disabled_until 也是 NULL）同样不受影响。
+     *
+     * 启用时清零 fail_count，让它重新获得完整的失败预算 ——
+     * 否则一把老 Key 刚放出来就因为历史计数再次被停用，冷却就成了摆设。
+     */
+    public static function reviveCooled(?int $channelId = null): int
+    {
+        $now = time();
+
+        $sql = 'UPDATE channel_keys
+                SET status = ?, disabled_until = NULL, fail_count = 0, updated_at = ?
+                WHERE status = ? AND disabled_until IS NOT NULL AND disabled_until <= ?';
+
+        $bindings = [self::STATUS_ENABLED, $now, self::STATUS_DISABLED, $now];
+
+        if ($channelId !== null) {
+            $sql .= ' AND channel_id = ?';
+            $bindings[] = $channelId;
+        }
+
+        return Db::execute($sql, $bindings);
     }
 
     /**
@@ -248,13 +322,13 @@ final class ChannelKey
     /**
      * 单个渠道的密钥池统计。
      *
-     * @return array{total:int, enabled:int, disabled:int, exhausted:int}
+     * @return array{total:int, enabled:int, disabled:int, exhausted:int, cooling:int}
      */
     public static function statsForChannel(int $channelId): array
     {
         $stats = self::statsForChannels()[$channelId] ?? null;
 
-        return $stats ?? ['total' => 0, 'enabled' => 0, 'disabled' => 0, 'exhausted' => 0];
+        return $stats ?? ['total' => 0, 'enabled' => 0, 'disabled' => 0, 'exhausted' => 0, 'cooling' => 0];
     }
 
     /**
@@ -263,7 +337,11 @@ final class ChannelKey
      * 做成批量查询而不是「每个渠道查一次」，是因为渠道数量可能不少，
      * 逐个查会产生 N+1 查询 —— 列表页一刷新就是几百次数据库往返。
      *
-     * @return array<int, array{total:int, enabled:int, disabled:int, exhausted:int}>
+     * disabled 与 cooling 的关系：cooling 是 disabled 的子集。
+     * 分开统计是为了让站长能分辨「这把 Key 是真的坏了」还是
+     * 「只是被冷却了、过一会儿会自动回来」—— 两者的处置动作完全不同。
+     *
+     * @return array<int, array{total:int, enabled:int, disabled:int, exhausted:int, cooling:int}>
      */
     public static function statsForChannels(): array
     {
@@ -274,6 +352,7 @@ final class ChannelKey
                     COUNT(*) AS total,
                     SUM(CASE WHEN status = 1 THEN 1 ELSE 0 END) AS enabled,
                     SUM(CASE WHEN status = 0 THEN 1 ELSE 0 END) AS disabled,
+                    SUM(CASE WHEN status = 0 AND disabled_until IS NOT NULL THEN 1 ELSE 0 END) AS cooling,
                     SUM(CASE WHEN status = 1 AND window_start = ? AND rpm_limit > 0 AND used_requests >= rpm_limit
                              THEN 1 ELSE 0 END) AS exhausted
              FROM channel_keys
@@ -287,6 +366,7 @@ final class ChannelKey
                 'total' => (int) $row['total'],
                 'enabled' => (int) $row['enabled'],
                 'disabled' => (int) $row['disabled'],
+                'cooling' => (int) $row['cooling'],
                 'exhausted' => (int) $row['exhausted'],
             ];
         }
@@ -306,11 +386,18 @@ final class ChannelKey
 
     /**
      * 启用/停用某把密钥。
+     *
+     * 两个细节：
+     *   · **启用时清掉 disabled_until**。这是站长的明确意志，
+     *     必须压过自动冷却 —— 否则会出现「刚点启用，冷却时间一到又被按回去」
+     *     的诡异现象。
+     *   · **停用时也清掉 disabled_until**，让它变成「永久停用」，
+     *     不会被 reviveCooled() 自动放出来。
      */
     public static function setStatus(int $id, int $status): void
     {
         Db::execute(
-            'UPDATE channel_keys SET status = ?, updated_at = ? WHERE id = ?',
+            'UPDATE channel_keys SET status = ?, disabled_until = NULL, updated_at = ? WHERE id = ?',
             [$status, time(), $id]
         );
     }
