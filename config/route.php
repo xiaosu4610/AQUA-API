@@ -1,21 +1,27 @@
 <?php
 /**
- * This file is part of webman.
+ * 路由定义
  *
- * Licensed under The MIT License
- * For full copyright and license information, please see the MIT-LICENSE.txt
- * Redistributions of files must retain the above copyright notice.
+ * 本项目的路由策略：**全部显式声明**。
  *
- * @author    walkor<walkor@workerman.net>
- * @copyright walkor<walkor@workerman.net>
- * @link      http://www.workerman.net/
- * @license   http://www.opensource.org/licenses/mit-license.php MIT License
+ * 注意最后一行关闭了 Webman 的「控制器自动路由」。这是刻意的安全选择：
+ * 自动路由会把 app/controller 下的每个公开方法都映射成一个可访问路径，
+ * 一旦某个内部方法忘了加权限校验，就会直接暴露在公网。
+ * 显式声明路由可以彻底避免这类事故，代价只是多敲一行代码。
  */
 
+use app\controller\HealthController;
 use Webman\Route;
 
+// ── 探活 ────────────────────────────────────────────────
+// 不做鉴权，供运维 / 负载均衡 / 监控调用
+Route::get('/healthz', [HealthController::class, 'index']);
 
+// ── 对外的 OpenAI 兼容接口（/v1/*）──────────────────────
+// 待实现
 
+// ── 管理后台接口（/api/*）───────────────────────────────
+// 待实现
 
-
-
+// 关闭控制器自动路由。必须放在所有路由注册之后。
+Route::disableDefaultRoute();

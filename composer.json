@@ -17,8 +17,9 @@
         "ext-mbstring": "*",
         "ext-openssl": "*",
         "ext-pdo": "*",
-        "workerman/webman-framework": "^2.1",
-        "monolog/monolog": "^2.0"
+        "monolog/monolog": "^2.0",
+        "vlucas/phpdotenv": "^5.6",
+        "workerman/webman-framework": "^2.1"
     },
     "suggest": {
         "ext-event": "并发连接数大于 1024 时建议安装，以获得 epoll 支持",
