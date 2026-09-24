@@ -126,6 +126,9 @@ final class Settings
                 ?? (bool) $value,
             // 整数：非数字时回落到默认值，避免写入脏数据后整个配置读不出来
             is_int($default) => is_numeric($value) ? (int) $value : $default,
+            // 浮点：倍率这类天然带小数的配置。**不能按整数处理** ——
+            // 否则 1.5 这种倍率会被截成 1，价格算错且极难发现
+            is_float($default) => is_numeric($value) ? (float) $value : $default,
             // 字符串
             default => is_scalar($value) ? (string) $value : $value,
         };
@@ -139,6 +142,16 @@ final class Settings
         $value = self::get($key, $default);
 
         return is_numeric($value) ? (int) $value : $default;
+    }
+
+    /**
+     * 读取浮点配置（倍率、系数这类）。
+     */
+    public static function float(string $key, float $default = 0.0): float
+    {
+        $value = self::get($key, $default);
+
+        return is_numeric($value) ? (float) $value : $default;
     }
 
     /**

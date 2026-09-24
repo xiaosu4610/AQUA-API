@@ -1,0 +1,315 @@
+<?php
+/**
+ * 后台 · 模型定价 新增 / 编辑表单
+ *
+ * 表单会根据「计费模式」动态显示相关的价格字段 —— 因为不同模式
+ * 该填的字段完全不同：按 Token 要填输入/输出单价，按次要填每次单价，
+ * 订阅与免费则根本不该填上游成本。
+ *
+ * 把「哪个模式显示哪些字段」放在前端只是体验优化，
+ * **后端 Pricing::quote() 才是唯一权威**：它不看表单调了什么，
+ * 只按 billing_mode 决定用哪些字段算钱。前端藏起来只是少让人填错。
+ *
+ * @var string $csrf
+ * @var string $siteName
+ * @var string $siteMode
+ * @var bool   $isEdit
+ * @var int    $id
+ * @var string $model
+ * @var string $billingMode
+ * @var string $upstreamKind
+ * @var string $upstreamInput
+ * @var string $upstreamOutput
+ * @var string $upstreamCall
+ * @var string $downstreamInput
+ * @var string $downstreamOutput
+ * @var string $downstreamCall
+ * @var int    $priceUnit
+ * @var string $note
+ * @var bool   $enabled
+ * @var array<string, array{label:string, hint:string}> $modes
+ * @var array<string, array{label:string, hint:string}> $kinds
+ * @var string $currency
+ * @var float  $defaultMultiplier
+ */
+?>
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title><?= htmlspecialchars((string) $siteName, ENT_QUOTES, 'UTF-8') ?> · <?= $isEdit ? '编辑定价' : '新增定价' ?></title>
+    <?php include __DIR__ . '/_style.html'; ?>
+</head>
+<body>
+<div class="wrap">
+    <?php $active = 'pricing'; include __DIR__ . '/_header.html'; ?>
+
+    <section style="max-width:860px">
+        <h2><?= icon('coin', 17) ?><?= $isEdit ? '编辑定价' : '新增定价' ?></h2>
+
+        <form method="post" action="/admin/pricing/save">
+            <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
+            <input type="hidden" name="id" value="<?= $id ?>">
+
+            <div class="two-col">
+                <div class="field">
+                    <div class="lbl">模型名（必须与请求里的模型名完全一致）</div>
+                    <input type="text" name="model" required maxlength="191"
+                           placeholder="例如 gpt-4o-mini"
+                           value="<?= htmlspecialchars($model, ENT_QUOTES, 'UTF-8') ?>">
+                    <div class="tip">
+                        上游若要求带厂商前缀（如 <code>openai/gpt-4o</code>），
+                        应在渠道高级配置的「模型名映射」里对齐，这里始终填对外统一的名字
+                    </div>
+                </div>
+
+                <div class="field">
+                    <div class="lbl">计费模式</div>
+                    <select name="billing_mode" id="mode-select">
+                        <?php foreach ($modes as $key => $meta): ?>
+                            <option value="<?= htmlspecialchars($key, ENT_QUOTES, 'UTF-8') ?>"
+                                    data-hint="<?= htmlspecialchars($meta['hint'], ENT_QUOTES, 'UTF-8') ?>"
+                                <?= $billingMode === $key ? 'selected' : '' ?>>
+                                <?= htmlspecialchars($meta['label'], ENT_QUOTES, 'UTF-8') ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <div class="tip" id="mode-hint"></div>
+                </div>
+            </div>
+
+            <div class="two-col">
+                <div class="field">
+                    <div class="lbl">上游种类（仅用于说明成本性质）</div>
+                    <select name="upstream_kind" id="kind-select">
+                        <?php foreach ($kinds as $key => $meta): ?>
+                            <option value="<?= htmlspecialchars($key, ENT_QUOTES, 'UTF-8') ?>"
+                                    data-hint="<?= htmlspecialchars($meta['hint'], ENT_QUOTES, 'UTF-8') ?>"
+                                <?= $upstreamKind === $key ? 'selected' : '' ?>>
+                                <?= htmlspecialchars($meta['label'], ENT_QUOTES, 'UTF-8') ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <div class="tip" id="kind-hint"></div>
+                </div>
+
+                <div class="field">
+                    <div class="lbl">计价单位（每多少 token 计一次价）</div>
+                    <input type="number" name="price_unit" id="unit-input" min="1"
+                           value="<?= (int) $priceUnit ?>">
+                    <div class="tip">
+                        官方报价通常是「每百万 token」，因此填 <code>1000000</code>；
+                        也有按「每千 token」报价的，填 <code>1000</code> 即可
+                    </div>
+                </div>
+            </div>
+
+            <hr class="sep">
+
+            <h2><?= icon('channels', 17) ?>上游成本（我们付给上游的钱，单位：<?= htmlspecialchars((string) $currency, ENT_QUOTES, 'UTF-8') ?>）</h2>
+
+            <div class="two-col" data-group="upstream-token">
+                <div class="field">
+                    <div class="lbl">输入单价</div>
+                    <input type="text" name="upstream_input_price" class="price-input" data-role="up-in"
+                           value="<?= htmlspecialchars($upstreamInput, ENT_QUOTES, 'UTF-8') ?>">
+                </div>
+                <div class="field">
+                    <div class="lbl">输出单价</div>
+                    <input type="text" name="upstream_output_price" class="price-input" data-role="up-out"
+                           value="<?= htmlspecialchars($upstreamOutput, ENT_QUOTES, 'UTF-8') ?>">
+                </div>
+            </div>
+
+            <div class="field" data-group="upstream-call" style="max-width:280px">
+                <div class="lbl">每次请求单价</div>
+                <input type="text" name="upstream_call_price" class="price-input" data-role="up-call"
+                       value="<?= htmlspecialchars($upstreamCall, ENT_QUOTES, 'UTF-8') ?>">
+            </div>
+
+            <p class="note" data-group="upstream-none" style="display:none;margin-top:0">
+                该计费模式下上游的<b>边际成本为 0</b>（订阅已付 / 免费额度），因此不需要填上游单价。
+                固定月费属于运营支出，不会被摊到单次请求上 —— 否则「本次成本」会随请求量跳动，无法解读。
+            </p>
+
+            <hr class="sep">
+
+            <h2><?= icon('user', 17) ?>下游售价（向用户收的钱）</h2>
+            <p class="tip" style="margin:-8px 0 14px">
+                <b>全部留 0 表示「按上游成本 × 倍率」</b>（当前倍率
+                <code><?= number_format((float) $defaultMultiplier, 4, '.', '') ?></code>，
+                可在<a href="/admin/settings">配置管理 → 计费</a>里调）。
+                填了具体价格则直接用它，不再参考上游成本 ——
+                适合「统一按次收费」这类与成本脱钩的定价。
+            </p>
+
+            <div class="two-col" data-group="downstream-token">
+                <div class="field">
+                    <div class="lbl">输入单价</div>
+                    <input type="text" name="downstream_input_price" class="price-input" data-role="down-in"
+                           value="<?= htmlspecialchars($downstreamInput, ENT_QUOTES, 'UTF-8') ?>">
+                </div>
+                <div class="field">
+                    <div class="lbl">输出单价</div>
+                    <input type="text" name="downstream_output_price" class="price-input" data-role="down-out"
+                           value="<?= htmlspecialchars($downstreamOutput, ENT_QUOTES, 'UTF-8') ?>">
+                </div>
+            </div>
+
+            <div class="field" data-group="downstream-call" style="max-width:280px">
+                <div class="lbl">每次请求售价</div>
+                <input type="text" name="downstream_call_price" class="price-input" data-role="down-call"
+                       value="<?= htmlspecialchars($downstreamCall, ENT_QUOTES, 'UTF-8') ?>">
+            </div>
+
+            <div class="alert info" data-group="preview" style="margin-top:6px">
+                <?= icon('chart', 17) ?>
+                <span id="preview-text">按「1 个计价单位的输入 + 1 个计价单位的输出」试算</span>
+            </div>
+
+            <hr class="sep">
+
+            <div class="field">
+                <div class="lbl">备注（可选）</div>
+                <input type="text" name="note" maxlength="255"
+                       placeholder="例如：官方标准价，2026-09 核对" 
+                       value="<?= htmlspecialchars($note, ENT_QUOTES, 'UTF-8') ?>">
+            </div>
+
+            <div class="field">
+                <label class="check">
+                    <input type="checkbox" name="status" value="1" <?= $enabled ? 'checked' : '' ?>>
+                    <span>启用该定价（停用后该模型按「未定价」处理）</span>
+                </label>
+            </div>
+
+            <div class="actions-bar">
+                <button class="primary" type="submit"><?= icon('check', 16) ?><?= $isEdit ? '保存修改' : '创建定价' ?></button>
+                <a class="ghost" href="/admin/pricing"><?= icon('home', 15) ?>返回列表</a>
+            </div>
+        </form>
+    </section>
+</div>
+<script>
+    (function () {
+        var mode = document.getElementById('mode-select');
+        var kind = document.getElementById('kind-select');
+        var unit = document.getElementById('unit-input');
+        var modeHint = document.getElementById('mode-hint');
+        var kindHint = document.getElementById('kind-hint');
+        var preview = document.getElementById('preview-text');
+
+        /**
+         * 各计费模式下「该显示/该用」的字段组。
+         *
+         * 这份映射是前端对后端规则的镜像 —— 后端 Pricing::quote() 里的
+         * subscription 按 token 计下游售价、upstream 恒为 0，与此保持一致。
+         * 之所以要在两处各写一份：后端不能信任前端提交什么，
+         * 前端也不能每次改动都问后端要一次。两处都做了注释便于对照修改。
+         */
+        var VISIBILITY = {
+            token:        { up: 'token', down: 'token' },
+            call:         { up: 'call',  down: 'call' },
+            subscription: { up: 'none',  down: 'token' },
+            free:         { up: 'none',  down: 'none' }
+        };
+
+        function num(field) {
+            var v = parseFloat(field && field.value ? field.value : '0');
+            return isNaN(v) ? 0 : v;
+        }
+
+        function applyVisibility() {
+            var rule = VISIBILITY[mode.value] || VISIBILITY.token;
+
+            document.querySelectorAll('[data-group]').forEach(function (el) {
+                var group = el.dataset.group;
+
+                if (group === 'preview') {
+                    el.style.display = rule.down === 'none' ? 'none' : '';
+                    return;
+                }
+
+                if (group === 'upstream-token') { el.style.display = rule.up === 'token' ? '' : 'none'; return; }
+                if (group === 'upstream-call')  { el.style.display = rule.up === 'call' ? '' : 'none'; return; }
+                if (group === 'upstream-none')  { el.style.display = rule.up === 'none' ? '' : 'none'; return; }
+                if (group === 'downstream-token') { el.style.display = rule.down === 'token' ? '' : 'none'; return; }
+                if (group === 'downstream-call')  { el.style.display = rule.down === 'call' ? '' : 'none'; return; }
+            });
+
+            var opt = mode.options[mode.selectedIndex];
+            modeHint.textContent = opt ? (opt.dataset.hint || '') : '';
+
+            updatePreview();
+        }
+
+        /** 与后端 quote() 同一套公式的试算，用于填价格时即时自查 */
+        function updatePreview() {
+            var rule = VISIBILITY[mode.value] || VISIBILITY.token;
+
+            if (rule.down === 'none') {
+                return;
+            }
+
+            var u = Math.max(1, parseInt(unit.value, 10) || 1);
+            var upIn = num(document.querySelector('[data-role="up-in"]'));
+            var upOut = num(document.querySelector('[data-role="up-out"]'));
+            var upCall = num(document.querySelector('[data-role="up-call"]'));
+            var downIn = num(document.querySelector('[data-role="down-in"]'));
+            var downOut = num(document.querySelector('[data-role="down-out"]'));
+            var downCall = num(document.querySelector('[data-role="down-call"]'));
+
+            var upstream;
+            var downstream;
+
+            if (rule.up === 'token') {
+                upstream = upIn + upOut;                       // 1 单位输入 + 1 单位输出
+            } else if (rule.up === 'call') {
+                upstream = upCall;
+            } else {
+                upstream = 0;                                  // 订阅 / 免费：边际成本 0
+            }
+
+            if (rule.down === 'token') {
+                downstream = (downIn > 0 || downOut > 0) ? (downIn + downOut) : upstream * <?= json_encode((float) $defaultMultiplier) ?>;
+            } else {
+                downstream = downCall > 0 ? downCall : upstream * <?= json_encode((float) $defaultMultiplier) ?>;
+            }
+
+            var unitText = u === 1000000 ? '100 万' : (u === 1000 ? '1000' : u);
+            var text = '按「每 ' + unitText + ' token 的输入 + 同样的输出」试算：'
+                + '上游成本 ' + upstream.toFixed(8).replace(/\.?0+$/, '')
+                + ' → 下游售价 ' + downstream.toFixed(8).replace(/\.?0+$/, '');
+
+            if (upstream > 0) {
+                text += '（' + (downstream / upstream).toFixed(2) + ' 倍，'
+                    + (downstream >= upstream ? '有毛利' : '亏损') + '）';
+            } else {
+                text += '（上游边际成本为 0，无法计算倍率）';
+            }
+
+            preview.textContent = text;
+        }
+
+        mode.addEventListener('change', applyVisibility);
+        unit.addEventListener('input', updatePreview);
+        document.querySelectorAll('.price-input').forEach(function (el) {
+            el.addEventListener('input', updatePreview);
+        });
+
+        kind.addEventListener('change', function () {
+            var opt = kind.options[kind.selectedIndex];
+            kindHint.textContent = opt ? (opt.dataset.hint || '') : '';
+        });
+
+        // 初始化
+        unit.value = unit.value || 1000000;
+        applyVisibility();
+        var kopt = kind.options[kind.selectedIndex];
+        kindHint.textContent = kopt ? (kopt.dataset.hint || '') : '';
+    })();
+</script>
+</body>
+</html>

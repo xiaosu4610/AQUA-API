@@ -223,6 +223,18 @@ final class Channel
             'default' => [],
             'hint' => '每行一个 对外名=上游真实名。用于把统一模型名映射到各家不同的命名',
         ],
+        'usage_fallback' => [
+            'label' => '上游不返回用量时',
+            'type' => 'select',
+            'default' => 'estimate',
+            'options' => [
+                'estimate' => '按文本估算（推荐）',
+                'zero' => '记 0 并标记「用量缺失」',
+            ],
+            'hint' => '三方中转、各种反代在流式响应里常常不回 usage 字段。'
+                . '估算值会带上标记，绝不伪装成真实用量；'
+                . '记 0 则完全不计费，只记录请求次数',
+        ],
         'connect_timeout' => [
             'label' => '连接超时（秒）',
             'type' => 'int',

@@ -16,7 +16,21 @@
  * @var string $loginAt
  * @var string $loginIp
  * @var array<int, array{key:string,value:string,source:string,sourceLabel:string}> $configs
+ * @var array{requests:int,upstream_cost:float,downstream_cost:float,profit:float,errors:int,estimated:int} $costToday
+ * @var array{requests:int,upstream_cost:float,downstream_cost:float,profit:float,errors:int,estimated:int} $costWeek
+ * @var string $currency
+ * @var int    $pricingCount
+ * @var int    $channelCount
  */
+/** 金额格式化：去掉无意义的小数尾巴 */
+$money = static function (mixed $value): string {
+    $float = (float) $value;
+    if ($float === 0.0) {
+        return '0';
+    }
+
+    return rtrim(rtrim(number_format($float, 6, '.', ''), '0'), '.');
+};
 ?>
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -40,6 +54,61 @@
             </span>
         </div>
     <?php endif; ?>
+
+    <section>
+        <div class="between" style="margin-bottom:16px">
+            <h2 class="mb-0"><?= icon('coin', 18) ?>账面（单位：<?= htmlspecialchars((string) $currency, ENT_QUOTES, 'UTF-8') ?>）</h2>
+            <div class="row">
+                <span class="pill">渠道 <?= (int) $channelCount ?></span>
+                <span class="pill accent">模型定价 <?= (int) $pricingCount ?></span>
+                <a class="ghost" href="/admin/pricing"><?= icon('coin', 14) ?>去定价</a>
+            </div>
+        </div>
+
+        <div class="table-scroll">
+            <table class="compact">
+                <thead>
+                <tr>
+                    <th style="width:20%">区间</th>
+                    <th style="width:16%">请求数</th>
+                    <th style="width:16%">上游成本</th>
+                    <th style="width:16%">下游收入</th>
+                    <th style="width:16%">毛利</th>
+                    <th style="width:16%">失败</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                    <td>今日</td>
+                    <td class="mono"><?= (int) $costToday['requests'] ?></td>
+                    <td class="mono"><?= $money($costToday['upstream_cost']) ?></td>
+                    <td class="mono"><?= $money($costToday['downstream_cost']) ?></td>
+                    <td class="mono <?= $costToday['profit'] < 0 ? 'text-danger' : 'text-ok' ?>"><?= $money($costToday['profit']) ?></td>
+                    <td class="mono <?= (int) $costToday['errors'] > 0 ? 'text-danger' : 'src' ?>"><?= (int) $costToday['errors'] ?></td>
+                </tr>
+                <tr>
+                    <td>近 7 天</td>
+                    <td class="mono"><?= (int) $costWeek['requests'] ?></td>
+                    <td class="mono"><?= $money($costWeek['upstream_cost']) ?></td>
+                    <td class="mono"><?= $money($costWeek['downstream_cost']) ?></td>
+                    <td class="mono <?= $costWeek['profit'] < 0 ? 'text-danger' : 'text-ok' ?>"><?= $money($costWeek['profit']) ?></td>
+                    <td class="mono <?= (int) $costWeek['errors'] > 0 ? 'text-danger' : 'src' ?>"><?= (int) $costWeek['errors'] ?></td>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <p class="note">
+            「上游成本」是我们付给上游的钱，「下游收入」是向用户收的钱，两者分开记才能看出真实毛利。<br>
+            数据由转发引擎在每次请求后写入用量日志。
+            <b>转发引擎（M1 流式）尚未落地，因此现在全是 0 —— 这不是故障</b>；
+            定价与计算逻辑已就绪，接口开放后会自动开始记账。
+            <?php if ((int) $costToday['estimated'] > 0 || (int) $costWeek['estimated'] > 0): ?>
+                <br>注意：其中部分用量的 token 数是<b>按文本估算</b>的（上游未返回 usage），
+                估算值不适合用于对账级结算。
+            <?php endif; ?>
+        </p>
+    </section>
 
     <section>
         <h2><?= icon('pulse', 18) ?>运行状态</h2>

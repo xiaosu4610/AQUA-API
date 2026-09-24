@@ -1,0 +1,260 @@
+<?php
+/**
+ * 后台 · 模型定价列表
+ *
+ * 这一页要让人一眼看出「哪个模型在赚、哪个在赔」。
+ * 因此除了原始价格，还多算了一列「参考毛利」——
+ * 用「每计价单位输入 + 每计价单位输出」的假想用量算出的成本与售价。
+ * 光看 6 个价格字段是看不出赚赔的，必须有一个汇总数字。
+ *
+ * @var string $csrf
+ * @var string $siteName
+ * @var string $siteMode
+ * @var array<int, array<string, mixed>> $rows
+ * @var string $keyword
+ * @var int    $page
+ * @var int    $pages
+ * @var int    $total
+ * @var string $currency
+ * @var array<string, array{label:string, hint:string}> $modes
+ * @var array<string, array{label:string, hint:string}> $kinds
+ * @var array{requests:int, upstream_cost:float, downstream_cost:float, profit:float, errors:int, estimated:int} $today
+ * @var string $notice
+ * @var string $noticeType
+ */
+$noticeType = $noticeType ?? 'info';
+
+/** 金额格式化：去掉无意义的小数尾巴，0 直接显示 0 */
+$money = static function (mixed $value): string {
+    $float = (float) $value;
+    if ($float === 0.0) {
+        return '0';
+    }
+
+    return rtrim(rtrim(number_format($float, 8, '.', ''), '0'), '.');
+};
+
+/** 计价单位说成人话：1000000 → 每百万 token */
+$unitLabel = static function (int $unit): string {
+    return match (true) {
+        $unit === 1000000 => '每百万 token',
+        $unit === 1000 => '每千 token',
+        $unit === 1 => '每个 token',
+        default => '每 ' . number_format($unit) . ' token',
+    };
+};
+
+/** 一行里的单价摘要 */
+$priceText = static function (array $row) use ($money, $unitLabel): string {
+    return match ($row['mode']) {
+        'token' => '入 ' . $money($row['upstreamInput']) . ' / 出 ' . $money($row['upstreamOutput'])
+            . '（' . $unitLabel($row['unit']) . '）',
+        'call' => '每次 ' . $money($row['upstreamCall']),
+        'subscription' => '订阅制，边际成本 0',
+        default => '免费',
+    };
+};
+
+/** 下游单价摘要 */
+$priceTextDown = static function (array $row) use ($money): string {
+    if ($row['mode'] === 'free') {
+        return '对下游免费';
+    }
+
+    $configured = (float) $row['downstreamInput'] > 0
+        || (float) $row['downstreamOutput'] > 0
+        || (float) $row['downstreamCall'] > 0;
+
+    if (!$configured) {
+        return '按上游成本 × 倍率';
+    }
+
+    return $row['mode'] === 'token'
+        ? '入 ' . $money($row['downstreamInput']) . ' / 出 ' . $money($row['downstreamOutput'])
+        : '每次 ' . $money($row['downstreamCall']);
+};
+?>
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title><?= htmlspecialchars((string) $siteName, ENT_QUOTES, 'UTF-8') ?> · 模型定价</title>
+    <?php include __DIR__ . '/_style.html'; ?>
+</head>
+<body>
+<div class="wrap">
+    <?php $active = 'pricing'; include __DIR__ . '/_header.html'; ?>
+
+    <?php if (($notice ?? '') !== ''): ?>
+        <div class="alert <?= htmlspecialchars((string) $noticeType, ENT_QUOTES, 'UTF-8') ?>">
+            <?= icon($noticeType === 'err' ? 'alert' : ($noticeType === 'info' ? 'info' : 'check'), 17) ?>
+            <span><?= htmlspecialchars((string) $notice, ENT_QUOTES, 'UTF-8') ?></span>
+        </div>
+    <?php endif; ?>
+
+    <section>
+        <h2><?= icon('coin', 18) ?>今日账面（单位：<?= htmlspecialchars((string) $currency, ENT_QUOTES, 'UTF-8') ?>）</h2>
+        <div class="stats">
+            <div class="stat"><div class="n"><?= (int) $today['requests'] ?></div><div class="l">请求数</div></div>
+            <div class="stat"><div class="n" style="font-size:20px"><?= $money($today['upstream_cost']) ?></div><div class="l">上游成本</div></div>
+            <div class="stat accent"><div class="n" style="font-size:20px"><?= $money($today['downstream_cost']) ?></div><div class="l">下游收入</div></div>
+            <div class="stat <?= $today['profit'] < 0 ? 'danger' : 'ok' ?>">
+                <div class="n" style="font-size:20px"><?= $money($today['profit']) ?></div>
+                <div class="l">毛利</div>
+            </div>
+            <?php if ((int) $today['errors'] > 0): ?>
+                <div class="stat danger"><div class="n"><?= (int) $today['errors'] ?></div><div class="l">失败请求</div></div>
+            <?php endif; ?>
+        </div>
+        <p class="note">
+            账面数据来自「用量日志」，由转发引擎在每次请求后写入。
+            <b>目前转发引擎（M1 流式）尚未落地，所以这里的数字会是 0</b> ——
+            定价与计算逻辑已就绪，接口开放后即自动开始记账。
+            <?php if ((int) $today['estimated'] > 0): ?>
+                <br>其中 <b><?= (int) $today['estimated'] ?></b> 条用量是按文本<b>估算</b>的
+                （上游未返回 usage），估算值不适合用于对账级结算。
+            <?php endif; ?>
+        </p>
+    </section>
+
+    <section>
+        <div class="between" style="margin-bottom:16px">
+            <h2 class="mb-0"><?= icon('coin', 17) ?>模型定价（<?= (int) $total ?>）</h2>
+
+            <div class="row">
+                <form method="get" action="/admin/pricing" class="mb-0">
+                    <input type="text" name="q" placeholder="按模型名搜索"
+                           value="<?= htmlspecialchars((string) $keyword, ENT_QUOTES, 'UTF-8') ?>" style="width:200px">
+                </form>
+
+                <?php /* 从渠道的模型清单批量建行：一个渠道测活后能拉回上百个模型名，
+                         让站长手抄是不现实的 */ ?>
+                <form method="post" action="/admin/pricing/sync" class="mb-0"
+                      onsubmit="return confirm('将从所有渠道的模型清单里补齐缺失的定价行（价格留 0，不会覆盖已有价格）。继续？');">
+                    <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
+                    <button class="ghost" type="submit"><?= icon('refresh', 14) ?>从渠道补齐</button>
+                </form>
+
+                <a class="primary" href="/admin/pricing/new"><?= icon('plus', 16) ?>新增定价</a>
+            </div>
+        </div>
+
+        <?php if ($rows === []): ?>
+            <div class="empty">
+                <?= icon('coin', 30) ?>
+                <div><?= $keyword === '' ? '还没有任何模型定价' : '没有匹配「' . htmlspecialchars((string) $keyword, ENT_QUOTES, 'UTF-8') . '」的模型' ?></div>
+                <div class="note" style="margin-top:8px">
+                    <?php if ($keyword === ''): ?>
+                        最省事的做法：先在「渠道管理」里点一次测活把模型清单拉回来，
+                        再回到这里点「从渠道补齐」，模型名会自动填好，只需补价格。
+                    <?php endif; ?>
+                </div>
+            </div>
+        <?php else: ?>
+            <div class="table-scroll">
+                <table class="compact">
+                    <thead>
+                    <tr>
+                        <th style="width:20%">模型</th>
+                        <th style="width:9%">计费模式</th>
+                        <th style="width:11%">上游种类</th>
+                        <th style="width:20%">上游成本（我们的支出）</th>
+                        <th style="width:17%">下游售价（向用户收）</th>
+                        <th style="width:11%">参考毛利</th>
+                        <th style="width:6%">状态</th>
+                        <th style="width:6%">操作</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($rows as $row): ?>
+                        <tr>
+                            <td>
+                                <div class="mono" style="word-break:break-all"><?= htmlspecialchars((string) $row['model'], ENT_QUOTES, 'UTF-8') ?></div>
+                                <?php if ($row['note'] !== ''): ?>
+                                    <div class="src" title="<?= htmlspecialchars((string) $row['note'], ENT_QUOTES, 'UTF-8') ?>">
+                                        <?= htmlspecialchars(mb_substr((string) $row['note'], 0, 30), ENT_QUOTES, 'UTF-8') ?>
+                                    </div>
+                                <?php endif; ?>
+                            </td>
+
+                            <td><span class="pill"><?= htmlspecialchars((string) $row['modeLabel'], ENT_QUOTES, 'UTF-8') ?></span></td>
+                            <td class="src"><?= htmlspecialchars((string) $row['kindLabel'], ENT_QUOTES, 'UTF-8') ?></td>
+
+                            <td class="mono"><?= htmlspecialchars($priceText($row), ENT_QUOTES, 'UTF-8') ?></td>
+                            <td class="mono"><?= htmlspecialchars($priceTextDown($row), ENT_QUOTES, 'UTF-8') ?></td>
+
+                            <td>
+                                <?php if ($row['ratio'] === null): ?>
+                                    <span class="src">—</span>
+                                <?php else: ?>
+                                    <?php
+                                    // 参考倍率 = 下游售价 / 上游成本。小于 1 就是赔本卖，
+                                    // 用颜色直接标出来，不用站长自己算
+                                    $profit = $row['refProfit'] >= 0;
+                                    ?>
+                                    <span class="pill <?= $profit ? 'ok' : 'danger' ?>">
+                                        <?= number_format((float) $row['ratio'], 2) ?>×
+                                    </span>
+                                    <div class="src" style="margin-top:3px">
+                                        <?= $money($row['refUpstream']) ?> → <?= $money($row['refDownstream']) ?>
+                                    </div>
+                                <?php endif; ?>
+                            </td>
+
+                            <td>
+                                <?php if ($row['enabled']): ?>
+                                    <span class="pill ok">启用</span>
+                                <?php else: ?>
+                                    <span class="pill">停用</span>
+                                <?php endif; ?>
+                            </td>
+
+                            <td>
+                                <div class="row-actions">
+                                    <a class="ghost" href="/admin/pricing/edit?id=<?= (int) $row['id'] ?>"><?= icon('edit', 14) ?>编辑</a>
+                                    <form method="post" action="/admin/pricing/delete" class="mb-0"
+                                          onsubmit="return confirm('确定删除「<?= htmlspecialchars((string) $row['model'], ENT_QUOTES, 'UTF-8') ?>」的定价？此后该模型按未定价处理。');">
+                                        <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
+                                        <input type="hidden" name="id" value="<?= (int) $row['id'] ?>">
+                                        <button class="ghost danger" type="submit"><?= icon('trash', 13) ?>删除</button>
+                                    </form>
+                                </div>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+
+            <?php if ($pages > 1): ?>
+                <div class="actions-bar">
+                    <?php
+                    $qs = static fn (int $p): string => '/admin/pricing?page=' . $p
+                        . ($keyword === '' ? '' : '&q=' . urlencode($keyword));
+                    ?>
+                    <?php if ($page > 1): ?>
+                        <a class="ghost" href="<?= htmlspecialchars($qs($page - 1), ENT_QUOTES, 'UTF-8') ?>">上一页</a>
+                    <?php endif; ?>
+                    <span class="src">第 <?= $page ?> / <?= $pages ?> 页</span>
+                    <?php if ($page < $pages): ?>
+                        <a class="ghost" href="<?= htmlspecialchars($qs($page + 1), ENT_QUOTES, 'UTF-8') ?>">下一页</a>
+                    <?php endif; ?>
+                </div>
+            <?php endif; ?>
+        <?php endif; ?>
+
+        <p class="note">
+            <b>上游成本</b>是我们付给上游的钱，<b>下游售价</b>是向用户收的钱 —— 两者<b>必须分开</b>，
+            否则回答不了「这个模型到底赚不赚钱」。<br>
+            下游售价留空（全部填 0）时，按<b>上游成本 × 倍率</b>计算，倍率在
+            <a href="/admin/settings">配置管理 → 计费</a> 里调；填了下游价格则直接用填的价格，
+            适合「统一按次收费」这类与成本脱钩的定价方式。<br>
+            同一个模型无论接了几家上游，价格只有一套 —— 逐渠道的成本差异请用渠道高级配置里的
+            「模型名映射」把模型名区分开，再分别定价。
+        </p>
+    </section>
+</div>
+</body>
+</html>

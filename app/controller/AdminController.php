@@ -26,9 +26,12 @@ declare(strict_types=1);
 namespace app\controller;
 
 use app\common\Admin;
+use app\common\Channel;
 use app\common\Csrf;
 use app\common\Db;
+use app\common\Pricing;
 use app\common\Settings;
+use app\common\UsageLog;
 use app\middleware\AdminAuth;
 use support\Request;
 use support\Response;
@@ -149,6 +152,14 @@ class AdminController
             'loginAt'    => $this->formatTime($admin['last_login_at'] ?? null),
             'loginIp'    => (string) ($admin['last_login_ip'] ?? '—'),
             'configs'    => $this->dashboardConfigs(),
+            // 账面：上游成本 / 下游收入 / 毛利。
+            // 数据来自 usage_logs，由转发引擎写入 —— 引擎未落地前显示为 0，
+            // 这不是故障，界面上有说明
+            'costToday'  => UsageLog::summary(strtotime('today') ?: time()),
+            'costWeek'   => UsageLog::summary(strtotime('-6 days midnight') ?: time()),
+            'currency'   => (string) Settings::get('billing.currency', 'CNY'),
+            'pricingCount' => Pricing::count(),
+            'channelCount' => count(Channel::all()),
         ], '');
     }
 

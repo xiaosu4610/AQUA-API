@@ -56,6 +56,7 @@ class SettingController
         'site' => ['label' => '站点', 'hint' => '站点名称、模式、公告、备案号等对外展示信息'],
         'gateway' => ['label' => '网关', 'hint' => '转发行为：超时分层、重试、SSE 心跳'],
         'key_pool' => ['label' => '密钥池', 'hint' => '多 Key 轮换的限流与失效治理策略'],
+        'billing' => ['label' => '计费', 'hint' => '上游成本与下游售价的计算口径；逐个模型的价格在「模型定价」页配置'],
         'security' => ['label' => '安全', 'hint' => '后台登录防爆破与登录态有效期'],
         'session' => ['label' => '会话', 'hint' => '会话 Cookie 的安全属性'],
     ];
@@ -213,6 +214,7 @@ class SettingController
         return match (true) {
             is_bool(Settings::codeDefault($key)) => 'bool',
             is_int(Settings::codeDefault($key)) => 'int',
+            is_float(Settings::codeDefault($key)) => 'float',
             default => 'string',
         };
     }
@@ -227,6 +229,7 @@ class SettingController
         return match ($this->typeOf($key)) {
             'bool' => filter_var($value, FILTER_VALIDATE_BOOL),
             'int' => (int) $value,
+            'float' => (float) $value,
             default => is_string($value) ? trim($value) : $value,
         };
     }

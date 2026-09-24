@@ -37,7 +37,7 @@ use Throwable;
 final class Schema
 {
     /** 当前期望的表结构版本。新增迁移时递增。 */
-    public const VERSION = 5;
+    public const VERSION = 6;
 
     /**
      * 确保表结构存在且为最新版本。
@@ -72,6 +72,10 @@ final class Schema
 
         if ($current < 5) {
             self::createV5();
+        }
+
+        if ($current < 6) {
+            self::createV6();
         }
 
         Settings::put('schema_version', (string) self::VERSION);
@@ -271,6 +275,145 @@ final class Schema
     private static function createV5(): void
     {
         self::addColumnIfMissing('channel_keys', 'disabled_until', 'INTEGER NULL');
+    }
+
+    /**
+     * v6：模型定价 + 用量日志（成本计算的落点）
+     *
+     * ═══ 为什么上游成本和下游售价要分开存 ═══
+     *
+     * 「不是所有上游和所有下游都是免费的，也不是所有计费都跟官方一样」——
+     * 这句话正是这张表的设计依据：
+     *   · 上游（我们的支出）可能是官方原价、三方中转的折扣价、
+     *     自建推理的零边际成本、订阅套餐的固定月费；
+     *   · 下游（我们向用户收的）可能是上游成本乘一个倍率，
+     *     也可能是完全独立的一套价格。
+     * 把两者塞进一个「价格」字段，就没法回答「这个模型到底赚不赚钱」。
+     *
+     * ═══ 为什么要有 billing_mode ═══
+     *
+     * 因为**计费口径本身就不一样**，这不是同一套公式换个参数能表达的：
+     *   · token        按输入/输出 token 分别计价（绝大多数对话模型）
+     *   · call         按次计价（图像/视频/语音这类，与 token 无关）
+     *   · subscription 订阅套餐（编程套餐、包月），边际成本为 0，
+     *                  但仍要记 token 用于统计与限额
+     *   · free         免费额度
+     *
+     * ═══ 为什么金额不用 FLOAT ═══
+     *
+     * 用 DECIMAL(20,10)：SQLite 与 MySQL 都支持这个写法，
+     * 且能避免二进制浮点累加误差（0.1+0.2 这类问题在计费上是事故）。
+     * PDO 读出来是字符串，在 PHP 侧转 float 计算、四舍五入后再落库。
+     */
+    private static function createV6(): void
+    {
+        $pdo = Db::pdo();
+        $autoId = self::autoId();
+
+        // ── pricing：模型定价（上游成本 + 下游售价）───────────
+        // model 唯一：一个模型一条定价。这与「渠道」是两个维度 ——
+        // 同一个模型可能同时接了好几家上游，成本取哪家由站长按主要线路填，
+        // 逐渠道的差异则通过渠道高级配置里的模型名映射与上游种类区分。
+        $pdo->exec(<<<SQL
+            CREATE TABLE IF NOT EXISTS pricing (
+                id                      {$autoId},
+                model                   VARCHAR(191) NOT NULL,
+                billing_mode            VARCHAR(16)  NOT NULL DEFAULT 'token',
+                upstream_kind           VARCHAR(16)  NOT NULL DEFAULT 'official',
+                upstream_input_price    DECIMAL(20,10) NOT NULL DEFAULT 0,
+                upstream_output_price   DECIMAL(20,10) NOT NULL DEFAULT 0,
+                upstream_call_price     DECIMAL(20,10) NOT NULL DEFAULT 0,
+                downstream_input_price  DECIMAL(20,10) NOT NULL DEFAULT 0,
+                downstream_output_price DECIMAL(20,10) NOT NULL DEFAULT 0,
+                downstream_call_price   DECIMAL(20,10) NOT NULL DEFAULT 0,
+                price_unit              INTEGER      NOT NULL DEFAULT 1000000,
+                note                    VARCHAR(255) NULL,
+                status                  INTEGER      NOT NULL DEFAULT 1,
+                created_at              INTEGER      NOT NULL,
+                updated_at              INTEGER      NOT NULL,
+                CONSTRAINT uq_pricing_model UNIQUE (model)
+            )
+        SQL);
+
+        // ── usage_logs：每次请求一条用量记录 ──────────────────
+        // 这是「成本可见」的唯一来源。宁可多记字段，
+        // 也不要事后发现「上个月的毛利算不出来」——
+        // 日志类数据一旦缺失就无法补算。
+        $pdo->exec(<<<SQL
+            CREATE TABLE IF NOT EXISTS usage_logs (
+                id                {$autoId},
+                created_at        INTEGER      NOT NULL,
+                user_id           INTEGER      NULL,
+                token_id          INTEGER      NULL,
+                channel_id        INTEGER      NULL,
+                channel_name      VARCHAR(128) NULL,
+                model             VARCHAR(191) NOT NULL,
+                billing_mode      VARCHAR(16)  NOT NULL DEFAULT 'token',
+                is_stream         INTEGER      NOT NULL DEFAULT 0,
+                prompt_tokens     INTEGER      NOT NULL DEFAULT 0,
+                completion_tokens INTEGER      NOT NULL DEFAULT 0,
+                total_tokens      INTEGER      NOT NULL DEFAULT 0,
+                usage_estimated   INTEGER      NOT NULL DEFAULT 0,
+                upstream_cost     DECIMAL(20,10) NOT NULL DEFAULT 0,
+                downstream_cost   DECIMAL(20,10) NOT NULL DEFAULT 0,
+                latency_ms        INTEGER      NOT NULL DEFAULT 0,
+                status            VARCHAR(16)  NOT NULL DEFAULT 'ok',
+                error_message     VARCHAR(500) NULL
+            )
+        SQL);
+
+        // 索引单独建（不能写进 CREATE TABLE：MySQL 支持内联 INDEX、SQLite 不支持）
+        self::createIndexIfMissing('usage_logs', 'idx_usage_created', ['created_at']);
+        self::createIndexIfMissing('usage_logs', 'idx_usage_model', ['model']);
+        self::createIndexIfMissing('usage_logs', 'idx_usage_channel', ['channel_id']);
+        self::createIndexIfMissing('usage_logs', 'idx_usage_user', ['user_id']);
+    }
+
+    /**
+     * 建索引（幂等）。
+     *
+     * 为什么不用 `CREATE INDEX IF NOT EXISTS`：
+     * MySQL **不支持**这个语法（SQLite 支持），所以必须自己探一次。
+     * 与 addColumnIfMissing 同理，这是跨库可移植的代价，
+     * 代价集中在 Schema 这一个文件里，值得。
+     *
+     * @param array<int, string> $columns
+     */
+    private static function createIndexIfMissing(string $table, string $index, array $columns): void
+    {
+        $pdo = Db::pdo();
+
+        try {
+            if (Db::isSqlite()) {
+                $exists = false;
+                foreach ($pdo->query("PRAGMA index_list({$table})") as $row) {
+                    if (($row['name'] ?? '') === $index) {
+                        $exists = true;
+                        break;
+                    }
+                }
+            } else {
+                $row = Db::selectOne(
+                    'SELECT COUNT(*) AS c FROM information_schema.statistics
+                     WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?',
+                    [$table, $index]
+                );
+                $exists = ((int) ($row['c'] ?? 0)) > 0;
+            }
+
+            if ($exists) {
+                return;
+            }
+        } catch (Throwable) {
+            return;
+        }
+
+        $pdo->exec(sprintf(
+            'CREATE INDEX %s ON %s (%s)',
+            $index,
+            $table,
+            implode(', ', $columns)
+        ));
     }
 
     /**
