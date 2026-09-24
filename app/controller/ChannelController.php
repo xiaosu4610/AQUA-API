@@ -25,6 +25,7 @@ declare(strict_types=1);
 namespace app\controller;
 
 use app\common\Channel;
+use app\common\ChannelKey;
 use app\common\Crypto;
 use app\common\Csrf;
 use app\common\Settings;
@@ -41,13 +42,19 @@ class ChannelController
      */
     public function index(Request $request): Response
     {
+        // 一次性取回所有渠道的密钥池统计，避免在循环里逐个查询（N+1）
+        $poolStats = ChannelKey::statsForChannels();
+
         $channels = [];
         foreach (Channel::all() as $row) {
+            $id = (int) $row['id'];
+            $pool = $poolStats[$id] ?? ['total' => 0, 'enabled' => 0, 'disabled' => 0, 'exhausted' => 0];
+
             $channels[] = [
-                'id' => (int) $row['id'],
+                'id' => $id,
                 'name' => (string) $row['name'],
                 'typeLabel' => self::typeLabel((string) $row['type']),
-                'base_url' => (string) $row['base_url'],
+                'baseUrl' => (string) $row['base_url'],
                 'keyMasked' => Channel::maskedKey($row),
                 'modelCount' => count(Channel::modelsOf($row)),
                 'models' => Channel::modelsOf($row),
@@ -58,6 +65,11 @@ class ChannelController
                 'lastTestAt' => self::formatTime($row['last_test_at'] ?? null),
                 'lastTestOk' => $row['last_test_ok'] === null ? null : (int) $row['last_test_ok'] === 1,
                 'lastError' => (string) ($row['last_error'] ?? ''),
+                // 密钥池信息：官方部署下一个渠道会挂几百把 Key，
+                // 列表页必须能一眼看出「还有多少把能用」
+                'poolTotal' => $pool['total'],
+                'poolEnabled' => $pool['enabled'],
+                'poolDisabled' => $pool['disabled'],
             ];
         }
 
@@ -194,6 +206,169 @@ class ChannelController
     }
 
     /**
+     * GET /admin/channels/keys?id=N —— 密钥池管理
+     *
+     * 一个渠道下可能挂几百把 Key，这一页就是运维它的地方：
+     * 看还剩多少能用、把失效的停掉、批量粘贴导入、重置限流窗口。
+     */
+    public function keys(Request $request): Response
+    {
+        $id = (int) $request->get('id', 0);
+        $channel = Channel::find($id);
+
+        if ($channel === null) {
+            return $this->back('渠道不存在', 'err');
+        }
+
+        // 只显示掩码。完整 Key 绝不进入 HTML —— 这一页渲染的是几百条记录，
+        // 一旦把明文送进浏览器，泄露面会被放大几百倍。
+        $rows = [];
+        foreach (ChannelKey::allForChannel($id) as $row) {
+            $rows[] = [
+                'id' => (int) $row['id'],
+                'masked' => ChannelKey::masked($row),
+                'enabled' => (int) $row['status'] === ChannelKey::STATUS_ENABLED,
+                'rpmLimit' => (int) $row['rpm_limit'],
+                'used' => (int) $row['used_requests'],
+                'inWindow' => (int) $row['window_start'] === (int) (floor(time() / 60) * 60),
+                'lastUsedAt' => self::formatTime($row['last_used_at'] ?? null),
+                'failCount' => (int) $row['fail_count'],
+                'lastError' => (string) ($row['last_error'] ?? ''),
+            ];
+        }
+
+        return view('admin/channel_keys', [
+            'csrf' => Csrf::token(),
+            'siteName' => Settings::siteName(),
+            'siteMode' => Settings::siteModeLabel(),
+            'channelId' => $id,
+            'channelName' => (string) $channel['name'],
+            // 每把密钥的默认限额：优先用渠道自己的设置，没有则用全局默认
+            'defaultRpm' => (int) $channel['rpm_limit'] > 0
+                ? (int) $channel['rpm_limit']
+                : Settings::int('nim.rpm_limit', 40),
+            'stats' => ChannelKey::statsForChannel($id),
+            'keys' => $rows,
+            'notice' => (string) session()->pull(self::FLASH_NOTICE, ''),
+            'noticeType' => (string) session()->pull(self::FLASH_TYPE, 'info'),
+            'keyConfigured' => Crypto::isConfigured(),
+        ], '');
+    }
+
+    /**
+     * POST /admin/channels/keys/import —— 批量导入密钥（粘贴文本）
+     */
+    public function keysImport(Request $request): Response
+    {
+        $id = (int) $request->post('id', 0);
+        $channel = Channel::find($id);
+
+        if ($channel === null) {
+            return $this->back('渠道不存在', 'err');
+        }
+
+        if (!Csrf::check($request->post('_csrf'))) {
+            return $this->backToKeys($id, '页面已过期，请重新提交', 'err');
+        }
+
+        if (!Crypto::isConfigured()) {
+            return $this->backToKeys($id, '未配置 APP_KEY，无法加密保存密钥', 'err');
+        }
+
+        // 与 CLI 工具使用同一套切分规则：换行、空格、逗号都算分隔符
+        $raw = (string) $request->post('keys', '');
+        $parts = array_filter(array_map('trim', preg_split('/[\s,]+/', $raw) ?: []));
+
+        if ($parts === []) {
+            return $this->backToKeys($id, '没有解析到任何密钥，请检查粘贴内容', 'err');
+        }
+
+        $rpm = (int) $request->post('rpm', 0);
+        $stats = ChannelKey::import($id, array_values($parts), max(0, $rpm));
+
+        return $this->backToKeys(
+            $id,
+            "导入完成：新增 {$stats['added']} 把，已存在跳过 {$stats['skipped']} 把，格式无效 {$stats['invalid']} 条",
+            'ok'
+        );
+    }
+
+    /**
+     * POST /admin/channels/keys/toggle —— 启用/停用某把密钥
+     *
+     * 参数用两个不同的按钮名（enable_id / disable_id）而不是
+     * 「key_id + enable 标志」，是为了让几百行密钥表格只需要**一个** form：
+     * 按钮的 name/value 会随提交一起带上，而同一个 form 里
+     * 无法为不同的按钮设置不同的隐藏字段值。
+     */
+    public function keysToggle(Request $request): Response
+    {
+        if (!Csrf::check($request->post('_csrf'))) {
+            return $this->back('页面已过期，请重新提交', 'err');
+        }
+
+        $enableId = (int) $request->post('enable_id', 0);
+        $disableId = (int) $request->post('disable_id', 0);
+
+        $keyId = $enableId > 0 ? $enableId : $disableId;
+        $enable = $enableId > 0;
+
+        $row = ChannelKey::find($keyId);
+        if ($row === null) {
+            return $this->back('密钥不存在', 'err');
+        }
+
+        $channelId = (int) $row['channel_id'];
+        ChannelKey::setStatus($keyId, $enable ? ChannelKey::STATUS_ENABLED : ChannelKey::STATUS_DISABLED);
+
+        return $this->backToKeys($channelId, $enable ? '已启用该密钥' : '已停用该密钥', 'ok');
+    }
+
+    /**
+     * POST /admin/channels/keys/delete —— 删除某把密钥
+     */
+    public function keysDelete(Request $request): Response
+    {
+        if (!Csrf::check($request->post('_csrf'))) {
+            return $this->back('页面已过期，请重新提交', 'err');
+        }
+
+        $keyId = (int) $request->post('delete_id', 0);
+        $row = ChannelKey::find($keyId);
+
+        if ($row === null) {
+            return $this->back('密钥不存在', 'err');
+        }
+
+        $channelId = (int) $row['channel_id'];
+        ChannelKey::delete($keyId);
+
+        return $this->backToKeys($channelId, '已删除该密钥', 'ok');
+    }
+
+    /**
+     * POST /admin/channels/keys/reset —— 重置该渠道的限流窗口计数
+     *
+     * 用途：上游抖动导致大量请求失败、把配额「浪费」掉之后，
+     * 站长希望立刻把计数清零重新开始，而不必等下一个自然分钟。
+     */
+    public function keysReset(Request $request): Response
+    {
+        if (!Csrf::check($request->post('_csrf'))) {
+            return $this->back('页面已过期，请重新提交', 'err');
+        }
+
+        $id = (int) $request->post('id', 0);
+        if (Channel::find($id) === null) {
+            return $this->back('渠道不存在', 'err');
+        }
+
+        ChannelKey::resetWindows($id);
+
+        return $this->backToKeys($id, '已重置该渠道全部密钥的限流计数', 'ok');
+    }
+
+    /**
      * 渲染新增/编辑表单。
      *
      * @param array<string, mixed>|null $channel 为 null 表示新增
@@ -270,14 +445,25 @@ class ChannelController
     }
 
     /**
-     * 写提示并重定向回列表页（POST → 重定向 → GET）。
+     * 写提示并重定向。
+     *
+     * @param string $location 重定向目标。默认回渠道列表；
+     *        密钥池相关的操作传 '/admin/channels/keys?id=N'。
      */
-    private function back(string $message, string $type): Response
+    private function back(string $message, string $type, string $location = '/admin/channels'): Response
     {
         session()->set(self::FLASH_NOTICE, $message);
         session()->set(self::FLASH_TYPE, $type);
 
-        return response('', 302, ['Location' => '/admin/channels']);
+        return response('', 302, ['Location' => $location]);
+    }
+
+    /**
+     * 回到某个渠道的密钥池页面。
+     */
+    private function backToKeys(int $channelId, string $message, string $type): Response
+    {
+        return $this->back($message, $type, '/admin/channels/keys?id=' . $channelId);
     }
 
     private static function typeLabel(string $type): string

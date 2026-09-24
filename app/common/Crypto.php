@@ -140,6 +140,27 @@ final class Crypto
     }
 
     /**
+     * 把凭据变成可安全展示的掩码，例如 `nvapi-…9f3a`。
+     *
+     * 页面与日志里只允许出现掩码，绝不能出现完整凭据。
+     * 放在本文件是因为它属于「凭据处理」这一类，且渠道与密钥池都要用，
+     * 集中一处可以保证两边的掩码规则永远一致。
+     */
+    public static function mask(string $plain): string
+    {
+        if ($plain === '') {
+            return '（未设置）';
+        }
+
+        // 太短的凭据不显示头尾 —— 否则掩码本身就把大部分内容暴露了
+        if (strlen($plain) < 12) {
+            return str_repeat('•', strlen($plain));
+        }
+
+        return substr($plain, 0, 6) . '…' . substr($plain, -4);
+    }
+
+    /**
      * 取得派生后的加密密钥（进程内缓存）。
      *
      * 这里不直接用 APP_KEY 字符串，而是先做一次 SHA-256 派生：

@@ -8,9 +8,10 @@
  * @var string $notice
  * @var string $noticeType
  * @var array<int, array{
- *     id:int, name:string, typeLabel:string, base_url:string, keyMasked:string,
+ *     id:int, name:string, typeLabel:string, baseUrl:string, keyMasked:string,
  *     modelCount:int, models:array<int,string>, priority:int, weight:int,
- *     enabled:bool, rpmLimit:int, lastTestAt:string, lastTestOk:bool|null, lastError:string
+ *     enabled:bool, rpmLimit:int, lastTestAt:string, lastTestOk:bool|null, lastError:string,
+ *     poolTotal:int, poolEnabled:int, poolDisabled:int
  * }> $channels
  */
 $noticeType = $noticeType ?? 'info';
@@ -97,12 +98,21 @@ $noticeType = $noticeType ?? 'info';
                         <td><?= htmlspecialchars($row['typeLabel'], ENT_QUOTES, 'UTF-8') ?></td>
 
                         <td class="mono" style="font-size:12px;word-break:break-all">
-                            <?= htmlspecialchars($row['base_url'], ENT_QUOTES, 'UTF-8') ?>
+                            <?= htmlspecialchars($row['baseUrl'], ENT_QUOTES, 'UTF-8') ?>
                         </td>
 
                         <?php /* 只显示掩码。完整 Key 绝不进入 HTML */ ?>
-                        <td class="mono" style="font-size:12px">
-                            <?= htmlspecialchars($row['keyMasked'], ENT_QUOTES, 'UTF-8') ?>
+                        <td style="font-size:12px">
+                            <?php if ($row['poolTotal'] > 0): ?>
+                                <?php /* 有密钥池时优先展示池子规模 —— 官方部署下一个渠道挂几百把 Key，
+                                         「还剩多少把能用」比「第一把长什么样」重要得多 */ ?>
+                                <div class="mono">池 <?= $row['poolEnabled'] ?> / <?= $row['poolTotal'] ?> 可用</div>
+                                <?php if ($row['poolDisabled'] > 0): ?>
+                                    <div class="src" style="color:#ffb4ad"><?= $row['poolDisabled'] ?> 把已停用</div>
+                                <?php endif; ?>
+                            <?php else: ?>
+                                <span class="mono"><?= htmlspecialchars($row['keyMasked'], ENT_QUOTES, 'UTF-8') ?></span>
+                            <?php endif; ?>
                         </td>
 
                         <td>
@@ -129,6 +139,7 @@ $noticeType = $noticeType ?? 'info';
                         <td>
                             <div class="row-actions" style="flex-wrap:wrap;gap:6px">
                                 <a class="ghost-link" href="/admin/channels/edit?id=<?= $row['id'] ?>">编辑</a>
+                                <a class="ghost-link" href="/admin/channels/keys?id=<?= $row['id'] ?>">密钥池<?= $row['poolTotal'] > 0 ? '（' . $row['poolTotal'] . '）' : '' ?></a>
 
                                 <?php /* 测活与删除都是 POST：用 GET 做删除的话，
                                          一个 <img src="..."> 就能把数据删掉 */ ?>

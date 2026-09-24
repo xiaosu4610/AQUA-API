@@ -56,6 +56,13 @@ Route::group('/admin', function () {
     Route::post('/channels/delete', [ChannelController::class, 'delete']);
     Route::post('/channels/test', [ChannelController::class, 'test']);
 
+    // 渠道密钥池（一个渠道下可挂多把 Key，轮换使用）
+    Route::get('/channels/keys', [ChannelController::class, 'keys']);
+    Route::post('/channels/keys/import', [ChannelController::class, 'keysImport']);
+    Route::post('/channels/keys/toggle', [ChannelController::class, 'keysToggle']);
+    Route::post('/channels/keys/delete', [ChannelController::class, 'keysDelete']);
+    Route::post('/channels/keys/reset', [ChannelController::class, 'keysReset']);
+
     // POST /admin/logout —— 退出登录
     Route::post('/logout', [AdminController::class, 'logout']);
 })->middleware([AdminAuth::class]);

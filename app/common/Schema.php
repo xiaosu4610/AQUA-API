@@ -35,7 +35,7 @@ namespace app\common;
 final class Schema
 {
     /** 当前期望的表结构版本。新增迁移时递增。 */
-    public const VERSION = 2;
+    public const VERSION = 3;
 
     /**
      * 确保表结构存在且为最新版本。
@@ -58,6 +58,10 @@ final class Schema
 
         if ($current < 2) {
             self::createV2();
+        }
+
+        if ($current < 3) {
+            self::createV3();
         }
 
         Settings::put('schema_version', (string) self::VERSION);
@@ -160,6 +164,56 @@ final class Schema
                 last_error   VARCHAR(500) NULL,
                 created_at   INTEGER      NOT NULL,
                 updated_at   INTEGER      NOT NULL
+            )
+        SQL);
+    }
+
+    /**
+     * v3：渠道密钥池
+     *
+     * 一个渠道可以挂很多把 Key，轮流使用 —— 这是本项目支撑
+     * 「数百把免费额度 Key 聚合出高并发」的核心表。
+     *
+     * 设计要点：
+     *
+     * 1. **key_hash 用于导入去重**。
+     *    存 Key 的 SHA-256（不是明文）。用途只有一个：让导入操作**幂等** ——
+     *    同一批 Key 重复导入不会产生重复记录。
+     *    这不构成泄露风险：Key 本身是高熵随机串，哈希无法反推原文。
+     *    约束是 UNIQUE(channel_id, key_hash)，即「同一个渠道内不重复」，
+     *    不同渠道允许存在相同的 Key（例如测试渠道与生产渠道共用一把）。
+     *
+     * 2. **限流计数器落在数据库里**（window_start + used_requests）。
+     *    为什么不放进程内存？因为服务有多个工作进程，
+     *    每个进程各记一份的话，实际放行量会是限制值的数倍 ——
+     *    对「每把 Key 每分钟 40 次」这种硬额度来说，超发就等于烧 Key。
+     *    放在库里、并用**单条 UPDATE 完成「判断 + 占用」**，才能跨进程准确。
+     *
+     * 3. **status 与 fail_count 为健康治理留位**。
+     *    将来做「连续失败就隔离、过一段时间再放出来试」时直接用这两列，
+     *    不需要再改表。
+     */
+    private static function createV3(): void
+    {
+        $pdo = Db::pdo();
+        $autoId = self::autoId();
+
+        $pdo->exec(<<<SQL
+            CREATE TABLE IF NOT EXISTS channel_keys (
+                id            {$autoId},
+                channel_id    INTEGER      NOT NULL,
+                key_hash      VARCHAR(64)  NOT NULL,
+                api_key_enc   TEXT         NOT NULL,
+                status        INTEGER      NOT NULL DEFAULT 1,
+                rpm_limit     INTEGER      NOT NULL DEFAULT 0,
+                window_start  INTEGER      NOT NULL DEFAULT 0,
+                used_requests INTEGER      NOT NULL DEFAULT 0,
+                last_used_at  INTEGER      NULL,
+                last_error    VARCHAR(500) NULL,
+                fail_count    INTEGER      NOT NULL DEFAULT 0,
+                created_at    INTEGER      NOT NULL,
+                updated_at    INTEGER      NOT NULL,
+                CONSTRAINT uq_channel_key UNIQUE (channel_id, key_hash)
             )
         SQL);
     }

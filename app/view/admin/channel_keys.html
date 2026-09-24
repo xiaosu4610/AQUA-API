@@ -1,0 +1,215 @@
+<?php
+/**
+ * 后台 · 渠道密钥池
+ *
+ * 一个渠道下可能挂几百把 Key，本页用于运维它们。
+ *
+ * ⚠️ 两条必须守住的实现约束：
+ *
+ *   1. **只渲染掩码，绝不渲染完整 Key**。
+ *      本页可能一次性输出几百条记录，一旦把明文写进 HTML，
+ *      泄露面会被放大几百倍（浏览器缓存、截图、XSS 都可能带走它）。
+ *
+ *   2. **整张表共用一个 <form>**。
+ *      若每行各包一个 form，399 行就是 399 个 form、双按钮则近 800 个，
+ *      页面体积和渲染开销都很浪费。改用按钮的 `formaction` + `name/value`
+ *      把动作和参数直接带在按钮上，一个 form 就能搞定全部行的操作。
+ *
+ * @var string $csrf
+ * @var string $siteName
+ * @var string $siteMode
+ * @var int    $channelId
+ * @var string $channelName
+ * @var int    $defaultRpm
+ * @var array{total:int,enabled:int,disabled:int,exhausted:int} $stats
+ * @var array<int, array{
+ *     id:int, masked:string, enabled:bool, rpmLimit:int, used:int,
+ *     inWindow:bool, lastUsedAt:string, failCount:int, lastError:string
+ * }> $keys
+ * @var string $notice
+ * @var string $noticeType
+ * @var bool   $keyConfigured
+ */
+$noticeType = $noticeType ?? 'info';
+$window = (int) (floor(time() / 60) * 60);
+?>
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title><?= htmlspecialchars((string) $siteName, ENT_QUOTES, 'UTF-8') ?> · 密钥池</title>
+    <?php include __DIR__ . '/_style.html'; ?>
+    <style>
+        .compact th, .compact td { padding: 6px 8px; font-size: 12.5px; }
+        .summary { display: flex; gap: 26px; flex-wrap: wrap; margin-bottom: 6px; }
+        .summary .item .n { font-size: 22px; font-weight: 600; }
+        .summary .item .l { font-size: 12px; color: #8aa2ae; }
+    </style>
+</head>
+<body>
+<div class="wrap">
+    <?php $active = 'channels'; include __DIR__ . '/_header.html'; ?>
+
+    <?php if (($notice ?? '') !== ''): ?>
+        <div class="alert <?= htmlspecialchars((string) $noticeType, ENT_QUOTES, 'UTF-8') ?>">
+            <?= htmlspecialchars((string) $notice, ENT_QUOTES, 'UTF-8') ?>
+        </div>
+    <?php endif; ?>
+
+    <?php if (empty($keyConfigured)): ?>
+        <div class="alert err">
+            尚未配置 <code>APP_KEY</code>，无法加密保存密钥。<br>
+            请在服务器 <code>.env</code> 加入 <code>APP_KEY=&lt;32 字节随机串&gt;</code> 后重启服务。
+        </div>
+    <?php endif; ?>
+
+    <section>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+            <h2 style="margin:0">密钥池 · <?= htmlspecialchars((string) $channelName, ENT_QUOTES, 'UTF-8') ?></h2>
+            <a class="ghost-link" href="/admin/channels"
+               style="padding:7px 14px;font-size:13px;border-radius:7px;color:#9db4c0;border:1px solid rgba(255,255,255,.18);text-decoration:none">返回渠道列表</a>
+        </div>
+
+        <div class="summary">
+            <div class="item"><div class="n"><?= (int) $stats['total'] ?></div><div class="l">密钥总数</div></div>
+            <div class="item"><div class="n" style="color:#7ee2a8"><?= (int) $stats['enabled'] ?></div><div class="l">可用</div></div>
+            <div class="item"><div class="n" style="color:#ffb4ad"><?= (int) $stats['disabled'] ?></div><div class="l">已停用</div></div>
+            <div class="item">
+                <div class="n"><?= (int) $stats['enabled'] * $defaultRpm ?></div>
+                <div class="l">聚合限额（次/分钟）</div>
+            </div>
+            <div class="item"><div class="n"><?= $defaultRpm ?></div><div class="l">单把限额</div></div>
+        </div>
+        <p class="note" style="margin-top:10px">
+            当前时间窗口：<code><?= date('H:i', $window) ?></code> ~ <code><?= date('H:i', $window + 59) ?></code>
+            （窗口「已用」次数会在下一分钟自动归零；也可用下方「重置限流计数」立即清零）
+        </p>
+    </section>
+
+    <section>
+        <h2>批量导入</h2>
+        <form method="post" action="/admin/channels/keys/import">
+            <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
+            <input type="hidden" name="id" value="<?= (int) $channelId ?>">
+
+            <div style="display:grid;grid-template-columns:1fr 160px;gap:14px;align-items:start">
+                <div>
+                    <div class="lbl" style="font-size:12px;color:#8aa2ae;margin-bottom:6px">
+                        粘贴密钥（每行一个，也支持空格或逗号分隔）
+                    </div>
+                    <textarea name="keys" placeholder="nvapi-xxxxxxxx&#10;nvapi-yyyyyyyy&#10;..."></textarea>
+                </div>
+                <div>
+                    <div class="lbl" style="font-size:12px;color:#8aa2ae;margin-bottom:6px">单把每分钟上限</div>
+                    <input type="number" name="rpm" min="0" value="<?= (int) $defaultRpm ?>">
+                    <div class="tip" style="font-size:12px;color:#7d95a1;margin-top:6px">
+                        0 表示沿用渠道默认值
+                    </div>
+                </div>
+            </div>
+
+            <div style="margin-top:14px">
+                <button class="primary" type="submit">导入</button>
+            </div>
+            <p class="note">
+                导入是<b>幂等</b>的：同一把密钥重复导入不会产生重复记录，中断后可放心重跑。<br>
+                密钥会以 AES-256-GCM 加密后入库，列表里只显示掩码。
+            </p>
+        </form>
+    </section>
+
+    <section>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+            <h2 style="margin:0">密钥列表（<?= count($keys) ?>）</h2>
+
+            <?php /* 重置限流计数：单独的 form，避免与下面表格的 form 嵌套 */ ?>
+            <form method="post" action="/admin/channels/keys/reset" style="margin:0"
+                  onsubmit="return confirm('确定重置该渠道全部密钥的本分钟计数？');">
+                <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
+                <input type="hidden" name="id" value="<?= (int) $channelId ?>">
+                <button class="ghost" type="submit">重置限流计数</button>
+            </form>
+        </div>
+
+        <?php if ($keys === []): ?>
+            <p class="note" style="margin:0">
+                该渠道还没有密钥。可以在上方粘贴导入，或在渠道表单里直接填「一把」Key（单 Key 模式）。
+            </p>
+        <?php else: ?>
+            <?php /* 整张表共用一个 form，按钮通过 formaction + name/value 携带动作与参数 */ ?>
+            <form method="post" action="/admin/channels/keys/toggle">
+                <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
+
+                <table class="compact">
+                    <thead>
+                    <tr>
+                        <th style="width:4%">#</th>
+                        <th style="width:15%">密钥</th>
+                        <th style="width:8%">状态</th>
+                        <th style="width:9%">本分钟已用</th>
+                        <th style="width:13%">最近使用</th>
+                        <th style="width:8%">失败次数</th>
+                        <th style="width:23%">最近错误</th>
+                        <th style="width:20%">操作</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($keys as $i => $k): ?>
+                        <tr>
+                            <td class="src"><?= $i + 1 ?></td>
+                            <td class="mono"><?= htmlspecialchars($k['masked'], ENT_QUOTES, 'UTF-8') ?></td>
+                            <td>
+                                <?php if ($k['enabled']): ?>
+                                    <span style="color:#7ee2a8">可用</span>
+                                <?php else: ?>
+                                    <span style="color:#ffb4ad">停用</span>
+                                <?php endif; ?>
+                            </td>
+                            <td class="mono">
+                                <?php if (!$k['inWindow']): ?>
+                                    <span class="src">0</span>
+                                <?php else: ?>
+                                    <?= $k['used'] ?><?= $k['rpmLimit'] > 0 ? ' / ' . $k['rpmLimit'] : '' ?>
+                                <?php endif; ?>
+                            </td>
+                            <td class="src"><?= htmlspecialchars($k['lastUsedAt'], ENT_QUOTES, 'UTF-8') ?></td>
+                            <td class="src"><?= $k['failCount'] > 0 ? $k['failCount'] : '—' ?></td>
+                            <td class="src" title="<?= htmlspecialchars($k['lastError'], ENT_QUOTES, 'UTF-8') ?>">
+                                <?= htmlspecialchars(mb_substr($k['lastError'], 0, 30), ENT_QUOTES, 'UTF-8') ?>
+                            </td>
+                            <td>
+                                <div class="row-actions" style="gap:6px">
+                                    <?php if ($k['enabled']): ?>
+                                        <button class="ghost" type="submit"
+                                                formaction="/admin/channels/keys/toggle"
+                                                name="disable_id" value="<?= $k['id'] ?>">停用</button>
+                                    <?php else: ?>
+                                        <button class="ghost" type="submit"
+                                                formaction="/admin/channels/keys/toggle"
+                                                name="enable_id" value="<?= $k['id'] ?>">启用</button>
+                                    <?php endif; ?>
+
+                                    <button class="ghost" type="submit"
+                                            formaction="/admin/channels/keys/delete"
+                                            name="delete_id" value="<?= $k['id'] ?>"
+                                            style="color:#ffb4ad;border-color:rgba(244,67,54,.4)"
+                                            onclick="return confirm('确定删除该密钥？不可撤销。');">删除</button>
+                                </div>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </form>
+        <?php endif; ?>
+
+
+    </section>
+</div>
+<style>
+    .ghost-link:hover { color: #fff !important; border-color: rgba(255,255,255,.4) !important; }
+</style>
+</body>
+</html>

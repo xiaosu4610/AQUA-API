@@ -193,20 +193,57 @@ final class Channel
      * 生成用于展示的 Key 掩码，例如 `nvapi-…9f3a`。
      *
      * 页面与日志里只允许出现这个掩码，绝不能出现完整 Key。
+     * 掩码规则统一由 Crypto::mask() 提供，保证与密钥池的展示口径一致。
      */
     public static function maskedKey(array $channel): string
     {
-        $plain = self::plainKey($channel);
-        if ($plain === '') {
-            return '（未设置）';
+        return Crypto::mask(self::plainKey($channel));
+    }
+
+    /**
+     * 取一把可用于发起请求的 Key。
+     *
+     * 取用顺序：**优先密钥池，其次渠道自带的那把单 Key**。
+     *
+     * 这样设计的理由是兼顾两类使用者：
+     *   · 开源版用户：一个渠道填一把 Key 就够用，不必理解「密钥池」这个概念；
+     *   · 官方部署：一个渠道下挂几百把 Key，靠池子轮换把免费额度聚合起来。
+     *
+     * 注意：**只有从池子取到的 Key 才受每分钟限流约束** ——
+     * 单 Key 场景下没有可轮换的余量，限流没有意义（超了就超了，没有备选）。
+     * 从池子取用时，返回数组里会带 `class` 信息，调用方据此决定失败后怎么处置。
+     *
+     * @param int $defaultLimit 池子里单把 Key 的默认每分钟上限
+     * @return array{key:string, key_id:int|null, from_pool:bool}|null
+     *         null 表示确实是「没有任何 Key 可用」
+     */
+    public static function acquireKey(array $channel, int $defaultLimit = 40): ?array
+    {
+        $channelId = (int) ($channel['id'] ?? 0);
+
+        if ($channelId > 0) {
+            $poolKey = ChannelKey::acquire($channelId, $defaultLimit);
+            if ($poolKey !== null) {
+                return [
+                    'key' => (string) $poolKey['plain_key'],
+                    'key_id' => (int) $poolKey['id'],
+                    'from_pool' => true,
+                ];
+            }
+
+            // 池子非空但一把都取不到 => 全都用满了或被停用了。
+            // 这种情况要返回 null（让上层报「当前无可用密钥」），
+            // 而**不能**回落到渠道自带的单 Key —— 否则会绕过限流，
+            // 把本该被限制的流量打到那把 Key 上。
+            if (ChannelKey::statsForChannel($channelId)['total'] > 0) {
+                return null;
+            }
         }
 
-        // 太短的 Key 不显示头尾，避免掩码本身泄露大部分内容
-        if (strlen($plain) < 12) {
-            return str_repeat('•', strlen($plain));
-        }
+        // 没有密钥池：退回单 Key 模式
+        $single = self::plainKey($channel);
 
-        return substr($plain, 0, 6) . '…' . substr($plain, -4);
+        return $single === '' ? null : ['key' => $single, 'key_id' => null, 'from_pool' => false];
     }
 
     /**
@@ -233,13 +270,28 @@ final class Channel
             return ['ok' => false, 'message' => '渠道不存在', 'models' => [], 'http_code' => 0];
         }
 
-        $key = self::plainKey($channel);
-        if ($key === '') {
-            $result = ['ok' => false, 'message' => '该渠道没有可用的 API Key', 'models' => [], 'http_code' => 0];
+        // 优先用**密钥池**里的一把。
+        // 官方部署下渠道可能挂几百把 Key，测活从池子取才能同时验证两件事：
+        // 「池子取得到 Key」以及「取出来的这把 Key 确实有效」。
+        $acquired = self::acquireKey($channel, Settings::int('nim.rpm_limit', 40));
+
+        if ($acquired === null) {
+            $poolTotal = ChannelKey::statsForChannel((int) $channel['id'])['total'];
+
+            $result = [
+                'ok' => false,
+                'message' => $poolTotal > 0
+                    ? "密钥池中有 {$poolTotal} 把 Key，但当前全部不可用（已达每分钟上限或已停用）"
+                    : '该渠道没有可用的 API Key',
+                'models' => [],
+                'http_code' => 0,
+            ];
             self::recordTest($id, $result);
 
             return $result;
         }
+
+        $key = $acquired['key'];
 
         $baseUrl = rtrim((string) $channel['base_url'], '/');
 
@@ -301,6 +353,23 @@ final class Channel
 
         $result = self::interpretProbe($chatResponse, $probeModel, $models);
         self::recordTest($id, $result);
+
+        // 把探测结果反馈到密钥池，让池子的健康状态跟着更新。
+        // ⚠️ 只有「Key 无效（401/403）」才算永久失败。
+        // 429、5xx、网络抖动都不能停用 Key —— 否则上游一次抖动就会把
+        // 几百把本来好好的 Key 全部停掉，这正是项目文档里
+        // 「瞬时故障禁止进 retired」那条原则的落实。
+        if ($acquired['key_id'] !== null) {
+            if ($result['ok']) {
+                ChannelKey::markSuccess($acquired['key_id']);
+            } else {
+                ChannelKey::markFailure(
+                    $acquired['key_id'],
+                    (string) $result['message'],
+                    in_array($result['http_code'], [401, 403], true)
+                );
+            }
+        }
 
         return $result;
     }
