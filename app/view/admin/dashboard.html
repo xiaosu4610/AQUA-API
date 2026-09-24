@@ -31,42 +31,72 @@
 <div class="wrap">
     <?php $active = 'dashboard'; include __DIR__ . '/_header.html'; ?>
 
+    <?php if ($debugOn): ?>
+        <div class="alert err">
+            <?= icon('alert', 17) ?>
+            <span>
+                当前处于<b>调试模式</b>，错误详情可能暴露给访问者。
+                生产环境请在 <code>.env</code> 里设置 <code>APP_DEBUG=false</code>。
+            </span>
+        </div>
+    <?php endif; ?>
+
     <section>
-        <h2>运行状态</h2>
-        <div class="grid">
-            <div class="kv"><div class="k">PHP 版本</div><div class="v"><?= htmlspecialchars((string) $phpVersion, ENT_QUOTES, 'UTF-8') ?></div></div>
-            <div class="kv"><div class="k">数据库</div><div class="v"><?= htmlspecialchars((string) $dbDriver, ENT_QUOTES, 'UTF-8') ?></div></div>
-            <div class="kv">
-                <div class="k">调试模式</div>
-                <div class="v <?= $debugOn ? 'warn' : '' ?>">
-                    <?= $debugOn ? '开启（生产环境应关闭）' : '关闭' ?>
-                </div>
+        <h2><?= icon('pulse', 18) ?>运行状态</h2>
+        <div class="stats">
+            <div class="stat">
+                <div class="n"><?= htmlspecialchars((string) $phpVersion, ENT_QUOTES, 'UTF-8') ?></div>
+                <div class="l">PHP 版本</div>
             </div>
-            <div class="kv"><div class="k">上次登录</div><div class="v"><?= htmlspecialchars((string) $loginAt, ENT_QUOTES, 'UTF-8') ?></div></div>
-            <div class="kv"><div class="k">来源 IP</div><div class="v mono"><?= htmlspecialchars((string) $loginIp, ENT_QUOTES, 'UTF-8') ?></div></div>
+            <div class="stat">
+                <div class="n" style="font-size:18px"><?= htmlspecialchars((string) $dbDriver, ENT_QUOTES, 'UTF-8') ?></div>
+                <div class="l">数据库</div>
+            </div>
+            <div class="stat <?= $debugOn ? 'danger' : 'ok' ?>">
+                <div class="n" style="font-size:18px"><?= $debugOn ? '开启' : '关闭' ?></div>
+                <div class="l">调试模式</div>
+            </div>
+            <div class="stat">
+                <div class="n" style="font-size:15px;font-weight:600"><?= htmlspecialchars((string) $loginAt, ENT_QUOTES, 'UTF-8') ?></div>
+                <div class="l">上次登录</div>
+            </div>
+            <div class="stat">
+                <div class="n mono" style="font-size:15px;font-weight:600"><?= htmlspecialchars((string) $loginIp, ENT_QUOTES, 'UTF-8') ?></div>
+                <div class="l">来源 IP</div>
+            </div>
         </div>
     </section>
 
     <section>
-        <h2>配置生效情况</h2>
-        <table>
-            <thead>
-            <tr>
-                <th style="width:34%">配置项</th>
-                <th style="width:34%">当前生效值</th>
-                <th style="width:32%">来源</th>
-            </tr>
-            </thead>
-            <tbody>
-            <?php foreach ($configs as $row): ?>
+        <h2><?= icon('settings', 18) ?>配置生效情况</h2>
+        <div class="table-scroll">
+            <table>
+                <thead>
                 <tr>
-                    <td class="mono"><?= htmlspecialchars((string) $row['key'], ENT_QUOTES, 'UTF-8') ?></td>
-                    <td class="mono"><?= htmlspecialchars((string) $row['value'], ENT_QUOTES, 'UTF-8') ?></td>
-                    <td class="src"><?= htmlspecialchars((string) $row['source'], ENT_QUOTES, 'UTF-8') ?></td>
+                    <th style="width:34%">配置项</th>
+                    <th style="width:34%">当前生效值</th>
+                    <th style="width:32%">来源</th>
                 </tr>
-            <?php endforeach; ?>
-            </tbody>
-        </table>
+                </thead>
+                <tbody>
+                <?php foreach ($configs as $row): ?>
+                    <tr>
+                        <td class="mono"><?= htmlspecialchars((string) $row['key'], ENT_QUOTES, 'UTF-8') ?></td>
+                        <td class="mono"><?= htmlspecialchars((string) $row['value'], ENT_QUOTES, 'UTF-8') ?></td>
+                        <td>
+                            <?php
+                            // 来源用徽标区分：数据库=可改，环境变量=需登服务器，代码默认=兜底
+                            $srcKind = ['database' => 'accent', 'env' => 'warn'];
+                            ?>
+                            <span class="pill <?= $srcKind[$row['source']] ?? '' ?>">
+                                <?= htmlspecialchars((string) $row['source'], ENT_QUOTES, 'UTF-8') ?>
+                            </span>
+                        </td>
+                    </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
         <p class="note">
             取值优先级：<code>数据库</code> → <code>环境变量 .env</code> → <code>代码默认值</code>。
             同一个键如果数据库里已有值，改 <code>.env</code> 不会生效 ——

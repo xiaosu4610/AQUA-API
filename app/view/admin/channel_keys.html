@@ -41,12 +41,6 @@ $window = (int) (floor(time() / 60) * 60);
     <meta name="robots" content="noindex, nofollow">
     <title><?= htmlspecialchars((string) $siteName, ENT_QUOTES, 'UTF-8') ?> · 密钥池</title>
     <?php include __DIR__ . '/_style.html'; ?>
-    <style>
-        .compact th, .compact td { padding: 6px 8px; font-size: 12.5px; }
-        .summary { display: flex; gap: 26px; flex-wrap: wrap; margin-bottom: 6px; }
-        .summary .item .n { font-size: 22px; font-weight: 600; }
-        .summary .item .l { font-size: 12px; color: #8aa2ae; }
-    </style>
 </head>
 <body>
 <div class="wrap">
@@ -54,64 +48,66 @@ $window = (int) (floor(time() / 60) * 60);
 
     <?php if (($notice ?? '') !== ''): ?>
         <div class="alert <?= htmlspecialchars((string) $noticeType, ENT_QUOTES, 'UTF-8') ?>">
-            <?= htmlspecialchars((string) $notice, ENT_QUOTES, 'UTF-8') ?>
+            <?= icon($noticeType === 'err' ? 'alert' : 'check', 17) ?>
+            <span><?= htmlspecialchars((string) $notice, ENT_QUOTES, 'UTF-8') ?></span>
         </div>
     <?php endif; ?>
 
     <?php if (empty($keyConfigured)): ?>
         <div class="alert err">
-            尚未配置 <code>APP_KEY</code>，无法加密保存密钥。<br>
-            请在服务器 <code>.env</code> 加入 <code>APP_KEY=&lt;32 字节随机串&gt;</code> 后重启服务。
+            <?= icon('alert', 17) ?>
+            <span>
+                尚未配置 <code>APP_KEY</code>，无法加密保存密钥。<br>
+                请在服务器 <code>.env</code> 加入 <code>APP_KEY=&lt;32 字节随机串&gt;</code> 后重启服务。
+            </span>
         </div>
     <?php endif; ?>
 
     <section>
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
-            <h2 style="margin:0">密钥池 · <?= htmlspecialchars((string) $channelName, ENT_QUOTES, 'UTF-8') ?></h2>
-            <a class="ghost-link" href="/admin/channels"
-               style="padding:7px 14px;font-size:13px;border-radius:7px;color:#9db4c0;border:1px solid rgba(255,255,255,.18);text-decoration:none">返回渠道列表</a>
+        <div class="between">
+            <h2 class="mb-0"><?= icon('keys-pool', 18) ?>密钥池 · <?= htmlspecialchars((string) $channelName, ENT_QUOTES, 'UTF-8') ?></h2>
+            <a class="ghost" href="/admin/channels"><?= icon('channels', 14) ?>返回渠道列表</a>
         </div>
 
-        <div class="summary">
-            <div class="item"><div class="n"><?= (int) $stats['total'] ?></div><div class="l">密钥总数</div></div>
-            <div class="item"><div class="n" style="color:#7ee2a8"><?= (int) $stats['enabled'] ?></div><div class="l">可用</div></div>
-            <div class="item"><div class="n" style="color:#ffb4ad"><?= (int) $stats['disabled'] ?></div><div class="l">已停用</div></div>
-            <div class="item">
+        <hr class="sep">
+
+        <div class="stats">
+            <div class="stat"><div class="n"><?= (int) $stats['total'] ?></div><div class="l">密钥总数</div></div>
+            <div class="stat ok"><div class="n"><?= (int) $stats['enabled'] ?></div><div class="l">可用</div></div>
+            <div class="stat danger"><div class="n"><?= (int) $stats['disabled'] ?></div><div class="l">已停用</div></div>
+            <div class="stat accent">
                 <div class="n"><?= (int) $stats['enabled'] * $defaultRpm ?></div>
                 <div class="l">聚合限额（次/分钟）</div>
             </div>
-            <div class="item"><div class="n"><?= $defaultRpm ?></div><div class="l">单把限额</div></div>
+            <div class="stat"><div class="n"><?= (int) $defaultRpm ?></div><div class="l">单把限额</div></div>
         </div>
-        <p class="note" style="margin-top:10px">
+
+        <p class="note">
             当前时间窗口：<code><?= date('H:i', $window) ?></code> ~ <code><?= date('H:i', $window + 59) ?></code>
             （窗口「已用」次数会在下一分钟自动归零；也可用下方「重置限流计数」立即清零）
         </p>
     </section>
 
     <section>
-        <h2>批量导入</h2>
+        <h2><?= icon('upload', 18) ?>批量导入</h2>
         <form method="post" action="/admin/channels/keys/import">
             <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
             <input type="hidden" name="id" value="<?= (int) $channelId ?>">
 
-            <div style="display:grid;grid-template-columns:1fr 160px;gap:14px;align-items:start">
-                <div>
-                    <div class="lbl" style="font-size:12px;color:#8aa2ae;margin-bottom:6px">
-                        粘贴密钥（每行一个，也支持空格或逗号分隔）
-                    </div>
+            <div class="two-col">
+                <div class="field mb-0">
+                    <div class="lbl">粘贴密钥（每行一个，也支持空格或逗号分隔）</div>
                     <textarea name="keys" placeholder="nvapi-xxxxxxxx&#10;nvapi-yyyyyyyy&#10;..."></textarea>
                 </div>
-                <div>
-                    <div class="lbl" style="font-size:12px;color:#8aa2ae;margin-bottom:6px">单把每分钟上限</div>
+                <div class="field mb-0">
+                    <div class="lbl">单把每分钟上限</div>
                     <input type="number" name="rpm" min="0" value="<?= (int) $defaultRpm ?>">
-                    <div class="tip" style="font-size:12px;color:#7d95a1;margin-top:6px">
-                        0 表示沿用渠道默认值
-                    </div>
+                    <div class="tip">0 表示沿用渠道默认值</div>
                 </div>
             </div>
 
-            <div style="margin-top:14px">
-                <button class="primary" type="submit">导入</button>
+            <div class="actions-bar">
+                <button class="primary" type="submit"><?= icon('upload', 16) ?>导入</button>
             </div>
             <p class="note">
                 导入是<b>幂等</b>的：同一把密钥重复导入不会产生重复记录，中断后可放心重跑。<br>
@@ -121,95 +117,96 @@ $window = (int) (floor(time() / 60) * 60);
     </section>
 
     <section>
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
-            <h2 style="margin:0">密钥列表（<?= count($keys) ?>）</h2>
+        <div class="between">
+            <h2 class="mb-0"><?= icon('key', 18) ?>密钥列表（<?= count($keys) ?>）</h2>
 
             <?php /* 重置限流计数：单独的 form，避免与下面表格的 form 嵌套 */ ?>
             <form method="post" action="/admin/channels/keys/reset" style="margin:0"
                   onsubmit="return confirm('确定重置该渠道全部密钥的本分钟计数？');">
                 <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
                 <input type="hidden" name="id" value="<?= (int) $channelId ?>">
-                <button class="ghost" type="submit">重置限流计数</button>
+                <button class="ghost" type="submit"><?= icon('refresh', 14) ?>重置限流计数</button>
             </form>
         </div>
 
+        <hr class="sep">
+
         <?php if ($keys === []): ?>
-            <p class="note" style="margin:0">
-                该渠道还没有密钥。可以在上方粘贴导入，或在渠道表单里直接填「一把」Key（单 Key 模式）。
-            </p>
+            <div class="empty">
+                <?= icon('keys-pool', 26) ?>
+                <div>该渠道还没有密钥。可以在上方粘贴导入，或在渠道表单里直接填「一把」Key（单 Key 模式）。</div>
+            </div>
         <?php else: ?>
             <?php /* 整张表共用一个 form，按钮通过 formaction + name/value 携带动作与参数 */ ?>
             <form method="post" action="/admin/channels/keys/toggle">
                 <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
 
-                <table class="compact">
-                    <thead>
-                    <tr>
-                        <th style="width:4%">#</th>
-                        <th style="width:15%">密钥</th>
-                        <th style="width:8%">状态</th>
-                        <th style="width:9%">本分钟已用</th>
-                        <th style="width:13%">最近使用</th>
-                        <th style="width:8%">失败次数</th>
-                        <th style="width:23%">最近错误</th>
-                        <th style="width:20%">操作</th>
-                    </tr>
-                    </thead>
-                    <tbody>
-                    <?php foreach ($keys as $i => $k): ?>
+                <div class="table-scroll">
+                    <table class="compact">
+                        <thead>
                         <tr>
-                            <td class="src"><?= $i + 1 ?></td>
-                            <td class="mono"><?= htmlspecialchars($k['masked'], ENT_QUOTES, 'UTF-8') ?></td>
-                            <td>
-                                <?php if ($k['enabled']): ?>
-                                    <span style="color:#7ee2a8">可用</span>
-                                <?php else: ?>
-                                    <span style="color:#ffb4ad">停用</span>
-                                <?php endif; ?>
-                            </td>
-                            <td class="mono">
-                                <?php if (!$k['inWindow']): ?>
-                                    <span class="src">0</span>
-                                <?php else: ?>
-                                    <?= $k['used'] ?><?= $k['rpmLimit'] > 0 ? ' / ' . $k['rpmLimit'] : '' ?>
-                                <?php endif; ?>
-                            </td>
-                            <td class="src"><?= htmlspecialchars($k['lastUsedAt'], ENT_QUOTES, 'UTF-8') ?></td>
-                            <td class="src"><?= $k['failCount'] > 0 ? $k['failCount'] : '—' ?></td>
-                            <td class="src" title="<?= htmlspecialchars($k['lastError'], ENT_QUOTES, 'UTF-8') ?>">
-                                <?= htmlspecialchars(mb_substr($k['lastError'], 0, 30), ENT_QUOTES, 'UTF-8') ?>
-                            </td>
-                            <td>
-                                <div class="row-actions" style="gap:6px">
-                                    <?php if ($k['enabled']): ?>
-                                        <button class="ghost" type="submit"
-                                                formaction="/admin/channels/keys/toggle"
-                                                name="disable_id" value="<?= $k['id'] ?>">停用</button>
-                                    <?php else: ?>
-                                        <button class="ghost" type="submit"
-                                                formaction="/admin/channels/keys/toggle"
-                                                name="enable_id" value="<?= $k['id'] ?>">启用</button>
-                                    <?php endif; ?>
-
-                                    <button class="ghost" type="submit"
-                                            formaction="/admin/channels/keys/delete"
-                                            name="delete_id" value="<?= $k['id'] ?>"
-                                            style="color:#ffb4ad;border-color:rgba(244,67,54,.4)"
-                                            onclick="return confirm('确定删除该密钥？不可撤销。');">删除</button>
-                                </div>
-                            </td>
+                            <th style="width:4%">#</th>
+                            <th style="width:15%">密钥</th>
+                            <th style="width:8%">状态</th>
+                            <th style="width:9%">本分钟已用</th>
+                            <th style="width:13%">最近使用</th>
+                            <th style="width:8%">失败次数</th>
+                            <th style="width:23%">最近错误</th>
+                            <th style="width:20%">操作</th>
                         </tr>
-                    <?php endforeach; ?>
-                    </tbody>
-                </table>
+                        </thead>
+                        <tbody>
+                        <?php foreach ($keys as $i => $k): ?>
+                            <tr>
+                                <td class="src"><?= $i + 1 ?></td>
+                                <td class="mono"><?= htmlspecialchars($k['masked'], ENT_QUOTES, 'UTF-8') ?></td>
+                                <td>
+                                    <?php if ($k['enabled']): ?>
+                                        <span class="pill ok">可用</span>
+                                    <?php else: ?>
+                                        <span class="pill danger">停用</span>
+                                    <?php endif; ?>
+                                </td>
+                                <td class="mono">
+                                    <?php if (!$k['inWindow']): ?>
+                                        <span class="src">0</span>
+                                    <?php else: ?>
+                                        <?= $k['used'] ?><?= $k['rpmLimit'] > 0 ? ' / ' . $k['rpmLimit'] : '' ?>
+                                    <?php endif; ?>
+                                </td>
+                                <td class="src"><?= htmlspecialchars($k['lastUsedAt'], ENT_QUOTES, 'UTF-8') ?></td>
+                                <td class="<?= $k['failCount'] > 0 ? 'text-danger' : 'src' ?>">
+                                    <?= $k['failCount'] > 0 ? (int) $k['failCount'] : '—' ?>
+                                </td>
+                                <td class="src" title="<?= htmlspecialchars($k['lastError'], ENT_QUOTES, 'UTF-8') ?>">
+                                    <?= htmlspecialchars(mb_substr($k['lastError'], 0, 30), ENT_QUOTES, 'UTF-8') ?>
+                                </td>
+                                <td>
+                                    <div class="row-actions">
+                                        <?php if ($k['enabled']): ?>
+                                            <button class="ghost" type="submit"
+                                                    formaction="/admin/channels/keys/toggle"
+                                                    name="disable_id" value="<?= $k['id'] ?>">停用</button>
+                                        <?php else: ?>
+                                            <button class="ghost" type="submit"
+                                                    formaction="/admin/channels/keys/toggle"
+                                                    name="enable_id" value="<?= $k['id'] ?>">启用</button>
+                                        <?php endif; ?>
+
+                                        <button class="ghost danger" type="submit"
+                                                formaction="/admin/channels/keys/delete"
+                                                name="delete_id" value="<?= $k['id'] ?>"
+                                                onclick="return confirm('确定删除该密钥？不可撤销。');"><?= icon('trash', 13) ?>删除</button>
+                                    </div>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
             </form>
         <?php endif; ?>
-
-
     </section>
 </div>
-<style>
-    .ghost-link:hover { color: #fff !important; border-color: rgba(255,255,255,.4) !important; }
-</style>
 </body>
 </html>

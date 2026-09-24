@@ -1,0 +1,153 @@
+<?php
+/**
+ * 后台图标集（手工绘制的内联 SVG）
+ *
+ * 为什么不用图标字体或图标库：
+ *   · 图标字体要额外加载字体文件，后台还要忍受字体加载失败导致的方块字；
+ *   · 第三方图标库要么引入构建步骤，要么依赖 CDN（境内访问不稳定）。
+ *   内联 SVG 没有额外请求、可随文字缩放、颜色用 currentColor 自动继承，
+ *   是最省事也最可靠的做法。图标不多，手绘完全够用。
+ *
+ * 画法约定（保证风格统一）：
+ *   · 统一 24×24 视图框
+ *   · 只用描边不用填充（fill:none），线宽 1.7，端点圆角
+ *   · 颜色用 currentColor —— 这样图标会自动跟随文字颜色，无需为深色/浅色各画一套
+ *
+ * 用法：<?= icon('channels') ?>  或  <?= icon('trash', 14) ?>
+ */
+
+if (!function_exists('icon')) {
+    /**
+     * 渲染一个图标。
+     *
+     * @param string $name  图标名（见下方 $paths）
+     * @param int    $size  像素尺寸
+     * @param string $class 附加的 CSS 类
+     */
+    function icon(string $name, int $size = 18, string $class = ''): string
+    {
+        $paths = [
+            // 仪表盘：四格
+            'dashboard' => '<rect x="3" y="3" width="7.5" height="7.5" rx="1.5"/>'
+                . '<rect x="13.5" y="3" width="7.5" height="7.5" rx="1.5"/>'
+                . '<rect x="3" y="13.5" width="7.5" height="7.5" rx="1.5"/>'
+                . '<rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.5"/>',
+
+            // 渠道：叠放的两层服务器
+            'channels' => '<rect x="3" y="4" width="18" height="7" rx="2"/>'
+                . '<rect x="3" y="13" width="18" height="7" rx="2"/>'
+                . '<line x1="7" y1="7.5" x2="7.01" y2="7.5"/>'
+                . '<line x1="7" y1="16.5" x2="7.01" y2="16.5"/>',
+
+            // 密钥：钥匙
+            'key' => '<circle cx="8" cy="15" r="4"/>'
+                . '<path d="M10.8 12.2 L20 3"/>'
+                . '<path d="M17 4.5 L19.5 7"/>'
+                . '<path d="M15 6.5 L17.5 9"/>',
+
+            // 密钥池：一串钥匙（三把并列）
+            'keys-pool' => '<circle cx="4.5" cy="6" r="2.5"/>'
+                . '<circle cx="4.5" cy="12" r="2.5"/>'
+                . '<circle cx="4.5" cy="18" r="2.5"/>'
+                . '<path d="M7 6h14M7 12h14M7 18h14"/>',
+
+            // 配置：滑杆
+            'settings' => '<path d="M4 6h10M18 6h2"/>'
+                . '<circle cx="16" cy="6" r="2"/>'
+                . '<path d="M4 12h4M12 12h8"/>'
+                . '<circle cx="10" cy="12" r="2"/>'
+                . '<path d="M4 18h10M18 18h2"/>'
+                . '<circle cx="16" cy="18" r="2"/>',
+
+            // 密码：锁
+            'lock' => '<rect x="4.5" y="10.5" width="15" height="10" rx="2"/>'
+                . '<path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>'
+                . '<line x1="12" y1="14.5" x2="12" y2="16.5"/>',
+
+            // 新增：加号圆圈
+            'plus' => '<circle cx="12" cy="12" r="9"/>'
+                . '<line x1="12" y1="8" x2="12" y2="16"/>'
+                . '<line x1="8" y1="12" x2="16" y2="12"/>',
+
+            // 编辑：铅笔
+            'edit' => '<path d="M4 20h4l10-10a2.5 2.5 0 0 0-3.5-3.5L4 16.5V20z"/>'
+                . '<path d="M13.5 7.5 L16.5 10.5"/>',
+
+            // 删除：垃圾桶
+            'trash' => '<path d="M5 7h14"/>'
+                . '<path d="M9 7V5.5A1.5 1.5 0 0 1 10.5 4h3A1.5 1.5 0 0 1 15 5.5V7"/>'
+                . '<path d="M6.5 7l.8 12A1.5 1.5 0 0 0 8.8 20.5h6.4a1.5 1.5 0 0 0 1.5-1.5l.8-12"/>'
+                . '<line x1="10.5" y1="11" x2="10.5" y2="17"/>'
+                . '<line x1="13.5" y1="11" x2="13.5" y2="17"/>',
+
+            // 测活：脉搏
+            'pulse' => '<path d="M3 12h4l2.5-6 4 12 2.5-6H21"/>',
+
+            // 重置：循环箭头
+            'refresh' => '<path d="M20 11a8 8 0 1 0-2.3 6.3"/>'
+                . '<path d="M20 5v6h-6"/>',
+
+            // 导入：向上箭头入托盘
+            'upload' => '<path d="M12 15V4"/>'
+                . '<path d="M8 8l4-4 4 4"/>'
+                . '<path d="M4 15v3.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V15"/>',
+
+            // 成功：勾选
+            'check' => '<circle cx="12" cy="12" r="9"/>'
+                . '<path d="M8 12.5l2.8 2.8L16.5 9.5"/>',
+
+            // 警告：三角叹号
+            'alert' => '<path d="M12 4.5 21 19.5H3z"/>'
+                . '<line x1="12" y1="10" x2="12" y2="14"/>'
+                . '<line x1="12" y1="16.8" x2="12.01" y2="16.8"/>',
+
+            // 信息：圆圈 i
+            'info' => '<circle cx="12" cy="12" r="9"/>'
+                . '<line x1="12" y1="11" x2="12" y2="16.5"/>'
+                . '<line x1="12" y1="7.8" x2="12.01" y2="7.8"/>',
+
+            // 退出：门 + 箭头
+            'logout' => '<path d="M14 4h4.5A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5H14"/>'
+                . '<path d="M10 8l-4 4 4 4"/>'
+                . '<line x1="6" y1="12" x2="16" y2="12"/>',
+
+            // 首页：房子
+            'home' => '<path d="M4 10.5 12 4l8 6.5"/>'
+                . '<path d="M6 10v9a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1v-9"/>'
+                . '<path d="M10 20v-5h4v5"/>',
+
+            // 数据库：圆柱
+            'database' => '<ellipse cx="12" cy="6" rx="7.5" ry="2.8"/>'
+                . '<path d="M4.5 6v12c0 1.6 3.4 2.8 7.5 2.8s7.5-1.2 7.5-2.8V6"/>'
+                . '<path d="M4.5 12c0 1.6 3.4 2.8 7.5 2.8s7.5-1.2 7.5-2.8"/>',
+
+            // 外部链接
+            'external' => '<path d="M14 5h5v5"/>'
+                . '<path d="M19 5l-7.5 7.5"/>'
+                . '<path d="M18 14v4.5A1.5 1.5 0 0 1 16.5 20h-11A1.5 1.5 0 0 1 4 18.5v-11A1.5 1.5 0 0 1 5.5 6H10"/>',
+
+            // 盾牌：安全
+            'shield' => '<path d="M12 3.5 19 6v5.5c0 4.2-2.9 7.6-7 8.9-4.1-1.3-7-4.7-7-8.9V6z"/>'
+                . '<path d="M9 12l2 2 4-4"/>',
+
+            // 闪电：性能 / 限流
+            'bolt' => '<path d="M13 3 5 13.5h5.5L11 21l8-10.5h-5.5z"/>',
+
+            // 用户
+            'user' => '<circle cx="12" cy="8.5" r="3.8"/>'
+                . '<path d="M4.5 20a7.5 7.5 0 0 1 15 0"/>',
+        ];
+
+        $body = $paths[$name] ?? $paths['info'];
+
+        return sprintf(
+            '<svg class="ico %s" width="%d" height="%d" viewBox="0 0 24 24" fill="none" '
+            . 'stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" '
+            . 'aria-hidden="true">%s</svg>',
+            htmlspecialchars($class, ENT_QUOTES, 'UTF-8'),
+            $size,
+            $size,
+            $body
+        );
+    }
+}

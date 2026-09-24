@@ -7,6 +7,7 @@
  * @var string $siteMode
  * @var string $notice
  * @var string $noticeType
+ * @var bool   $keyConfigured
  * @var array<int, array{
  *     id:int, name:string, typeLabel:string, baseUrl:string, keyMasked:string,
  *     modelCount:int, models:array<int,string>, priority:int, weight:int,
@@ -31,152 +32,155 @@ $noticeType = $noticeType ?? 'info';
 
     <?php if (($notice ?? '') !== ''): ?>
         <div class="alert <?= htmlspecialchars((string) $noticeType, ENT_QUOTES, 'UTF-8') ?>">
-            <?= htmlspecialchars((string) $notice, ENT_QUOTES, 'UTF-8') ?>
+            <?= icon($noticeType === 'ok' ? 'check' : ($noticeType === 'err' ? 'alert' : 'info'), 16) ?>
+            <div><?= htmlspecialchars((string) $notice, ENT_QUOTES, 'UTF-8') ?></div>
         </div>
     <?php endif; ?>
 
-    <?php /* 没配 APP_KEY 时提前警告：否则用户点保存只会看到一个 500 */ ?>
     <?php if (empty($keyConfigured)): ?>
         <div class="alert err">
-            尚未配置 <code>APP_KEY</code>，因此<b>无法加密保存 API Key</b>（新增会失败）。<br>
-            请在服务器的 <code>.env</code> 中加入
-            <code>APP_KEY=&lt;32 字节随机串&gt;</code>，然后执行
-            <code>systemctl restart aqua-api</code>。<br>
-            生成方式：<code>php -r "echo bin2hex(random_bytes(32));"</code>
+            <?= icon('alert', 16) ?>
+            <div>
+                尚未配置 <code>APP_KEY</code>，因此<b>无法加密保存 API Key</b>（新增会失败）。<br>
+                请在服务器 <code>.env</code> 加入 <code>APP_KEY=&lt;32 字节随机串&gt;</code>，然后执行
+                <code>systemctl restart aqua-api</code>。<br>
+                生成方式：<code>php -r "echo bin2hex(random_bytes(32));"</code>
+            </div>
         </div>
     <?php endif; ?>
 
     <section>
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
-            <h2 style="margin:0">渠道列表（<?= count($channels) ?>）</h2>
-            <a class="btn-link" href="/admin/channels/new"
-               style="padding:8px 16px;background:#4fc3f7;color:#06232e;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px">新增渠道</a>
+        <div class="between" style="margin-bottom:16px">
+            <h2 class="mb-0"><?= icon('channels', 17) ?>渠道列表（<?= count($channels) ?>）</h2>
+            <a class="primary" href="/admin/channels/new"><?= icon('plus', 16) ?>新增渠道</a>
         </div>
 
         <?php if ($channels === []): ?>
-            <p class="note" style="margin:0">
-                还没有任何渠道。网关的路由就是「从多个渠道里挑一个最合适的」——
-                所以第一步是先把上游 Key 加进来。点击右上角「新增渠道」开始。
-            </p>
+            <div class="empty">
+                <?= icon('channels', 30) ?>
+                <div>还没有任何渠道</div>
+                <div class="note" style="margin-top:8px">
+                    网关的路由就是「从多个渠道里挑一个最合适的」——
+                    所以第一步是先把上游 Key 加进来。
+                </div>
+            </div>
         <?php else: ?>
-            <table>
-                <thead>
-                <tr>
-                    <th style="width:16%">名称</th>
-                    <th style="width:13%">类型</th>
-                    <th style="width:19%">上游地址</th>
-                    <th style="width:12%">Key</th>
-                    <th style="width:8%">模型</th>
-                    <th style="width:6%">优先级</th>
-                    <th style="width:5%">权重</th>
-                    <th style="width:6%">状态</th>
-                    <th style="width:15%">操作</th>
-                </tr>
-                </thead>
-                <tbody>
-                <?php foreach ($channels as $row): ?>
+            <div class="table-scroll">
+                <table>
+                    <thead>
                     <tr>
-                        <td>
-                            <div><?= htmlspecialchars($row['name'], ENT_QUOTES, 'UTF-8') ?></div>
-                            <div class="src">
-                                最近测活：<?= htmlspecialchars($row['lastTestAt'], ENT_QUOTES, 'UTF-8') ?>
-                                <?php if ($row['lastTestOk'] === true): ?>
-                                    <span style="color:#7ee2a8">成功</span>
-                                <?php elseif ($row['lastTestOk'] === false): ?>
-                                    <span style="color:#ffb4ad">失败</span>
-                                <?php else: ?>
-                                    <span>未测过</span>
-                                <?php endif; ?>
-                            </div>
-                            <?php if ($row['lastTestOk'] === false && $row['lastError'] !== ''): ?>
-                                <div class="src" style="color:#ffb4ad">
-                                    <?= htmlspecialchars(mb_substr($row['lastError'], 0, 60), ENT_QUOTES, 'UTF-8') ?>
-                                </div>
-                            <?php endif; ?>
-                        </td>
-
-                        <td><?= htmlspecialchars($row['typeLabel'], ENT_QUOTES, 'UTF-8') ?></td>
-
-                        <td class="mono" style="font-size:12px;word-break:break-all">
-                            <?= htmlspecialchars($row['baseUrl'], ENT_QUOTES, 'UTF-8') ?>
-                        </td>
-
-                        <?php /* 只显示掩码。完整 Key 绝不进入 HTML */ ?>
-                        <td style="font-size:12px">
-                            <?php if ($row['poolTotal'] > 0): ?>
-                                <?php /* 有密钥池时优先展示池子规模 —— 官方部署下一个渠道挂几百把 Key，
-                                         「还剩多少把能用」比「第一把长什么样」重要得多 */ ?>
-                                <div class="mono">池 <?= $row['poolEnabled'] ?> / <?= $row['poolTotal'] ?> 可用</div>
-                                <?php if ($row['poolDisabled'] > 0): ?>
-                                    <div class="src" style="color:#ffb4ad"><?= $row['poolDisabled'] ?> 把已停用</div>
-                                <?php endif; ?>
-                            <?php else: ?>
-                                <span class="mono"><?= htmlspecialchars($row['keyMasked'], ENT_QUOTES, 'UTF-8') ?></span>
-                            <?php endif; ?>
-                        </td>
-
-                        <td>
-                            <?php if ($row['modelCount'] === 0): ?>
-                                <span class="src">未配置</span>
-                            <?php else: ?>
-                                <span title="<?= htmlspecialchars(implode(', ', array_slice($row['models'], 0, 30)), ENT_QUOTES, 'UTF-8') ?>">
-                                    <?= $row['modelCount'] ?> 个
-                                </span>
-                            <?php endif; ?>
-                        </td>
-
-                        <td class="mono"><?= $row['priority'] ?></td>
-                        <td class="mono"><?= $row['weight'] ?></td>
-
-                        <td>
-                            <?php if ($row['enabled']): ?>
-                                <span style="color:#7ee2a8">启用</span>
-                            <?php else: ?>
-                                <span class="src">停用</span>
-                            <?php endif; ?>
-                        </td>
-
-                        <td>
-                            <div class="row-actions" style="flex-wrap:wrap;gap:6px">
-                                <a class="ghost-link" href="/admin/channels/edit?id=<?= $row['id'] ?>">编辑</a>
-                                <a class="ghost-link" href="/admin/channels/keys?id=<?= $row['id'] ?>">密钥池<?= $row['poolTotal'] > 0 ? '（' . $row['poolTotal'] . '）' : '' ?></a>
-
-                                <?php /* 测活与删除都是 POST：用 GET 做删除的话，
-                                         一个 <img src="..."> 就能把数据删掉 */ ?>
-                                <form method="post" action="/admin/channels/test" style="margin:0">
-                                    <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
-                                    <input type="hidden" name="id" value="<?= $row['id'] ?>">
-                                    <button class="ghost" type="submit">测活</button>
-                                </form>
-
-                                <form method="post" action="/admin/channels/delete" style="margin:0"
-                                      onsubmit="return confirm('确定删除渠道「<?= htmlspecialchars($row['name'], ENT_QUOTES, 'UTF-8') ?>」？此操作不可撤销。');">
-                                    <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
-                                    <input type="hidden" name="id" value="<?= $row['id'] ?>">
-                                    <button class="ghost" type="submit" style="color:#ffb4ad;border-color:rgba(244,67,54,.4)">删除</button>
-                                </form>
-                            </div>
-                        </td>
+                        <th style="width:17%">名称</th>
+                        <th style="width:15%">协议</th>
+                        <th style="width:18%">上游地址</th>
+                        <th style="width:12%">凭据</th>
+                        <th style="width:7%">模型</th>
+                        <th style="width:6%">优先级</th>
+                        <th style="width:5%">权重</th>
+                        <th style="width:6%">状态</th>
+                        <th style="width:8%">操作</th>
                     </tr>
-                <?php endforeach; ?>
-                </tbody>
-            </table>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($channels as $row): ?>
+                        <tr>
+                            <td>
+                                <div style="font-weight:600"><?= htmlspecialchars($row['name'], ENT_QUOTES, 'UTF-8') ?></div>
+                                <div class="src">
+                                    测活：<?= htmlspecialchars($row['lastTestAt'], ENT_QUOTES, 'UTF-8') ?>
+                                    <?php if ($row['lastTestOk'] === true): ?>
+                                        <span class="text-ok">成功</span>
+                                    <?php elseif ($row['lastTestOk'] === false): ?>
+                                        <span class="text-danger">失败</span>
+                                    <?php else: ?>
+                                        <span>未测过</span>
+                                    <?php endif; ?>
+                                </div>
+                                <?php if ($row['lastTestOk'] === false && $row['lastError'] !== ''): ?>
+                                    <div class="src text-danger" title="<?= htmlspecialchars($row['lastError'], ENT_QUOTES, 'UTF-8') ?>">
+                                        <?= htmlspecialchars(mb_substr($row['lastError'], 0, 46), ENT_QUOTES, 'UTF-8') ?>
+                                    </div>
+                                <?php endif; ?>
+                            </td>
+
+                            <td class="src"><?= htmlspecialchars($row['typeLabel'], ENT_QUOTES, 'UTF-8') ?></td>
+
+                            <td class="mono" style="word-break:break-all">
+                                <?= htmlspecialchars($row['baseUrl'], ENT_QUOTES, 'UTF-8') ?>
+                            </td>
+
+                            <?php /* 只显示掩码。完整 Key 绝不进入 HTML */ ?>
+                            <td>
+                                <?php if ($row['poolTotal'] > 0): ?>
+                                    <?php /* 有密钥池时优先展示池子规模 ——
+                                             官方部署下一个渠道挂几百把 Key，
+                                             「还剩多少把能用」比「第一把长什么样」重要得多 */ ?>
+                                    <span class="pill accent"><?= icon('keys-pool', 13) ?>池 <?= $row['poolEnabled'] ?>/<?= $row['poolTotal'] ?></span>
+                                    <?php if ($row['poolDisabled'] > 0): ?>
+                                        <div class="src text-danger" style="margin-top:3px"><?= $row['poolDisabled'] ?> 把已停用</div>
+                                    <?php endif; ?>
+                                <?php else: ?>
+                                    <span class="mono"><?= htmlspecialchars($row['keyMasked'], ENT_QUOTES, 'UTF-8') ?></span>
+                                <?php endif; ?>
+                            </td>
+
+                            <td>
+                                <?php if ($row['modelCount'] === 0): ?>
+                                    <span class="src">未配置</span>
+                                <?php else: ?>
+                                    <span title="<?= htmlspecialchars(implode(', ', array_slice($row['models'], 0, 30)), ENT_QUOTES, 'UTF-8') ?>">
+                                        <?= $row['modelCount'] ?>
+                                    </span>
+                                <?php endif; ?>
+                            </td>
+
+                            <td class="mono"><?= $row['priority'] ?></td>
+                            <td class="mono"><?= $row['weight'] ?></td>
+
+                            <td>
+                                <?php if ($row['enabled']): ?>
+                                    <span class="pill ok">启用</span>
+                                <?php else: ?>
+                                    <span class="pill">停用</span>
+                                <?php endif; ?>
+                            </td>
+
+                            <td>
+                                <div class="row-actions">
+                                    <a class="ghost" href="/admin/channels/edit?id=<?= $row['id'] ?>"><?= icon('edit', 14) ?>编辑</a>
+                                    <a class="ghost" href="/admin/channels/keys?id=<?= $row['id'] ?>">
+                                        <?= icon('keys-pool', 14) ?>池<?= $row['poolTotal'] > 0 ? '（' . $row['poolTotal'] . '）' : '' ?>
+                                    </a>
+
+                                    <?php /* 测活与删除都是 POST：用 GET 做删除的话，
+                                             一个 <img src="..."> 就能把数据删掉 */ ?>
+                                    <form method="post" action="/admin/channels/test" class="mb-0">
+                                        <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
+                                        <input type="hidden" name="id" value="<?= $row['id'] ?>">
+                                        <button class="ghost" type="submit"><?= icon('pulse', 14) ?>测活</button>
+                                    </form>
+
+                                    <form method="post" action="/admin/channels/delete" class="mb-0"
+                                          onsubmit="return confirm('确定删除渠道「<?= htmlspecialchars($row['name'], ENT_QUOTES, 'UTF-8') ?>」？此操作不可撤销。');">
+                                        <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
+                                        <input type="hidden" name="id" value="<?= $row['id'] ?>">
+                                        <button class="ghost danger" type="submit"><?= icon('trash', 14) ?>删除</button>
+                                    </form>
+                                </div>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
         <?php endif; ?>
 
         <p class="note">
             <b>优先级</b>决定「先用谁」（数值大的优先）；<b>权重</b>决定「同一优先级内按什么比例分摊流量」。
             两者分开，才能同时表达「主备」与「按比例负载」两种诉求。<br>
-            <b>测活</b>会向上游请求模型清单，用于验证地址与 Key 是否可用；
-            若渠道尚未配置模型清单，测活成功后会自动回填。
+            <b>测活</b>会分两步验证：先请求模型清单确认网络可达，再发一个最小推理请求<b>真正校验 Key</b> ——
+            因为不少上游的模型清单接口是公开的，「能列出模型」并不代表 Key 可用。
         </p>
     </section>
 </div>
-<style>
-    .ghost-link {
-        padding: 6px 12px; font-size: 12.5px; border-radius: 6px;
-        color: #9db4c0; border: 1px solid rgba(255,255,255,.18); text-decoration: none;
-    }
-    .ghost-link:hover { color: #fff; border-color: rgba(255,255,255,.4); }
-</style>
 </body>
 </html>

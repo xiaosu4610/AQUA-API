@@ -6,9 +6,14 @@
  * 约定：**所有输出到 HTML 的变量都必须经过 htmlspecialchars**，
  * 否则一旦将来这些值来自用户输入，就会变成 XSS 漏洞。
  *
+ * 本页不引入 _style.html —— 登录页没有导航栏，样式诉求与后台内页差别较大，
+ * 单独写一份更简单。但图标仍复用 _icons.html，保证全站图标风格一致。
+ *
  * @var string $csrf  CSRF 令牌
  * @var string $error 错误提示，空串表示无错误
+ * @var string $siteName 站点名称（用于页面标题）
  */
+require_once __DIR__ . '/_icons.html';
 ?>
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -23,49 +28,75 @@
         body {
             margin: 0; min-height: 100vh;
             display: flex; align-items: center; justify-content: center;
-            background: linear-gradient(160deg, #0f2027, #203a43, #2c5364);
+            background: #f5f7fa;
+            background-image: radial-gradient(circle at 18% 12%, #e2f4f9 0, transparent 42%),
+                              radial-gradient(circle at 84% 88%, #e6f6fa 0, transparent 44%);
             font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
-            color: #e8eef2;
+            color: #1b2733;
+            -webkit-font-smoothing: antialiased;
         }
+        .ico { vertical-align: -3px; flex: none; }
+
         .card {
-            width: 100%; max-width: 360px; padding: 32px;
-            background: rgba(255, 255, 255, .06);
-            border: 1px solid rgba(255, 255, 255, .12);
-            border-radius: 14px;
-            backdrop-filter: blur(6px);
+            width: 100%; max-width: 372px; margin: 24px; padding: 34px 32px;
+            background: #fff;
+            border: 1px solid #e3e8ef;
+            border-radius: 16px;
+            box-shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 12px 32px -12px rgba(16, 24, 40, .16);
         }
-        h1 { margin: 0 0 4px; font-size: 20px; font-weight: 600; }
-        .hint { margin: 0 0 22px; font-size: 13px; color: #9db4c0; }
-        label { display: block; margin-bottom: 8px; font-size: 13px; color: #9db4c0; }
+        .brand {
+            width: 44px; height: 44px; margin-bottom: 16px;
+            display: flex; align-items: center; justify-content: center;
+            background: #e6f6fa; color: #0a7f9c;
+            border: 1px solid #cceaf2; border-radius: 12px;
+        }
+        h1 { margin: 0 0 4px; font-size: 19px; font-weight: 650; letter-spacing: .2px; }
+        .hint { margin: 0 0 22px; font-size: 13px; color: #6b7d8f; }
+
+        label { display: block; margin-bottom: 7px; font-size: 12px; font-weight: 500; color: #6b7d8f; }
         input[type=password] {
-            width: 100%; padding: 11px 13px; margin-bottom: 18px;
-            background: rgba(0, 0, 0, .25); color: #fff;
-            border: 1px solid rgba(255, 255, 255, .18); border-radius: 8px;
-            font-size: 15px; outline: none;
+            width: 100%; padding: 11px 13px; margin-bottom: 20px;
+            background: #fff; color: #1b2733;
+            border: 1px solid #cdd5df; border-radius: 8px;
+            font-size: 15px; font-family: inherit; outline: none;
+            transition: border-color .12s, box-shadow .12s;
         }
-        input[type=password]:focus { border-color: #4fc3f7; }
+        input[type=password]:focus {
+            border-color: #0d9dbf;
+            box-shadow: 0 0 0 3px rgba(13, 157, 191, .14);
+        }
         button {
             width: 100%; padding: 11px; cursor: pointer;
-            background: #4fc3f7; color: #06232e;
-            border: 0; border-radius: 8px;
-            font-size: 15px; font-weight: 600;
+            display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+            background: #0d9dbf; color: #fff;
+            border: 1px solid #0d9dbf; border-radius: 8px;
+            font-size: 15px; font-weight: 600; font-family: inherit;
         }
-        button:hover { background: #7fd4fa; }
+        button:hover { background: #0a7f9c; border-color: #0a7f9c; }
+
         .error {
-            margin-bottom: 18px; padding: 10px 12px;
-            background: rgba(244, 67, 54, .15);
-            border: 1px solid rgba(244, 67, 54, .45);
-            border-radius: 8px; font-size: 13px; color: #ffb4ad;
+            display: flex; gap: 9px; align-items: flex-start;
+            margin-bottom: 18px; padding: 11px 13px;
+            background: #fdecec; border: 1px solid #f7cfd0;
+            border-radius: 10px; font-size: 13px; color: #a82f34;
         }
+        .error .ico { margin-top: 2px; }
+
+        footer { margin-top: 22px; font-size: 12px; color: #93a4b3; text-align: center; }
     </style>
 </head>
 <body>
 <form class="card" method="post" action="/admin/login">
+    <div class="brand"><?= icon('bolt', 24) ?></div>
+
     <h1>管理后台</h1>
     <p class="hint">超级管理员后台 · 仅需密码</p>
 
     <?php if (($error ?? '') !== ''): ?>
-        <div class="error"><?= htmlspecialchars((string) $error, ENT_QUOTES, 'UTF-8') ?></div>
+        <div class="error">
+            <?= icon('alert', 16) ?>
+            <span><?= htmlspecialchars((string) $error, ENT_QUOTES, 'UTF-8') ?></span>
+        </div>
     <?php endif; ?>
 
     <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
@@ -74,7 +105,9 @@
     <input type="password" id="password" name="password"
            autocomplete="current-password" autofocus required>
 
-    <button type="submit">登 录</button>
+    <button type="submit"><?= icon('lock', 16) ?>登 录</button>
+
+    <footer><?= htmlspecialchars((string) ($siteName ?? ''), ENT_QUOTES, 'UTF-8') ?></footer>
 </form>
 </body>
 </html>

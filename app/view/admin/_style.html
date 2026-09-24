@@ -1,103 +1,241 @@
 <?php
 /**
- * 后台共用样式
+ * 后台共用样式（明亮主题）
  *
- * 抽成单独片段的原因：后台页面会越来越多，
- * 样式散在每页里会导致「改一个颜色要改 N 个文件」，很快就会不一致。
+ * 设计取向：
+ *   · 以白底 + 浅灰背景为主，长时间看后台不累眼；深色只用在需要强调的地方
+ *   · 主色沿用项目的「水（aqua）」意象 —— 青蓝色，与项目名呼应
+ *   · 状态色语义化：成功=green、失败=red、提示=amber、中性=slate
  *
- * 这里刻意用 <style> 内联而不是独立 .css 文件：
- * 后台是低频访问的内部页面，少一次请求、也少一处「静态资源没配好」的故障点。
- * 将来页面变多、或需要给公开门户做缓存时，再考虑抽成 public/ 下的静态文件。
+ * 为什么抽成单独片段而不是每页各写一份：
+ *   后台页面会越来越多，样式散在各页里必然导致「改一个颜色要改 N 个文件」，
+ *   很快就会不一致。这里一次性定义好，页面只负责用语义类名。
+ *
+ * 模板里**不要再写硬编码颜色**（如 style="color:#7ee2a8"），
+ * 一律用下面的语义类：.text-ok / .text-danger / .text-warn / .muted
+ * —— 否则换主题时必然漏改。
  */
 ?>
 <style>
+    /* ── 基础 ───────────────────────────────────────────── */
+    :root {
+        --bg: #f5f7fa;
+        --surface: #ffffff;
+        --border: #e3e8ef;
+        --border-strong: #cdd5df;
+        --text: #1b2733;
+        --muted: #6b7d8f;
+        --accent: #0d9dbf;
+        --accent-dark: #0a7f9c;
+        --accent-soft: #e6f6fa;
+        --ok: #12a150;
+        --ok-soft: #e8f7ee;
+        --danger: #e5484d;
+        --danger-soft: #fdecec;
+        --warn: #c77405;
+        --warn-soft: #fdf4e3;
+        --radius: 10px;
+        --shadow: 0 1px 2px rgba(16, 24, 40, .04), 0 1px 3px rgba(16, 24, 40, .06);
+    }
+
     * { box-sizing: border-box; }
+
     body {
-        margin: 0; padding: 30px 20px;
-        background: #0f1720; color: #e8eef2;
+        margin: 0; padding: 28px 20px 48px;
+        background: var(--bg); color: var(--text);
         font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
-        font-size: 14px; line-height: 1.6;
+        font-size: 14px; line-height: 1.65;
+        -webkit-font-smoothing: antialiased;
     }
-    .wrap { max-width: 900px; margin: 0 auto; }
 
-    /* ── 页头 ── */
-    header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
-    h1 { margin: 0; font-size: 19px; font-weight: 600; }
+    .wrap { max-width: 1080px; margin: 0 auto; }
+
+    /* ── 图标与文字的基线对齐 ──────────────────────────── */
+    .ico { vertical-align: -3px; flex: none; }
+
+    /* ── 页头 ───────────────────────────────────────────── */
+    header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; gap: 16px; }
+    h1 {
+        margin: 0; font-size: 19px; font-weight: 650;
+        display: flex; align-items: center; gap: 9px; letter-spacing: .2px;
+    }
+    h1 .brand-ico { color: var(--accent); }
     .mode {
-        margin-left: 10px; padding: 2px 9px; font-size: 12px; font-weight: 400;
-        border-radius: 999px; background: rgba(79, 195, 247, .16); color: #4fc3f7;
-        vertical-align: 2px;
+        padding: 2px 10px; font-size: 12px; font-weight: 500; border-radius: 999px;
+        background: var(--accent-soft); color: var(--accent-dark);
+        border: 1px solid #cceaf2;
     }
-    button.logout {
-        padding: 7px 14px; cursor: pointer; font-size: 13px;
-        background: transparent; color: #9db4c0;
-        border: 1px solid rgba(255, 255, 255, .18); border-radius: 7px;
-    }
-    button.logout:hover { color: #fff; border-color: rgba(255, 255, 255, .4); }
 
-    /* ── 导航 ── */
-    nav.tabs { display: flex; gap: 6px; margin-bottom: 22px; border-bottom: 1px solid rgba(255, 255, 255, .09); }
+    /* ── 导航 ───────────────────────────────────────────── */
+    nav.tabs {
+        display: flex; flex-wrap: wrap; gap: 4px;
+        margin-bottom: 22px; padding: 4px;
+        background: var(--surface); border: 1px solid var(--border);
+        border-radius: 12px; box-shadow: var(--shadow);
+    }
     nav.tabs a.tab {
-        padding: 8px 15px; font-size: 14px; text-decoration: none;
-        color: #8aa2ae; border-bottom: 2px solid transparent; margin-bottom: -1px;
+        display: flex; align-items: center; gap: 7px;
+        padding: 8px 14px; font-size: 13.5px; text-decoration: none;
+        color: var(--muted); border-radius: 8px;
     }
-    nav.tabs a.tab:hover { color: #cfe3ec; }
-    nav.tabs a.tab.on { color: #4fc3f7; border-bottom-color: #4fc3f7; }
+    nav.tabs a.tab:hover { color: var(--text); background: #f2f6f9; }
+    nav.tabs a.tab.on { color: var(--accent-dark); background: var(--accent-soft); font-weight: 600; }
 
-    /* ── 卡片区块 ── */
+    /* ── 卡片区块 ───────────────────────────────────────── */
     section {
-        margin-bottom: 24px; padding: 20px;
-        background: rgba(255, 255, 255, .04);
-        border: 1px solid rgba(255, 255, 255, .09); border-radius: 12px;
+        margin-bottom: 20px; padding: 22px;
+        background: var(--surface);
+        border: 1px solid var(--border); border-radius: 14px;
+        box-shadow: var(--shadow);
     }
-    h2 { margin: 0 0 16px; font-size: 15px; font-weight: 600; color: #cfe3ec; }
+    h2 {
+        margin: 0 0 16px; font-size: 15px; font-weight: 650;
+        display: flex; align-items: center; gap: 8px;
+    }
+    h2 .ico { color: var(--muted); }
 
-    /* ── 状态键值对 ── */
+    /* ── 统计卡片 ───────────────────────────────────────── */
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; }
+    .stat {
+        padding: 14px 16px; border-radius: var(--radius);
+        background: #fafcfe; border: 1px solid var(--border);
+    }
+    .stat .n { font-size: 23px; font-weight: 680; line-height: 1.25; letter-spacing: -.5px; }
+    .stat .l { font-size: 12px; color: var(--muted); }
+    .stat.accent { background: var(--accent-soft); border-color: #cceaf2; }
+    .stat.accent .n { color: var(--accent-dark); }
+    .stat.ok .n { color: var(--ok); }
+    .stat.danger .n { color: var(--danger); }
+
+    /* 兼容旧的 .grid/.kv 写法 */
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
-    .kv .k { font-size: 12px; color: #8aa2ae; }
+    .kv .k { font-size: 12px; color: var(--muted); }
     .kv .v { font-size: 15px; word-break: break-all; }
-    .warn { color: #ffcb6b; }
 
-    /* ── 表格 ── */
+    /* ── 表格 ───────────────────────────────────────────── */
+    .table-scroll { overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; }
-    th, td { padding: 9px 8px; text-align: left; border-bottom: 1px solid rgba(255, 255, 255, .07); vertical-align: middle; }
-    th { font-size: 12px; font-weight: 500; color: #8aa2ae; }
-    td.mono, .mono { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
-    .src { font-size: 12px; color: #8aa2ae; }
-    .src.database { color: #7ee2a8; }
-    .src.env { color: #ffcb6b; }
-    .note { margin-top: 14px; font-size: 12.5px; color: #8aa2ae; }
-    .note code, code {
-        padding: 1px 5px; border-radius: 4px;
-        background: rgba(255, 255, 255, .08); color: #cfe3ec;
-        font-family: ui-monospace, Consolas, monospace; font-size: 12.5px;
+    th, td { padding: 10px 10px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    th {
+        font-size: 12px; font-weight: 600; color: var(--muted);
+        background: #fafcfe; white-space: nowrap;
     }
+    th:first-child { border-top-left-radius: 8px; }
+    th:last-child { border-top-right-radius: 8px; }
+    tbody tr:hover { background: #fbfdff; }
+    tbody tr:last-child td { border-bottom: 0; }
+    .compact th, .compact td { padding: 7px 9px; font-size: 12.5px; }
 
-    /* ── 表单控件 ── */
-    input[type=text], input[type=password], input[type=number] {
-        width: 100%; padding: 8px 11px;
-        background: rgba(0, 0, 0, .25); color: #fff;
-        border: 1px solid rgba(255, 255, 255, .18); border-radius: 7px;
+    .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12.5px; }
+    .src { font-size: 12px; color: var(--muted); }
+
+    /* ── 语义文字色（模板里只用这些，不要写死颜色）───────── */
+    .text-ok { color: var(--ok); }
+    .text-danger { color: var(--danger); }
+    .text-warn { color: var(--warn); }
+    .text-accent { color: var(--accent-dark); }
+    .muted { color: var(--muted); }
+
+    /* ── 徽标 ───────────────────────────────────────────── */
+    .pill {
+        display: inline-flex; align-items: center; gap: 4px;
+        padding: 1px 9px; font-size: 12px; border-radius: 999px;
+        background: #f1f5f9; color: var(--muted); border: 1px solid var(--border);
+    }
+    .pill.ok { background: var(--ok-soft); color: #0b7c3e; border-color: #c8ecd6; }
+    .pill.danger { background: var(--danger-soft); color: #c0353a; border-color: #f7cfd0; }
+    .pill.warn { background: var(--warn-soft); color: #a05f04; border-color: #f0dcb4; }
+    .pill.accent { background: var(--accent-soft); color: var(--accent-dark); border-color: #cceaf2; }
+
+    /* ── 表单控件 ───────────────────────────────────────── */
+    .field { margin-bottom: 18px; }
+    .lbl { font-size: 12px; color: var(--muted); margin-bottom: 6px; font-weight: 500; }
+    .tip { font-size: 12px; color: var(--muted); margin-top: 5px; }
+
+    input[type=text], input[type=password], input[type=number], select, textarea {
+        width: 100%; padding: 9px 12px;
+        background: #fff; color: var(--text);
+        border: 1px solid var(--border-strong); border-radius: 8px;
         font-size: 14px; font-family: inherit; outline: none;
+        transition: border-color .12s, box-shadow .12s;
     }
-    input[type=text]:focus, input[type=password]:focus, input[type=number]:focus { border-color: #4fc3f7; }
+    input[type=text]:focus, input[type=password]:focus, input[type=number]:focus,
+    select:focus, textarea:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(13, 157, 191, .13);
+    }
+    input:disabled, select:disabled, textarea:disabled { background: #f6f8fa; color: var(--muted); }
+    textarea {
+        min-height: 110px; resize: vertical;
+        font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 13px;
+    }
     label.check { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
-    button.primary {
-        padding: 9px 20px; cursor: pointer; font-size: 14px; font-weight: 600;
-        background: #4fc3f7; color: #06232e; border: 0; border-radius: 8px;
-    }
-    button.primary:hover { background: #7fd4fa; }
-    button.ghost {
-        padding: 6px 12px; cursor: pointer; font-size: 12.5px;
-        background: transparent; color: #9db4c0;
-        border: 1px solid rgba(255, 255, 255, .18); border-radius: 6px;
-    }
-    button.ghost:hover { color: #fff; border-color: rgba(255, 255, 255, .4); }
-    .row-actions { display: flex; gap: 8px; align-items: center; }
+    label.check input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); }
+    .two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; }
 
-    /* ── 提示条 ── */
-    .alert { margin-bottom: 18px; padding: 10px 13px; border-radius: 8px; font-size: 13.5px; }
-    .alert.ok   { background: rgba(126, 226, 168, .13); border: 1px solid rgba(126, 226, 168, .4); color: #a7edc4; }
-    .alert.err  { background: rgba(244, 67, 54, .13);   border: 1px solid rgba(244, 67, 54, .42); color: #ffb4ad; }
-    .alert.info { background: rgba(79, 195, 247, .11);  border: 1px solid rgba(79, 195, 247, .35); color: #a9ddf5; }
+    /* ── 按钮 ───────────────────────────────────────────── */
+    button { font-family: inherit; }
+    button.primary, a.primary {
+        display: inline-flex; align-items: center; gap: 7px;
+        padding: 9px 20px; cursor: pointer; font-size: 14px; font-weight: 600;
+        background: var(--accent); color: #fff; border: 1px solid var(--accent);
+        border-radius: 8px; text-decoration: none;
+    }
+    button.primary:hover, a.primary:hover { background: var(--accent-dark); border-color: var(--accent-dark); }
+
+    button.ghost, a.ghost {
+        display: inline-flex; align-items: center; gap: 6px;
+        padding: 6px 12px; cursor: pointer; font-size: 12.5px;
+        background: #fff; color: var(--muted);
+        border: 1px solid var(--border-strong); border-radius: 7px; text-decoration: none;
+    }
+    button.ghost:hover, a.ghost:hover { color: var(--text); border-color: var(--accent); background: var(--accent-soft); }
+    button.ghost.danger, a.ghost.danger { color: var(--danger); border-color: #f2c9ca; }
+    button.ghost.danger:hover { background: var(--danger-soft); border-color: var(--danger); }
+
+    button.logout {
+        display: inline-flex; align-items: center; gap: 6px;
+        padding: 7px 14px; cursor: pointer; font-size: 13px;
+        background: #fff; color: var(--muted);
+        border: 1px solid var(--border-strong); border-radius: 8px;
+    }
+    button.logout:hover { color: var(--danger); border-color: #f2c9ca; background: var(--danger-soft); }
+
+    .row-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .actions-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 22px; }
+
+    /* ── 提示条 ─────────────────────────────────────────── */
+    .alert {
+        display: flex; gap: 10px; align-items: flex-start;
+        margin-bottom: 18px; padding: 12px 15px; border-radius: var(--radius);
+        font-size: 13.5px; border: 1px solid;
+    }
+    .alert .ico { margin-top: 2px; }
+    .alert.ok { background: var(--ok-soft); border-color: #c8ecd6; color: #0b6b37; }
+    .alert.err { background: var(--danger-soft); border-color: #f7cfd0; color: #a82f34; }
+    .alert.info { background: var(--accent-soft); border-color: #cceaf2; color: #0a6c84; }
+
+    /* ── 空状态 ─────────────────────────────────────────── */
+    .empty {
+        padding: 30px 20px; text-align: center;
+        color: var(--muted); font-size: 13.5px;
+        background: #fafcfe; border: 1px dashed var(--border-strong); border-radius: var(--radius);
+    }
+    .empty .ico { color: #b6c3d0; margin-bottom: 8px; }
+
+    /* ── 说明文字与代码 ─────────────────────────────────── */
+    .note { margin-top: 14px; font-size: 12.5px; color: var(--muted); line-height: 1.8; }
+    .note b { color: var(--text); }
+    code {
+        padding: 1px 6px; border-radius: 5px;
+        background: #eef2f6; color: #33475b;
+        font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12.5px;
+    }
+
+    /* ── 小工具 ─────────────────────────────────────────── */
+    .between { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+    .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .mt-0 { margin-top: 0; }
+    .mb-0 { margin-bottom: 0; }
+    hr.sep { border: 0; border-top: 1px solid var(--border); margin: 20px 0; }
 </style>
