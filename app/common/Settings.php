@@ -48,6 +48,15 @@ final class Settings
      */
     private const MISSING = "\0__missing__\0";
 
+    /**
+     * 内部保留键 —— 存放在 options 表里、但**不是用户可配置项**。
+     *
+     * 目前只有 schema_version（表结构版本号，由程序自己维护）。
+     * 这些键必须从 keys() 里排除掉，否则会出现在后台的配置管理页上，
+     * 站长改一下就可能让迁移逻辑误判，属于「不该给人碰的东西」。
+     */
+    private const INTERNAL_KEYS = ['schema_version'];
+
     /** @var array<string, mixed> 键 => 已解码的值 */
     private static array $cache = [];
 
@@ -66,13 +75,13 @@ final class Settings
 
         // ① 数据库中的值（管理后台写入，优先级最高）
         if (array_key_exists($key, $all)) {
-            return $all[$key];
+            return self::coerce($key, $all[$key]);
         }
 
         // ② 环境变量（.env）
         $env = getenv(self::envKey($key));
         if ($env !== false && $env !== '') {
-            return $env;
+            return self::coerce($key, $env);
         }
 
         // ③ 代码级默认值（config/settings.php）
@@ -84,6 +93,42 @@ final class Settings
 
         // ④ 调用方传入的默认值
         return $default;
+    }
+
+    /**
+     * 把取到的值按其「应有类型」归一化。
+     *
+     * 为什么必须做这一步（这是踩过的真实 bug）：
+     *   环境变量**永远是字符串** —— .env 里写 `SESSION_SECURE=false`，
+     *   取出来是字符串 `'false'`，而不是布尔 `false`。
+     *   于是会连环出三个问题：
+     *     1. 后台的复选框会渲染成「已勾选」（PHP 里非空字符串 'false' 是真值）；
+     *     2. 保存时的「值是否变化」判断永远不成立（'false' !== true），
+     *        导致每次点保存都把配置**物化**进数据库，
+     *        之后改 .env 就不再生效 —— 而且现象极其难排查；
+     *     3. 调用方拿到的是字符串，做数值比较或布尔判断会得到意外结果。
+     *
+     *   类型由 `config/settings.php` 的默认值决定：那里写 true 就按布尔，
+     *   写 40 就按整数。因此只要在声明默认值时写对类型，
+     *   整个链路上的类型就都正确，不需要到处手工转换。
+     */
+    private static function coerce(string $key, mixed $value): mixed
+    {
+        if (!self::hasCodeDefault($key)) {
+            return $value;
+        }
+
+        $default = self::codeDefault($key);
+
+        return match (true) {
+            // 布尔：能识别 'true'/'false'/'1'/'0'/'on'/'off'
+            is_bool($default) => filter_var($value, FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE)
+                ?? (bool) $value,
+            // 整数：非数字时回落到默认值，避免写入脏数据后整个配置读不出来
+            is_int($default) => is_numeric($value) ? (int) $value : $default,
+            // 字符串
+            default => is_scalar($value) ? (string) $value : $value,
+        };
     }
 
     /**
@@ -178,6 +223,118 @@ final class Settings
 
         self::$cache = $result;
         self::$loadedAt = time();
+
+        return $result;
+    }
+
+    /**
+     * 站点名称（带默认值，供视图层直接使用）。
+     */
+    public static function siteName(): string
+    {
+        return (string) self::get('site.name', 'aqua-api-php');
+    }
+
+    /**
+     * 站点模式的中文名：商业站 / 公益站。
+     *
+     * 放在这里而不是各个控制器里，是因为它被首页、仪表盘、配置页多处使用 ——
+     * 一旦将来增加站点模式，只需要改这一个地方。
+     */
+    public static function siteModeLabel(): string
+    {
+        return (string) self::get('site.mode', 'commercial') === 'public_welfare'
+            ? '公益站'
+            : '商业站';
+    }
+
+    /**
+     * 列出所有「已知」的配置键。
+     *
+     * 来源有两处，合并后返回：
+     *   1. `config/settings.php` 里声明的键（递归展平成点号形式）
+     *   2. 数据库里已存在、但代码里没有声明的键
+     *      —— 保留第 2 类是为了让「手工写进库的配置」也能在后台看到，
+     *         否则会出现「数据在库里、后台却不显示」的困惑
+     *
+     * 后台的配置管理页用它来决定「要展示哪些配置项」。
+     *
+     * @return array<int, string>
+     */
+    public static function keys(): array
+    {
+        $keys = [];
+
+        // ① 代码声明的键
+        foreach (self::flatten((array) config('settings', [])) as $key => $_) {
+            $keys[$key] = true;
+        }
+
+        // ② 数据库里额外的键（排除程序自用的内部键）
+        foreach (array_keys(self::all()) as $key) {
+            if (in_array($key, self::INTERNAL_KEYS, true)) {
+                continue;
+            }
+            $keys[$key] = true;
+        }
+
+        $result = array_keys($keys);
+        sort($result);
+
+        return $result;
+    }
+
+    /**
+     * 取得某个键的「代码默认值」。
+     * 找不到时返回 null —— 调用方据此判断该键是不是代码里声明的。
+     */
+    public static function codeDefault(string $key): mixed
+    {
+        $value = config('settings.' . $key, self::MISSING);
+
+        return $value === self::MISSING ? null : $value;
+    }
+
+    /**
+     * 该键是否在 config/settings.php 中有声明。
+     * 后台据此判断「能否恢复默认」以及「用哪种表单控件」。
+     */
+    public static function hasCodeDefault(string $key): bool
+    {
+        return config('settings.' . $key, self::MISSING) !== self::MISSING;
+    }
+
+    /**
+     * 恢复默认：删除数据库中的覆盖值，让取值链回落到环境变量或代码默认值。
+     * 数据库里本来就没有该键时，本方法是空操作（幂等）。
+     */
+    public static function reset(string $key): void
+    {
+        Db::execute('DELETE FROM options WHERE opt_key = ?', [$key]);
+        unset(self::$cache[$key]);
+    }
+
+    /**
+     * 把多维配置数组展平成「点号键」形式。
+     *   例：['nim' => ['rpm_limit' => 40]] → ['nim.rpm_limit' => 40]
+     *
+     * @param array<string, mixed> $array
+     * @return array<string, mixed>
+     */
+    private static function flatten(array $array, string $prefix = ''): array
+    {
+        $result = [];
+
+        foreach ($array as $key => $value) {
+            $fullKey = $prefix === '' ? (string) $key : $prefix . '.' . $key;
+
+            if (is_array($value)) {
+                $result += self::flatten($value, $fullKey);
+                continue;
+            }
+
+            $result[$fullKey] = $value;
+        }
 
         return $result;
     }

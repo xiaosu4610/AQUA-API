@@ -53,6 +53,9 @@ class AdminController
         'session.secure',
     ];
 
+    /** 管理员密码最短长度。与其他校验、脚本重置保持一致 */
+    private const MIN_PASSWORD_LENGTH = 8;
+
     /** 配置来源的中文说明，供仪表盘展示 */
     private const SOURCE_LABELS = [
         'database' => '数据库（后台可改）',
@@ -134,15 +137,10 @@ class AdminController
     {
         $admin = Admin::find();
 
-        // 站点模式单独取出来传给视图。
-        // 之前这里是模板里用 $configs[1]['value'] 硬编码下标去取的，
-        // 一旦配置清单的顺序调整，徽标就会显示成别的值 —— 属于埋着的坑，已改成显式传入。
-        $mode = (string) Settings::get('site.mode', 'commercial');
-
         return view('admin/dashboard', [
             'csrf'       => Csrf::token(),
-            'siteName'   => (string) Settings::get('site.name', 'aqua-api-php'),
-            'siteMode'   => $mode === 'public_welfare' ? '公益站' : '商业站',
+            'siteName'   => Settings::siteName(),
+            'siteMode'   => Settings::siteModeLabel(),
             'phpVersion' => PHP_VERSION,
             'dbDriver'   => Db::isSqlite() ? 'SQLite' : 'MySQL',
             'debugOn'    => (bool) config('app.debug'),
@@ -150,6 +148,79 @@ class AdminController
             'loginAt'    => $this->formatTime($admin['last_login_at'] ?? null),
             'loginIp'    => (string) ($admin['last_login_ip'] ?? '—'),
             'configs'    => $this->dashboardConfigs(),
+        ], '');
+    }
+
+    /**
+     * GET /admin/password —— 修改密码页
+     */
+    public function passwordPage(Request $request): Response
+    {
+        return $this->passwordView();
+    }
+
+    /**
+     * POST /admin/password —— 提交修改密码
+     *
+     * 必须校验**当前密码**：否则会话一旦被劫持（或管理员忘了锁屏），
+     * 攻击者可以直接改掉密码，把真正的管理员锁在门外。
+     */
+    public function changePassword(Request $request): Response
+    {
+        if (!Csrf::check($request->post('_csrf'))) {
+            return $this->passwordView('页面已过期，请重新提交', 'err');
+        }
+
+        $current = (string) $request->post('current_password', '');
+        $new = (string) $request->post('new_password', '');
+        $confirm = (string) $request->post('confirm_password', '');
+
+        $admin = Admin::find();
+        if ($admin === null) {
+            return $this->passwordView('管理员尚未初始化', 'err');
+        }
+
+        // 注意顺序：先验证当前密码，再校验新密码格式 ——
+        // 这样攻击者无法通过「新密码太短」之类的提示来试探当前密码是否正确
+        if (!password_verify($current, (string) $admin['password_hash'])) {
+            // 复用统一的失败计数与锁定逻辑，避免修改密码接口成为绕过登录锁定的后门
+            Admin::attempt($current, $request->getRealIp() ?: 'unknown');
+
+            return $this->passwordView('当前密码不正确', 'err');
+        }
+
+        if (strlen($new) < self::MIN_PASSWORD_LENGTH) {
+            return $this->passwordView('新密码太短，至少 ' . self::MIN_PASSWORD_LENGTH . ' 位', 'err');
+        }
+
+        if ($new !== $confirm) {
+            return $this->passwordView('两次输入的新密码不一致', 'err');
+        }
+
+        if ($new === $current) {
+            return $this->passwordView('新密码不能与当前密码相同', 'err');
+        }
+
+        Admin::setPassword($new);
+
+        // 密码已变更，清空会话强制重新登录 ——
+        // 如果浏览器里还留着旧会话，等于「改了密码但旧凭证仍然有效」
+        session()->flush();
+
+        return response('', 302, ['Location' => '/admin/login']);
+    }
+
+    /**
+     * 渲染修改密码页。
+     */
+    private function passwordView(string $notice = '', string $type = 'info'): Response
+    {
+        return view('admin/password', [
+            'csrf'       => Csrf::token(),
+            'siteName'   => Settings::siteName(),
+            'siteMode'   => Settings::siteModeLabel(),
+            'notice'     => $notice,
+            'noticeType' => $type,
         ], '');
     }
 

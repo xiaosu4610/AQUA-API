@@ -13,6 +13,7 @@
 use app\controller\AdminController;
 use app\controller\HealthController;
 use app\controller\HomeController;
+use app\controller\SettingController;
 use app\middleware\AdminAuth;
 use Webman\Route;
 
@@ -36,6 +37,15 @@ Route::post('/admin/login', [AdminController::class, 'login']);
 Route::group('/admin', function () {
     // GET /admin —— 仪表盘
     Route::get('', [AdminController::class, 'index']);
+
+    // 修改密码
+    Route::get('/password', [AdminController::class, 'passwordPage']);
+    Route::post('/password', [AdminController::class, 'changePassword']);
+
+    // 配置管理
+    Route::get('/settings', [SettingController::class, 'index']);
+    Route::post('/settings', [SettingController::class, 'save']);
+    Route::post('/settings/reset', [SettingController::class, 'reset']);
 
     // POST /admin/logout —— 退出登录
     Route::post('/logout', [AdminController::class, 'logout']);

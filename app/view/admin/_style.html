@@ -1,0 +1,103 @@
+<?php
+/**
+ * 后台共用样式
+ *
+ * 抽成单独片段的原因：后台页面会越来越多，
+ * 样式散在每页里会导致「改一个颜色要改 N 个文件」，很快就会不一致。
+ *
+ * 这里刻意用 <style> 内联而不是独立 .css 文件：
+ * 后台是低频访问的内部页面，少一次请求、也少一处「静态资源没配好」的故障点。
+ * 将来页面变多、或需要给公开门户做缓存时，再考虑抽成 public/ 下的静态文件。
+ */
+?>
+<style>
+    * { box-sizing: border-box; }
+    body {
+        margin: 0; padding: 30px 20px;
+        background: #0f1720; color: #e8eef2;
+        font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+        font-size: 14px; line-height: 1.6;
+    }
+    .wrap { max-width: 900px; margin: 0 auto; }
+
+    /* ── 页头 ── */
+    header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+    h1 { margin: 0; font-size: 19px; font-weight: 600; }
+    .mode {
+        margin-left: 10px; padding: 2px 9px; font-size: 12px; font-weight: 400;
+        border-radius: 999px; background: rgba(79, 195, 247, .16); color: #4fc3f7;
+        vertical-align: 2px;
+    }
+    button.logout {
+        padding: 7px 14px; cursor: pointer; font-size: 13px;
+        background: transparent; color: #9db4c0;
+        border: 1px solid rgba(255, 255, 255, .18); border-radius: 7px;
+    }
+    button.logout:hover { color: #fff; border-color: rgba(255, 255, 255, .4); }
+
+    /* ── 导航 ── */
+    nav.tabs { display: flex; gap: 6px; margin-bottom: 22px; border-bottom: 1px solid rgba(255, 255, 255, .09); }
+    nav.tabs a.tab {
+        padding: 8px 15px; font-size: 14px; text-decoration: none;
+        color: #8aa2ae; border-bottom: 2px solid transparent; margin-bottom: -1px;
+    }
+    nav.tabs a.tab:hover { color: #cfe3ec; }
+    nav.tabs a.tab.on { color: #4fc3f7; border-bottom-color: #4fc3f7; }
+
+    /* ── 卡片区块 ── */
+    section {
+        margin-bottom: 24px; padding: 20px;
+        background: rgba(255, 255, 255, .04);
+        border: 1px solid rgba(255, 255, 255, .09); border-radius: 12px;
+    }
+    h2 { margin: 0 0 16px; font-size: 15px; font-weight: 600; color: #cfe3ec; }
+
+    /* ── 状态键值对 ── */
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
+    .kv .k { font-size: 12px; color: #8aa2ae; }
+    .kv .v { font-size: 15px; word-break: break-all; }
+    .warn { color: #ffcb6b; }
+
+    /* ── 表格 ── */
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 9px 8px; text-align: left; border-bottom: 1px solid rgba(255, 255, 255, .07); vertical-align: middle; }
+    th { font-size: 12px; font-weight: 500; color: #8aa2ae; }
+    td.mono, .mono { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+    .src { font-size: 12px; color: #8aa2ae; }
+    .src.database { color: #7ee2a8; }
+    .src.env { color: #ffcb6b; }
+    .note { margin-top: 14px; font-size: 12.5px; color: #8aa2ae; }
+    .note code, code {
+        padding: 1px 5px; border-radius: 4px;
+        background: rgba(255, 255, 255, .08); color: #cfe3ec;
+        font-family: ui-monospace, Consolas, monospace; font-size: 12.5px;
+    }
+
+    /* ── 表单控件 ── */
+    input[type=text], input[type=password], input[type=number] {
+        width: 100%; padding: 8px 11px;
+        background: rgba(0, 0, 0, .25); color: #fff;
+        border: 1px solid rgba(255, 255, 255, .18); border-radius: 7px;
+        font-size: 14px; font-family: inherit; outline: none;
+    }
+    input[type=text]:focus, input[type=password]:focus, input[type=number]:focus { border-color: #4fc3f7; }
+    label.check { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
+    button.primary {
+        padding: 9px 20px; cursor: pointer; font-size: 14px; font-weight: 600;
+        background: #4fc3f7; color: #06232e; border: 0; border-radius: 8px;
+    }
+    button.primary:hover { background: #7fd4fa; }
+    button.ghost {
+        padding: 6px 12px; cursor: pointer; font-size: 12.5px;
+        background: transparent; color: #9db4c0;
+        border: 1px solid rgba(255, 255, 255, .18); border-radius: 6px;
+    }
+    button.ghost:hover { color: #fff; border-color: rgba(255, 255, 255, .4); }
+    .row-actions { display: flex; gap: 8px; align-items: center; }
+
+    /* ── 提示条 ── */
+    .alert { margin-bottom: 18px; padding: 10px 13px; border-radius: 8px; font-size: 13.5px; }
+    .alert.ok   { background: rgba(126, 226, 168, .13); border: 1px solid rgba(126, 226, 168, .4); color: #a7edc4; }
+    .alert.err  { background: rgba(244, 67, 54, .13);   border: 1px solid rgba(244, 67, 54, .42); color: #ffb4ad; }
+    .alert.info { background: rgba(79, 195, 247, .11);  border: 1px solid rgba(79, 195, 247, .35); color: #a9ddf5; }
+</style>
