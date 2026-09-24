@@ -36,26 +36,107 @@ final class Channel
     public const STATUS_DISABLED = 0;
 
     /**
-     * 支持的上游类型。
+     * 协议适配器表 —— 决定「怎么跟上游说话」。
      *
-     * `base_url` 是该类型的默认地址，新增渠道时预填，减少手填出错。
-     * `adapter` 是后续要实现的适配器标识 —— 目前只做记录，
-     * 等流式引擎落地后由它决定用哪个解码器/编码器。
+     * 这里刻意只放**协议级**的差异，而不是把每个供应商都列一遍：
+     * 供应商（谁、地址是什么）是数据，放在 config/providers.php；
+     * 适配器（怎么通信）是代码，放在这里。一个适配器通常服务几十个供应商。
+     *
+     * `implemented` 是**诚实的可用性标记**：
+     *   未实现的适配器不会出现在「可选」列表里（界面会置灰并标注），
+     *   因为让用户选一个「选了却用不了」的选项，比不提供它更糟糕。
+     *
+     * 新增一个供应商时：多数情况**不需要动这个文件** ——
+     * 只要它是 OpenAI 兼容的，在 config/providers.php 里加一段配置即可。
      */
-    public const TYPES = [
+    public const ADAPTERS = [
+        // ── 已实现 ──────────────────────────────────────────
+        'openai_sse' => [
+            'label' => 'OpenAI 兼容（/v1/chat/completions + SSE）',
+            'implemented' => true,
+            'hint' => '标准协议，绝大多数国内外厂商都兼容它',
+        ],
         'nim' => [
             'label' => 'NVIDIA NIM',
-            'base_url' => 'https://integrate.api.nvidia.com/v1',
-            'adapter' => 'openai_sse',
-            'hint' => '在 build.nvidia.com 获取 API Key，形如 nvapi-xxxx',
+            'implemented' => true,
+            'hint' => '协议上兼容 OpenAI，但限流、thinking 字段名等行为有特殊性，故单独成类',
         ],
-        'openai' => [
-            'label' => 'OpenAI 兼容上游',
-            'base_url' => '',
-            'adapter' => 'openai_sse',
-            'hint' => '任何兼容 OpenAI /v1 协议的服务都可以填在这里',
+
+        // ── 待实现：协议与 OpenAI 差异较大，需要独立的解码/编码实现 ──
+        'azure' => [
+            'label' => 'Azure OpenAI',
+            'implemented' => false,
+            'hint' => '鉴权用 api-key 头，地址需带 api-version 查询参数',
+        ],
+        'anthropic' => [
+            'label' => 'Anthropic Messages',
+            'implemented' => false,
+            'hint' => '事件类型与字段名与 OpenAI 完全不同',
+        ],
+        'gemini' => [
+            'label' => 'Google Gemini',
+            'implemented' => false,
+            'hint' => 'generateContent 协议，流式结构差异大',
+        ],
+        'vertex' => [
+            'label' => 'Google Vertex AI',
+            'implemented' => false,
+            'hint' => 'GCP 服务账号鉴权',
+        ],
+        'aws' => [
+            'label' => 'AWS Bedrock',
+            'implemented' => false,
+            'hint' => 'SigV4 签名鉴权',
+        ],
+        'baidu' => [
+            'label' => '百度文心（access_token 流程）',
+            'implemented' => false,
+            'hint' => '需先用 API Key 换取 access_token',
+        ],
+        'xunfei' => [
+            'label' => '讯飞星火（WebSocket）',
+            'implemented' => false,
+            'hint' => '非 HTTP 协议',
+        ],
+        'coze' => [
+            'label' => '扣子 Coze（机器人 / 工作流）',
+            'implemented' => false,
+            'hint' => '以会话/工作流为中心，不是对话补全',
+        ],
+        'replicate' => [
+            'label' => 'Replicate（异步任务）',
+            'implemented' => false,
+            'hint' => '提交任务 + 轮询结果',
+        ],
+        'chatgpt_sub' => [
+            'label' => 'ChatGPT 订阅账号（会话凭证）',
+            'implemented' => false,
+            'hint' => '用订阅账号凭证而非 API Key，凭证会过期需换新',
+        ],
+        'ollama' => [
+            'label' => 'Ollama 原生协议',
+            'implemented' => false,
+            'hint' => '非 OpenAI 格式；如需即刻可用请选它的 OpenAI 兼容层',
         ],
     ];
+
+    /**
+     * 判断某个适配器是否已实现（界面据此决定是否允许选择）。
+     */
+    public static function adapterImplemented(string $adapter): bool
+    {
+        return (bool) (self::ADAPTERS[$adapter]['implemented'] ?? false);
+    }
+
+    /**
+     * 读取供应商预设清单（config/providers.php）。
+     *
+     * @return array<string, array<string, string>>
+     */
+    public static function providers(): array
+    {
+        return (array) config('providers', []);
+    }
 
     /** 渠道列表（按优先级降序、权重降序，即路由的取用顺序） */
     public static function all(): array

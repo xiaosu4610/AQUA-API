@@ -8,13 +8,20 @@
  *   · 回显会让 Key 进入浏览器缓存、DOM，可能被 XSS 读取；
  *   · 也可能被截图、被浏览器密码管理器意外保存。
  *
+ * 关于「供应商预设」与「协议适配器」的关系（这是本页的核心设计）：
+ *   供应商预设 = 选哪家（决定地址是什么，纯数据）
+ *   协议适配器 = 怎么通信（决定用哪套实现，必须有代码）
+ *   选了供应商会自动带出适配器与地址；也可以只改适配器手工填地址。
+ *   未实现协议的供应商在下拉里是**置灰不可选**的 ——
+ *   与其让用户选完才发现用不了，不如根本不让他选。
+ *
  * @var string $csrf
  * @var string $siteName
  * @var string $siteMode
  * @var bool   $isEdit
  * @var int    $id
  * @var string $name
- * @var string $type
+ * @var string $type        当前协议适配器
  * @var string $baseUrl
  * @var string $modelsText
  * @var int    $priority
@@ -22,8 +29,11 @@
  * @var int    $rpmLimit
  * @var bool   $enabled
  * @var string $keyMasked
- * @var array<string, array{label:string, base_url:string, adapter:string, hint:string}> $types
- * @var bool   $keyBroken 已存 Key 但解密失败
+ * @var array<string, array{label:string, implemented:bool, hint:string}> $adapters
+ * @var array<string, array<string,string>> $providersAvailable
+ * @var array<string, array<string,string>> $providersReserved
+ * @var bool   $keyBroken
+ * @var bool   $keyConfigured
  */
 ?>
 <!DOCTYPE html>
@@ -34,45 +44,31 @@
     <meta name="robots" content="noindex, nofollow">
     <title><?= htmlspecialchars((string) $siteName, ENT_QUOTES, 'UTF-8') ?> · <?= $isEdit ? '编辑渠道' : '新增渠道' ?></title>
     <?php include __DIR__ . '/_style.html'; ?>
-    <style>
-        .field { margin-bottom: 18px; }
-        .field > .lbl { font-size: 12px; color: #8aa2ae; margin-bottom: 6px; }
-        .field .tip { font-size: 12px; color: #7d95a1; margin-top: 5px; }
-        .two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; }
-        textarea {
-            width: 100%; min-height: 110px; padding: 9px 11px;
-            background: rgba(0,0,0,.25); color: #fff;
-            border: 1px solid rgba(255,255,255,.18); border-radius: 7px;
-            font-size: 13px; font-family: ui-monospace, Consolas, monospace;
-            outline: none; resize: vertical;
-        }
-        textarea:focus { border-color: #4fc3f7; }
-        select {
-            width: 100%; padding: 8px 11px;
-            background: rgba(0,0,0,.25); color: #fff;
-            border: 1px solid rgba(255,255,255,.18); border-radius: 7px;
-            font-size: 14px; font-family: inherit; outline: none;
-        }
-    </style>
 </head>
 <body>
 <div class="wrap">
     <?php $active = 'channels'; include __DIR__ . '/_header.html'; ?>
 
-    <section style="max-width:720px">
-        <h2><?= $isEdit ? '编辑渠道' : '新增渠道' ?></h2>
+    <section style="max-width:760px">
+        <h2><?= icon('channels', 17) ?><?= $isEdit ? '编辑渠道' : '新增渠道' ?></h2>
 
         <?php if (($keyBroken ?? false)): ?>
             <div class="alert err">
-                该渠道已保存的 API Key <b>无法解密</b>。通常是因为 <code>APP_KEY</code> 被更换过。
-                请在下面重新填入 Key —— 注意：更换 APP_KEY 会导致<b>所有</b>渠道的 Key 失效。
+                <?= icon('alert', 16) ?>
+                <div>
+                    该渠道已保存的 API Key <b>无法解密</b>。通常是因为 <code>APP_KEY</code> 被更换过。<br>
+                    请在下面重新填入 Key —— 注意：更换 APP_KEY 会导致<b>所有</b>渠道的 Key 失效。
+                </div>
             </div>
         <?php endif; ?>
 
         <?php if (empty($keyConfigured)): ?>
             <div class="alert err">
-                尚未配置 <code>APP_KEY</code>，<b>现在无法保存 API Key</b>。<br>
-                请在服务器 <code>.env</code> 加入 <code>APP_KEY=&lt;32 字节随机串&gt;</code> 并重启服务后再回来填写。
+                <?= icon('alert', 16) ?>
+                <div>
+                    尚未配置 <code>APP_KEY</code>，<b>现在无法保存 API Key</b>。<br>
+                    请在服务器 <code>.env</code> 加入 <code>APP_KEY=&lt;32 字节随机串&gt;</code> 并重启服务后再回来填写。
+                </div>
             </div>
         <?php endif; ?>
 
@@ -89,18 +85,53 @@
             </div>
 
             <div class="field">
-                <div class="lbl">上游类型</div>
-                <select name="type" id="type-select">
-                    <?php foreach ($types as $key => $t): ?>
+                <div class="lbl">供应商预设（选一家即可自动填好地址）</div>
+                <select id="provider-select">
+                    <option value="">— 请选择（或直接在下方手工填写）—</option>
+
+                    <optgroup label="可直接接入">
+                        <?php foreach ($providersAvailable as $key => $p): ?>
+                            <option value="<?= htmlspecialchars($key, ENT_QUOTES, 'UTF-8') ?>"
+                                    data-adapter="<?= htmlspecialchars((string) ($p['adapter'] ?? ''), ENT_QUOTES, 'UTF-8') ?>"
+                                    data-base-url="<?= htmlspecialchars((string) ($p['base_url'] ?? ''), ENT_QUOTES, 'UTF-8') ?>"
+                                    data-hint="<?= htmlspecialchars((string) ($p['hint'] ?? ''), ENT_QUOTES, 'UTF-8') ?>"
+                                    data-docs="<?= htmlspecialchars((string) ($p['docs'] ?? ''), ENT_QUOTES, 'UTF-8') ?>">
+                                <?= htmlspecialchars((string) $p['label'], ENT_QUOTES, 'UTF-8') ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </optgroup>
+
+                    <?php if ($providersReserved !== []): ?>
+                        <?php /* 未实现协议的供应商：置灰不可选，并说明原因。
+                                 这是刻意的 —— 让用户选到用不了的选项比不提供更糟 */ ?>
+                        <optgroup label="暂不支持（协议适配器尚未实现）">
+                            <?php foreach ($providersReserved as $key => $p): ?>
+                                <option disabled
+                                        data-adapter="<?= htmlspecialchars((string) ($p['adapter'] ?? ''), ENT_QUOTES, 'UTF-8') ?>"
+                                        data-hint="<?= htmlspecialchars((string) ($p['hint'] ?? ''), ENT_QUOTES, 'UTF-8') ?>">
+                                    <?= htmlspecialchars((string) $p['label'], ENT_QUOTES, 'UTF-8') ?>（待实现）
+                                </option>
+                            <?php endforeach; ?>
+                        </optgroup>
+                    <?php endif; ?>
+                </select>
+                <div class="tip" id="provider-hint">选好供应商后，下方会自动填好协议与地址</div>
+                <div class="tip" id="provider-docs" style="display:none"></div>
+            </div>
+
+            <div class="field">
+                <div class="lbl">协议适配器（怎么跟上游通信）</div>
+                <select name="type" id="adapter-select">
+                    <?php foreach ($adapters as $key => $a): ?>
+                        <?php if (!$a['implemented']) { continue; } ?>
                         <option value="<?= htmlspecialchars($key, ENT_QUOTES, 'UTF-8') ?>"
-                                data-base-url="<?= htmlspecialchars($t['base_url'], ENT_QUOTES, 'UTF-8') ?>"
-                                data-hint="<?= htmlspecialchars($t['hint'], ENT_QUOTES, 'UTF-8') ?>"
+                                data-hint="<?= htmlspecialchars((string) $a['hint'], ENT_QUOTES, 'UTF-8') ?>"
                             <?= $type === $key ? 'selected' : '' ?>>
-                            <?= htmlspecialchars($t['label'], ENT_QUOTES, 'UTF-8') ?>
+                            <?= htmlspecialchars((string) $a['label'], ENT_QUOTES, 'UTF-8') ?>
                         </option>
                     <?php endforeach; ?>
                 </select>
-                <div class="tip" id="type-hint"></div>
+                <div class="tip" id="adapter-hint"></div>
             </div>
 
             <div class="field">
@@ -108,7 +139,7 @@
                 <input type="text" name="base_url" id="base-url" required maxlength="255"
                        placeholder="https://integrate.api.nvidia.com/v1"
                        value="<?= htmlspecialchars($baseUrl, ENT_QUOTES, 'UTF-8') ?>">
-                <div class="tip">填到 <code>/v1</code> 为止，不要带 <code>/chat/completions</code></div>
+                <div class="tip">填到版本段为止（如 <code>/v1</code>），不要带 <code>/chat/completions</code></div>
             </div>
 
             <div class="field">
@@ -121,6 +152,7 @@
                         —— 出于安全考虑不回显完整 Key；<b>留空即保持原值不变</b>。
                     <?php else: ?>
                         保存时会<b>加密</b>后入库（AES-256-GCM），数据库中不会出现明文。
+                        若要多把 Key 轮换使用，可先留空创建渠道，再到「密钥池」批量导入。
                     <?php endif; ?>
                 </div>
             </div>
@@ -156,36 +188,70 @@
                 </label>
             </div>
 
-            <div style="display:flex;gap:10px;margin-top:24px">
-                <button class="primary" type="submit"><?= $isEdit ? '保存修改' : '创建渠道' ?></button>
-                <a class="ghost-link" href="/admin/channels"
-                   style="padding:9px 18px;border-radius:8px;color:#9db4c0;border:1px solid rgba(255,255,255,.18);text-decoration:none;font-size:14px">返回列表</a>
+            <div class="actions-bar">
+                <button class="primary" type="submit">
+                    <?= icon('check', 16) ?><?= $isEdit ? '保存修改' : '创建渠道' ?>
+                </button>
+                <a class="ghost" href="/admin/channels"><?= icon('home', 15) ?>返回列表</a>
             </div>
         </form>
     </section>
 </div>
 <script>
-    // 切换上游类型时，若地址为空则预填该类型的默认地址，并显示提示
     (function () {
-        var select = document.getElementById('type-select');
+        var provider = document.getElementById('provider-select');
+        var adapter = document.getElementById('adapter-select');
         var baseUrl = document.getElementById('base-url');
-        var hint = document.getElementById('type-hint');
+        var pHint = document.getElementById('provider-hint');
+        var pDocs = document.getElementById('provider-docs');
+        var aHint = document.getElementById('adapter-hint');
 
-        function sync(prefill) {
-            var opt = select.options[select.selectedIndex];
-            if (!opt) { return; }
-            if (prefill && baseUrl.value.trim() === '') {
-                baseUrl.value = opt.dataset.baseUrl || '';
-            }
-            hint.textContent = opt.dataset.hint || '';
+        // 记录上一次由预设填进去的地址：
+        // 只有当用户没有手工改过地址时，切换供应商才覆盖它 ——
+        // 否则会把用户自己填的地址冲掉，那很恼人
+        var lastFilled = baseUrl.value.trim();
+
+        function adapterHint() {
+            var opt = adapter.options[adapter.selectedIndex];
+            aHint.textContent = opt ? (opt.dataset.hint || '') : '';
         }
 
-        select.addEventListener('change', function () { sync(true); });
-        sync(false);
+        provider.addEventListener('change', function () {
+            var opt = provider.options[provider.selectedIndex];
+            if (!opt || !opt.value) {
+                pHint.textContent = '选好供应商后，下方会自动填好协议与地址';
+                pDocs.style.display = 'none';
+                return;
+            }
+
+            var newBase = opt.dataset.baseUrl || '';
+            var current = baseUrl.value.trim();
+
+            // 地址为空、或仍等于上次自动填入的值 → 覆盖；否则保留用户手填的
+            if (current === '' || current === lastFilled) {
+                baseUrl.value = newBase;
+                lastFilled = newBase;
+            }
+
+            if (opt.dataset.adapter) {
+                adapter.value = opt.dataset.adapter;
+                adapterHint();
+            }
+
+            pHint.textContent = opt.dataset.hint || '';
+
+            if (opt.dataset.docs) {
+                pDocs.innerHTML = '官方文档：<a href="' + opt.dataset.docs + '" target="_blank" rel="noopener">'
+                    + opt.dataset.docs + '</a>';
+                pDocs.style.display = '';
+            } else {
+                pDocs.style.display = 'none';
+            }
+        });
+
+        adapter.addEventListener('change', adapterHint);
+        adapterHint();
     })();
 </script>
-<style>
-    .ghost-link:hover { color: #fff !important; border-color: rgba(255,255,255,.4) !important; }
-</style>
 </body>
 </html>

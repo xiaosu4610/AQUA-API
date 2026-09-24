@@ -377,6 +377,21 @@ class ChannelController
     {
         $isEdit = $channel !== null;
 
+        // 供应商预设按「适配器是否已实现」分成两组。
+        // 分成两组而不是混在一起，是因为**不能让用户选到用不了的选项** ——
+        // 界面会把「预留」这组置灰并注明原因，而不是假装它可用。
+        $available = [];
+        $reserved = [];
+        foreach (Channel::providers() as $key => $provider) {
+            $adapter = (string) ($provider['adapter'] ?? '');
+
+            if (Channel::adapterImplemented($adapter)) {
+                $available[$key] = $provider;
+            } else {
+                $reserved[$key] = $provider;
+            }
+        }
+
         return view('admin/channel_form', [
             'csrf' => Csrf::token(),
             'siteName' => Settings::siteName(),
@@ -385,7 +400,9 @@ class ChannelController
             'id' => $isEdit ? (int) $channel['id'] : 0,
             'name' => $isEdit ? (string) $channel['name'] : '',
             'type' => $isEdit ? (string) $channel['type'] : 'nim',
-            'baseUrl' => $isEdit ? (string) $channel['base_url'] : (Channel::TYPES['nim']['base_url'] ?? ''),
+            'baseUrl' => $isEdit
+                ? (string) $channel['base_url']
+                : (string) (Channel::providers()['nim']['base_url'] ?? ''),
             'modelsText' => $isEdit ? implode("\n", Channel::modelsOf($channel)) : '',
             'priority' => $isEdit ? (int) $channel['priority'] : 0,
             'weight' => $isEdit ? (int) $channel['weight'] : 1,
@@ -393,7 +410,9 @@ class ChannelController
             'enabled' => $isEdit ? (int) $channel['status'] === Channel::STATUS_ENABLED : true,
             // 只把掩码送去页面，绝不下发真实 Key
             'keyMasked' => $isEdit ? Channel::maskedKey($channel) : '',
-            'types' => Channel::TYPES,
+            'adapters' => Channel::ADAPTERS,
+            'providersAvailable' => $available,
+            'providersReserved' => $reserved,
             // 解密失败时给出提示，避免站长面对一个「Key 明明存了却报没权限」的谜题
             'keyBroken' => $isEdit && (string) ($channel['api_key_enc'] ?? '') !== '' && Channel::plainKey($channel) === '',
             'keyConfigured' => Crypto::isConfigured(),
@@ -411,8 +430,16 @@ class ChannelController
             return '渠道名称不能为空';
         }
 
-        if (!isset(Channel::TYPES[$data['type']])) {
-            return '上游类型不合法';
+        if (!isset(Channel::ADAPTERS[$data['type']])) {
+            return '协议适配器不存在';
+        }
+
+        // 只允许选用**已实现**的适配器。
+        // 未实现的选了也走不通，与其等到发起请求时才失败，
+        // 不如在保存这一刻就拦住，并告诉用户可以改用哪些兼容协议。
+        if (!Channel::adapterImplemented($data['type'])) {
+            return '该协议适配器尚未实现，暂不能接入。'
+                . '请改选「OpenAI 兼容」类协议（多数厂商都支持），或选择已实现的上游。';
         }
 
         if ($data['base_url'] === '') {
@@ -468,7 +495,7 @@ class ChannelController
 
     private static function typeLabel(string $type): string
     {
-        return Channel::TYPES[$type]['label'] ?? $type;
+        return Channel::ADAPTERS[$type]['label'] ?? $type;
     }
 
     private static function formatTime(mixed $timestamp): string
