@@ -32,6 +32,7 @@ declare(strict_types=1);
 
 namespace app\common;
 
+use support\Log;
 use Throwable;
 
 final class Settings
@@ -56,6 +57,23 @@ final class Settings
      * 站长改一下就可能让迁移逻辑误判，属于「不该给人碰的东西」。
      */
     private const INTERNAL_KEYS = ['schema_version'];
+
+    /**
+     * **需要加密存储的配置键**。
+     *
+     * 这些是「必须能还原出原文」的凭据（SMTP 授权码、支付商户密钥），
+     * 因此与渠道 API Key 同类：用 AES-256-GCM 加密后入库，
+     * 后台**只显示「已配置」，绝不回显**。
+     *
+     * 为什么不像普通配置那样直接存明文：
+     * options 表会被导出、备份、在排查问题时被 SELECT 出来 ——
+     * 明文的口令一旦落到这些渠道里，就等于泄露。
+     * 而这类凭据恰恰是「拿到就能花你的钱」的那种。
+     *
+     * 注意：清单之外的键一律按普通配置处理，所以新增凭据类配置时
+     * **必须**记得加到这里。
+     */
+    private const SECRET_KEYS = ['mail.password', 'payment.key'];
 
     /** @var array<string, mixed> 键 => 已解码的值 */
     private static array $cache = [];
@@ -246,6 +264,88 @@ final class Settings
     public static function siteName(): string
     {
         return (string) self::get('site.name', 'aqua-api-php');
+    }
+
+    /**
+     * 该键是否为加密存储的凭据。
+     */
+    public static function isSecret(string $key): bool
+    {
+        return in_array($key, self::SECRET_KEYS, true);
+    }
+
+    /**
+     * 该凭据是否已配置（有非空值）。
+     * 后台据此显示「已配置 / 未配置」，而不是回显内容。
+     */
+    public static function hasSecret(string $key): bool
+    {
+        return self::isSecret($key) && trim((string) self::get($key, '')) !== '';
+    }
+
+    /**
+     * 读取凭据的**明文**。
+     *
+     * ⚠️ 仅供内部使用（发邮件、算支付签名）。
+     * 任何情况下都不许把它送回浏览器或写进日志。
+     *
+     * 兼容一种情况：值来自 .env 时是明文（环境变量层不做加密），
+     * 而来自数据库时是 `v1:` 开头的密文。按前缀区分，两种都能用。
+     */
+    public static function secret(string $key): string
+    {
+        if (!self::isSecret($key)) {
+            return '';
+        }
+
+        $raw = trim((string) self::get($key, ''));
+
+        if ($raw === '') {
+            return '';
+        }
+
+        if (!str_starts_with($raw, 'v1:')) {
+            // 来自 .env 的明文
+            return $raw;
+        }
+
+        try {
+            return Crypto::decrypt($raw);
+        } catch (Throwable $e) {
+            // 解密失败通常是 APP_KEY 被换过。返回空串并按「未配置」处理，
+            // 而不是抛异常 —— 否则配置页一打开就白屏，站长根本看不到问题在哪
+            Log::error("配置项 {$key} 解密失败：" . $e->getMessage());
+
+            return '';
+        }
+    }
+
+    /**
+     * 写入凭据（加密后入库）。
+     *
+     * 传空串表示**不修改**：这是刻意的 —— 后台不回显凭据，
+     * 所以「输入框是空的」绝大多数情况表示「没动它」，
+     * 若按「清空」处理，用户改一次别的配置就会把凭据抹掉。
+     *
+     * @throws \RuntimeException 未配置 APP_KEY 时无法加密
+     */
+    public static function putSecret(string $key, string $plain): void
+    {
+        if (!self::isSecret($key) || $plain === '') {
+            return;
+        }
+
+        self::put($key, Crypto::encrypt($plain));
+    }
+
+    /**
+     * 清空某个凭据（删除数据库里的值）。
+     */
+    public static function forgetSecret(string $key): void
+    {
+        if (self::isSecret($key)) {
+            self::reset($key);
+        }
     }
 
     /**

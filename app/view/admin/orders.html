@@ -1,0 +1,192 @@
+<?php
+/**
+ * 后台 · 充值订单
+ *
+ * 这一页的主要用途是**对账**：
+ *   · 用户说「我付了钱没到账」→ 在这里按订单号查状态；
+ *   · 「待支付」超过一天的一般可以作废；
+ *   · 每笔订单都保留了网关回调的原始记录（在数据库 notify_raw 字段里），
+ *     与网关后台对不上时可以拿它逐字段核对。
+ *
+ * @var string $csrf
+ * @var string $siteName
+ * @var string $siteMode
+ * @var array<int, array<string, mixed>> $rows
+ * @var string $status
+ * @var int    $page
+ * @var int    $pages
+ * @var int    $total
+ * @var string $currency
+ * @var array{paid_count:int, paid_amount:float, pending_count:int} $summary
+ * @var bool   $paymentEnabled
+ * @var string $notice
+ * @var string $noticeType
+ */
+$noticeType = $noticeType ?? 'info';
+
+$money = static function (mixed $value): string {
+    $float = (float) $value;
+    if ($float === 0.0) {
+        return '0';
+    }
+
+    return rtrim(rtrim(number_format($float, 6, '.', ''), '0'), '.');
+};
+
+$statusLabels = [
+    '' => '全部',
+    'pending' => '待支付',
+    'paid' => '已到账',
+    'failed' => '已作废',
+];
+?>
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title><?= htmlspecialchars((string) $siteName, ENT_QUOTES, 'UTF-8') ?> · 订单</title>
+    <?php include __DIR__ . '/_style.html'; ?>
+</head>
+<body>
+<div class="wrap">
+    <?php $active = 'orders'; include __DIR__ . '/_header.html'; ?>
+
+    <?php if (($notice ?? '') !== ''): ?>
+        <div class="alert <?= htmlspecialchars((string) $noticeType, ENT_QUOTES, 'UTF-8') ?>">
+            <?= icon($noticeType === 'err' ? 'alert' : 'check', 17) ?>
+            <span><?= htmlspecialchars((string) $notice, ENT_QUOTES, 'UTF-8') ?></span>
+        </div>
+    <?php endif; ?>
+
+    <?php if (!$paymentEnabled): ?>
+        <div class="alert info">
+            <?= icon('info', 17) ?>
+            <span>
+                在线充值当前<b>未开启</b>。要启用请到
+                <a href="/admin/settings">配置管理 → 支付</a>
+                填好易支付接口地址、商户 PID 与密钥，并打开「是否启用在线充值」。
+            </span>
+        </div>
+    <?php endif; ?>
+
+    <section>
+        <h2><?= icon('card', 18) ?>收款概览</h2>
+        <div class="stats">
+            <div class="stat ok"><div class="n"><?= (int) $summary['paid_count'] ?></div><div class="l">已到账订单</div></div>
+            <div class="stat accent"><div class="n" style="font-size:20px"><?= $money($summary['paid_amount']) ?></div><div class="l">累计收款（<?= htmlspecialchars((string) $currency, ENT_QUOTES, 'UTF-8') ?>）</div></div>
+            <div class="stat <?= (int) $summary['pending_count'] > 0 ? 'danger' : '' ?>">
+                <div class="n"><?= (int) $summary['pending_count'] ?></div>
+                <div class="l">待支付（可能已废弃）</div>
+            </div>
+        </div>
+    </section>
+
+    <section>
+        <div class="between" style="margin-bottom:16px">
+            <h2 class="mb-0"><?= icon('card', 18) ?>订单记录（<?= (int) $total ?>）</h2>
+
+            <div class="row">
+                <?php foreach ($statusLabels as $key => $label): ?>
+                    <a class="ghost" href="/admin/orders<?= $key === '' ? '' : '?status=' . $key ?>"
+                       style="<?= $status === $key ? 'border-color:#0d9dbf;background:#e6f6fa;color:#0a7f9c' : '' ?>">
+                        <?= htmlspecialchars($label, ENT_QUOTES, 'UTF-8') ?>
+                    </a>
+                <?php endforeach; ?>
+            </div>
+        </div>
+
+        <?php if ($rows === []): ?>
+            <div class="empty">
+                <?= icon('card', 30) ?>
+                <div>没有符合条件的订单。</div>
+            </div>
+        <?php else: ?>
+            <div class="table-scroll">
+                <table class="compact">
+                    <thead>
+                    <tr>
+                        <th style="width:21%">订单号</th>
+                        <th style="width:16%">用户</th>
+                        <th style="width:9%">金额</th>
+                        <th style="width:9%">到账</th>
+                        <th style="width:14%">网关 / 方式</th>
+                        <th style="width:10%">状态</th>
+                        <th style="width:11%">创建</th>
+                        <th style="width:10%">操作</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($rows as $row): ?>
+                        <tr>
+                            <td class="mono" style="word-break:break-all">
+                                <?= htmlspecialchars((string) $row['orderNo'], ENT_QUOTES, 'UTF-8') ?>
+                                <?php if ($row['tradeNo'] !== ''): ?>
+                                    <div class="src">网关单号 <?= htmlspecialchars(mb_substr((string) $row['tradeNo'], 0, 16), ENT_QUOTES, 'UTF-8') ?></div>
+                                <?php endif; ?>
+                            </td>
+                            <td class="src" style="word-break:break-all">
+                                #<?= (int) $row['userId'] ?><br>
+                                <?= htmlspecialchars((string) $row['userEmail'], ENT_QUOTES, 'UTF-8') ?>
+                            </td>
+                            <td class="mono"><?= $money($row['amount']) ?></td>
+                            <td class="mono"><?= $money($row['credit']) ?></td>
+                            <td class="src"><?= htmlspecialchars((string) $row['gateway'], ENT_QUOTES, 'UTF-8') ?> / <?= htmlspecialchars((string) $row['payType'], ENT_QUOTES, 'UTF-8') ?></td>
+                            <td>
+                                <?php if ($row['status'] === 'paid'): ?>
+                                    <span class="pill ok">已到账</span>
+                                <?php elseif ($row['status'] === 'failed'): ?>
+                                    <span class="pill">已作废</span>
+                                <?php else: ?>
+                                    <span class="pill warn">待支付</span>
+                                <?php endif; ?>
+                            </td>
+                            <td class="src"><?= htmlspecialchars((string) $row['createdAt'], ENT_QUOTES, 'UTF-8') ?></td>
+                            <td>
+                                <?php if ($row['status'] === 'pending'): ?>
+                                    <form method="post" action="/admin/orders/fail" class="mb-0"
+                                          onsubmit="return confirm('把该订单标记为作废？此操作只改状态，不会退款也不会扣余额。');">
+                                        <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
+                                        <input type="hidden" name="id" value="<?= (int) $row['id'] ?>">
+                                        <button class="ghost danger" type="submit">作废</button>
+                                    </form>
+                                <?php else: ?>
+                                    <span class="src">—</span>
+                                <?php endif; ?>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+
+            <?php if ($pages > 1): ?>
+                <div class="actions-bar">
+                    <?php
+                    $qs = static fn (int $p): string => '/admin/orders?page=' . $p
+                        . ($status === '' ? '' : '&status=' . $status);
+                    ?>
+                    <?php if ($page > 1): ?>
+                        <a class="ghost" href="<?= htmlspecialchars($qs($page - 1), ENT_QUOTES, 'UTF-8') ?>">上一页</a>
+                    <?php endif; ?>
+                    <span class="src">第 <?= $page ?> / <?= $pages ?> 页</span>
+                    <?php if ($page < $pages): ?>
+                        <a class="ghost" href="<?= htmlspecialchars($qs($page + 1), ENT_QUOTES, 'UTF-8') ?>">下一页</a>
+                    <?php endif; ?>
+                </div>
+            <?php endif; ?>
+        <?php endif; ?>
+
+        <p class="note">
+            <b>只有支付网关的异步回调才会让余额到账</b>（且经过签名校验 + 幂等处理），
+            用户在浏览器里手工访问返回地址不会加钱。<br>
+            回调的原始参数保存在数据库 <code>payment_orders.notify_raw</code> 字段里 ——
+            与网关后台对不上账时，拿它逐字段核对是最快的办法。<br>
+            「作废」只改订单状态，<b>不会退款也不会扣余额</b>。真要补钱请用
+            <a href="/admin/users">用户页</a>的「调余额」，这样每笔钱的来源都有据可查。
+        </p>
+    </section>
+</div>
+</body>
+</html>

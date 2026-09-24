@@ -27,6 +27,7 @@ declare(strict_types=1);
 
 namespace app\controller;
 
+use app\common\Crypto;
 use app\common\Csrf;
 use app\common\Settings;
 use support\Request;
@@ -56,9 +57,36 @@ class SettingController
         'site' => ['label' => '站点', 'hint' => '站点名称、模式、公告、备案号等对外展示信息'],
         'gateway' => ['label' => '网关', 'hint' => '转发行为：超时分层、重试、SSE 心跳'],
         'key_pool' => ['label' => '密钥池', 'hint' => '多 Key 轮换的限流与失效治理策略'],
+        'register' => ['label' => '注册', 'hint' => '下游用户的准入控制：是否开放注册、是否验证邮箱、邀请码、赠送额度'],
+        'mail' => ['label' => '邮件', 'hint' => 'SMTP 发信配置，用于邮箱验证与找回密码'],
+        'payment' => ['label' => '支付', 'hint' => '易支付 V1 / V2，用于用户在线充值'],
         'billing' => ['label' => '计费', 'hint' => '上游成本与下游售价的计算口径；逐个模型的价格在「模型定价」页配置'],
         'security' => ['label' => '安全', 'hint' => '后台登录防爆破与登录态有效期'],
         'session' => ['label' => '会话', 'hint' => '会话 Cookie 的安全属性'],
+    ];
+
+    /**
+     * 枚举型配置的可选值。
+     *
+     * 为什么不让人直接手敲：这几个键的取值都是固定的英文标识，
+     * 打错一个字母（比如 `starttls` 写成 `starttls ` 或 `STARTTLS`）
+     * 症状是「邮件发不出去」「支付跳转失败」，而错误信息完全指不到拼写。
+     * 做成下拉，从源头上消灭这类问题。
+     */
+    private const ENUM_OPTIONS = [
+        'site.mode' => [
+            'commercial' => '商业站',
+            'public_welfare' => '公益站',
+        ],
+        'mail.secure' => [
+            'ssl' => 'SSL（连接即加密，通常 465）',
+            'tls' => 'STARTTLS（先明文再升级，通常 587）',
+            'none' => '不加密（仅内网自建邮件服务）',
+        ],
+        'payment.gateway' => [
+            'epay_v1' => '易支付 V1 · 页面跳转型',
+            'epay_v2' => '易支付 V2 · API 型',
+        ],
     ];
 
     /** Session 中存放提示信息的键 */
@@ -95,8 +123,54 @@ class SettingController
         // 白名单：只接受已知的配置键
         $allowed = Settings::keys();
 
-        $saved = 0;
+        // ── 先整体校验，有一处不合法就整体不写 ──
+        // 为什么不「能存的先存」：配置项之间常有依赖（比如开了邮箱验证却没配
+        // 邮件服务，用户就注册不进来）。存一半会留下一个自相矛盾的状态，
+        // 比整个不存更难排查。
+        $errors = [];
+
         foreach ($allowed as $key) {
+            if (!array_key_exists($key, $submitted)) {
+                continue;
+            }
+
+            $value = (string) $submitted[$key];
+
+            // 枚举项：只接受清单内的取值
+            if (isset(self::ENUM_OPTIONS[$key]) && $value !== '' && !isset(self::ENUM_OPTIONS[$key][$value])) {
+                $errors[] = "「{$key}」的取值不在允许范围内";
+            }
+
+            // 凭据项：要写入就必须有 APP_KEY 才能加密
+            if (Settings::isSecret($key) && $value !== '' && !Crypto::isConfigured()) {
+                $errors[] = "未配置 APP_KEY，无法加密保存「{$key}」"
+                    . '（生成方式：php -r "echo bin2hex(random_bytes(32));"，写入 .env 后重启服务）';
+            }
+        }
+
+        if ($errors !== []) {
+            return $this->back(implode('；', $errors), 'err');
+        }
+
+        // ── 再逐项写入 ──
+        $saved = 0;
+
+        foreach ($allowed as $key) {
+            // 凭据：输入框留空表示「不修改」。
+            // 后台从不回显凭据，所以「空的输入框」绝大多数情况是没动它；
+            // 若按清空处理，用户改一次别的配置就会把凭据抹掉。
+            // 想清空请点该行的「恢复默认」。
+            if (Settings::isSecret($key)) {
+                $plain = (string) ($submitted[$key] ?? '');
+                if ($plain === '') {
+                    continue;
+                }
+
+                Settings::putSecret($key, $plain);
+                $saved++;
+                continue;
+            }
+
             $isBool = $this->typeOf($key) === 'bool';
 
             // 复选框未勾选时浏览器**不会提交该字段**，因此对布尔项来说
@@ -188,11 +262,17 @@ class SettingController
 
             $groups[$prefix]['items'][] = [
                 'key'         => $key,
-                'raw'         => $raw,
-                'display'     => $this->stringify($raw),
+                'raw'         => Settings::isSecret($key) ? '' : $raw,
+                // 凭据从不回显：只告诉站长「配没配」
+                'display'     => $this->displayValue($key, $raw),
                 'type'        => $this->typeOf($key),
                 'source'      => $source,
-                'sourceLabel' => self::SOURCE_LABELS[$source] ?? $source,
+                'sourceLabel' => Settings::isSecret($key) && $source === 'database'
+                    ? '数据库（已加密存储）'
+                    : (self::SOURCE_LABELS[$source] ?? $source),
+                // 枚举项的可选值，供模板渲染下拉
+                'options'     => self::ENUM_OPTIONS[$key] ?? [],
+                'configured'  => Settings::isSecret($key) ? Settings::hasSecret($key) : false,
                 // 只有数据库里存在覆盖值时才谈得上「恢复默认」
                 'canReset'    => $source === 'database',
             ];
@@ -202,11 +282,36 @@ class SettingController
     }
 
     /**
+     * 表单里显示的「值」。
+     *
+     * 凭据一律不回显：已配置显示空串 + 提示（模板据 configured 判断），
+     * 未配置也是空串。这样即便页面被人看到、被截图、被浏览器缓存，
+     * 也不会泄露任何口令。
+     */
+    private function displayValue(string $key, mixed $raw): string
+    {
+        if (Settings::isSecret($key)) {
+            return '';
+        }
+
+        return $this->stringify($raw);
+    }
+
+    /**
      * 判定某个配置键的类型，依据是 config/settings.php 里的默认值。
      * 没有代码默认值的键（人工写进库的）按字符串处理。
      */
     private function typeOf(string $key): string
     {
+        // 凭据与枚举优先判定：它们的控件类型不能由默认值的 PHP 类型推导
+        if (Settings::isSecret($key)) {
+            return 'secret';
+        }
+
+        if (isset(self::ENUM_OPTIONS[$key])) {
+            return 'enum';
+        }
+
         if (!Settings::hasCodeDefault($key)) {
             return 'string';
         }
