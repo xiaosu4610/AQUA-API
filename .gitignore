@@ -1,0 +1,60 @@
+# ============================================================
+# 本仓库后续计划开源：以下内容「严禁入库」
+# 提交前请用 git status 复核，务必确认没有凭据被跟踪
+# ============================================================
+
+# ── 密钥 / 凭据类文件 ──
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.ppk
+*.token
+id_rsa*
+id_ed25519*
+authorized_keys
+known_hosts
+config.local.php
+config.secret.php
+
+# ── 已知的本机敏感清单（含密钥列表，按文件名模式拦截）──
+nvidia-keys-*
+*keys-alive*
+*secret*
+*credential*
+
+# ── 运行时数据 / 数据库 / 日志 ──
+storage/
+logs/
+*.log
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# ── PHP 依赖与构建产物 ──
+/vendor/
+node_modules/
+/dist/
+/build/
+*.cache
+
+# ── 编辑器 / 操作系统 ──
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── 备份 / 临时文件 ──
+*.bak
+*.tmp
+*.old
+*.orig
+*.log.*
