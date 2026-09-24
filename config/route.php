@@ -14,9 +14,19 @@ use app\controller\AdminController;
 use app\controller\ChannelController;
 use app\controller\HealthController;
 use app\controller\HomeController;
+use app\controller\InstallController;
+use app\controller\PricingController;
 use app\controller\SettingController;
 use app\middleware\AdminAuth;
 use Webman\Route;
+
+// ── 安装向导（公开）──────────────────────────────────────
+// 装完之后这两个入口只会显示「已安装」的说明页，不再提供可执行的表单。
+// /install.php 是路径别名：常规 PHP 项目都用这个地址，照顾使用习惯
+Route::get('/install', [InstallController::class, 'index']);
+Route::post('/install', [InstallController::class, 'run']);
+Route::get('/install.php', [InstallController::class, 'index']);
+Route::post('/install.php', [InstallController::class, 'run']);
 
 // ── 站点首页（公开）──────────────────────────────────────
 // 定位是「站点门户 + 运行状态」。将来公益站的用量公示也挂在这里，
@@ -62,6 +72,14 @@ Route::group('/admin', function () {
     Route::post('/channels/keys/toggle', [ChannelController::class, 'keysToggle']);
     Route::post('/channels/keys/delete', [ChannelController::class, 'keysDelete']);
     Route::post('/channels/keys/reset', [ChannelController::class, 'keysReset']);
+
+    // 模型定价（上游成本 + 下游售价）
+    Route::get('/pricing', [PricingController::class, 'index']);
+    Route::get('/pricing/new', [PricingController::class, 'createForm']);
+    Route::get('/pricing/edit', [PricingController::class, 'editForm']);
+    Route::post('/pricing/save', [PricingController::class, 'save']);
+    Route::post('/pricing/delete', [PricingController::class, 'delete']);
+    Route::post('/pricing/sync', [PricingController::class, 'sync']);
 
     // POST /admin/logout —— 退出登录
     Route::post('/logout', [AdminController::class, 'logout']);

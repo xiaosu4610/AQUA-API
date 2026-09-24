@@ -24,11 +24,28 @@ use Webman\Session\RedisSessionHandler;
 use Webman\Session\RedisClusterSessionHandler;
 
 // 生产默认要求 HTTPS；本地开发在 .env 里显式关掉
-$secure = filter_var(
-    getenv('SESSION_SECURE') ?: 'true',
-    FILTER_VALIDATE_BOOL,
-    FILTER_NULL_ON_FAILURE
-) ?? true;
+//
+// ⚠️ 但有一个例外：**安装阶段必须允许非 HTTPS Cookie**。
+//
+// 因为安装向导常常是通过 http 打开的（本地 127.0.0.1、或还没配证书的服务器），
+// 而安装表单需要 CSRF 令牌 —— 令牌存在会话里，会话又依赖 Cookie。
+// 若此时强制 secure=true，浏览器根本不会保存这个 Cookie，
+// 提交表单就会一直报「页面已过期」，且原因完全看不出来。
+//
+// 判断方式刻意保持「零依赖」：只看 .env 在不在，不去查数据库、不加载应用类。
+// 理由：config 文件的加载时机很早，此时任何复杂判断都可能引入新的启动期问题。
+//    · 没有 .env —— 还没开始装（或正装在装），放行 http Cookie
+//    · 有 .env   —— 已部署，按 SESSION_SECURE 的规则来（默认 true）
+// 这样既不影响已有部署（它们本来就有 .env），又让新安装能顺利走完。
+$installed = is_file(base_path() . DIRECTORY_SEPARATOR . '.env');
+
+$secure = $installed
+    ? (filter_var(
+        getenv('SESSION_SECURE') ?: 'true',
+        FILTER_VALIDATE_BOOL,
+        FILTER_NULL_ON_FAILURE
+    ) ?? true)
+    : false;
 
 return [
     // file = 文件（默认，零依赖）| redis | redis_cluster

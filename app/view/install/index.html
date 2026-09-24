@@ -1,0 +1,423 @@
+<?php
+/**
+ * 安装向导页（三个阶段共用一个模板）
+ *
+ *   form   —— 环境检查 + 配置表单（未安装时）
+ *   done   —— 安装完成
+ *   locked —— 已经装过了，不再提供任何可执行表单
+ *
+ * 三个阶段共用同一份 `<head>` 与风格，因此写在一个文件里：
+ * 拆成三个文件会让「样式改一处要改三处」，而这种一致性正是
+ * 页面看起来廉价与否的分水岭。
+ *
+ * 复用后台的 _style.html 与 _icons.html，保证安装页与后台是同一套视觉语言 ——
+ * 安装是用户对本项目的第一印象，不该是一张没设计过的白纸。
+ *
+ * @var string $csrf
+ * @var string $stage       form | done | locked
+ * @var string $appVersion
+ * @var array<int, array{label:string, ok:bool, value:string, need:string, required:bool}> $checks
+ * @var array<string, mixed> $old
+ * @var string $error
+ * @var array{exists:bool, size:int} $legacySqlite
+ * @var string $dbLabel
+ * @var string $siteName
+ * @var string $siteDomain
+ * @var bool   $https
+ * @var string|null $backup
+ * @var array<string, mixed> $lockInfo
+ */
+require_once __DIR__ . '/../admin/_icons.html';
+
+$stage = $stage ?? 'form';
+$old = $old ?? [];
+$val = static fn (string $key, string $default = ''): string => (string) ($old[$key] ?? $default);
+?>
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title>安装 · aqua-api-php</title>
+    <?php include __DIR__ . '/../admin/_style.html'; ?>
+    <style>
+        /* 安装页专用：单一居中列，不出现后台导航 */
+        .install-wrap { max-width: 880px; margin: 0 auto; }
+        .install-head { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
+        .install-head img { width: 40px; height: 40px; border-radius: 10px; display: block; flex: none; }
+        .install-head h1 { font-size: 21px; }
+        .install-head .ver { font-size: 12px; color: var(--muted); }
+        .steps { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 20px; }
+        .step { display: flex; align-items: center; gap: 7px; padding: 6px 13px; border-radius: 999px;
+                font-size: 12.5px; background: #fff; border: 1px solid var(--border); color: var(--muted); }
+        .step .n { width: 18px; height: 18px; border-radius: 50%; display: inline-flex; align-items: center;
+                   justify-content: center; font-size: 11px; background: #eef2f6; color: var(--muted); }
+        .step.on { background: var(--accent-soft); border-color: #cceaf2; color: var(--accent-dark); font-weight: 600; }
+        .step.on .n { background: var(--accent); color: #fff; }
+        .check-ok { color: var(--ok); }
+        .check-bad { color: var(--danger); }
+        .radio-row { display: flex; gap: 10px; flex-wrap: wrap; }
+        .radio-row label {
+            flex: 1 1 200px; display: flex; gap: 9px; align-items: flex-start; cursor: pointer;
+            padding: 12px 14px; border: 1px solid var(--border-strong); border-radius: 10px; background: #fff;
+        }
+        .radio-row label:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+        .radio-row input { margin-top: 3px; accent-color: var(--accent); }
+        .radio-row .t { font-size: 13.5px; font-weight: 600; }
+        .radio-row .d { font-size: 12px; color: var(--muted); }
+        .kv-list { margin: 0; padding: 0; list-style: none; }
+        .kv-list li { display: flex; gap: 10px; padding: 6px 0; border-bottom: 1px dashed var(--border); font-size: 13.5px; }
+        .kv-list li:last-child { border-bottom: 0; }
+        .kv-list .k { width: 130px; color: var(--muted); flex: none; }
+    </style>
+</head>
+<body>
+<div class="install-wrap">
+
+    <div class="install-head">
+        <img src="/favicon.ico" alt="" width="40" height="40">
+        <div>
+            <h1>aqua-api-php · 安装向导</h1>
+            <div class="ver">版本 <?= htmlspecialchars((string) $appVersion, ENT_QUOTES, 'UTF-8') ?></div>
+        </div>
+    </div>
+
+    <?php if ($stage === 'locked'): ?>
+
+        <?php /* ── 已安装：只给说明，不给表单 ────────────────── */ ?>
+        <section>
+            <h2><?= icon('check', 18) ?>系统已经安装完成</h2>
+
+            <div class="alert ok">
+                <?= icon('shield', 17) ?>
+                <span>
+                    安装程序已自动锁定，<b>不再提供任何可执行的安装表单</b>。
+                    这是为了防止有人通过重装向导覆盖你的数据库配置或管理员密码。
+                </span>
+            </div>
+
+            <?php if (($lockInfo ?? []) !== []): ?>
+                <ul class="kv-list">
+                    <?php if (!empty($lockInfo['installed_at'])): ?>
+                        <li><span class="k">安装时间</span><span><?= htmlspecialchars((string) $lockInfo['installed_at'], ENT_QUOTES, 'UTF-8') ?></span></li>
+                    <?php endif; ?>
+                    <?php if (!empty($lockInfo['database'])): ?>
+                        <li><span class="k">数据库</span><span class="mono"><?= htmlspecialchars((string) $lockInfo['database'], ENT_QUOTES, 'UTF-8') ?></span></li>
+                    <?php endif; ?>
+                    <?php if (!empty($lockInfo['site_name'])): ?>
+                        <li><span class="k">站点名称</span><span><?= htmlspecialchars((string) $lockInfo['site_name'], ENT_QUOTES, 'UTF-8') ?></span></li>
+                    <?php endif; ?>
+                    <?php if (!empty($lockInfo['site_domain'])): ?>
+                        <li><span class="k">域名</span><span class="mono"><?= htmlspecialchars((string) $lockInfo['site_domain'], ENT_QUOTES, 'UTF-8') ?></span></li>
+                    <?php endif; ?>
+                    <?php if (!empty($lockInfo['app_version'])): ?>
+                        <li><span class="k">安装时版本</span><span class="mono"><?= htmlspecialchars((string) $lockInfo['app_version'], ENT_QUOTES, 'UTF-8') ?></span></li>
+                    <?php endif; ?>
+                </ul>
+            <?php endif; ?>
+
+            <div class="actions-bar">
+                <a class="primary" href="/admin/login"><?= icon('lock', 16) ?>进入管理后台</a>
+                <a class="ghost" href="/"><?= icon('home', 15) ?>返回首页</a>
+            </div>
+
+            <p class="note">
+                <b>确实要重装怎么办？</b>安装锁定有两道判断，缺一不可：<br>
+                ① 锁文件 <code>runtime/install.lock</code>；② 数据库里已有表结构与管理员记录。<br>
+                也就是说，<b>只删锁文件是重装不了的</b> —— 还必须清空数据库（SQLite 删掉
+                <code>runtime/aqua.sqlite</code>；MySQL 删库重建）。这个双重保险是刻意设计的：<br>
+                否则一次误操作就能把线上站点的配置清空。<br>
+                另外，装好之后建议把 <code>install</code> 相关代码从生产环境移除（或在 Nginx 层屏蔽
+                <code>/install</code>），这是纵深防御的常规做法。
+            </p>
+        </section>
+
+    <?php elseif ($stage === 'done'): ?>
+
+        <?php /* ── 安装成功 ────────────────────────────────── */ ?>
+        <section>
+            <h2><?= icon('check', 18) ?>安装成功</h2>
+
+            <div class="alert ok">
+                <?= icon('shield', 17) ?>
+                <span>数据库已初始化、管理员账号已创建，安装程序<b>已自动锁定</b>，此页面之后不再可用。</span>
+            </div>
+
+            <ul class="kv-list">
+                <li><span class="k">站点名称</span><span><?= htmlspecialchars((string) $siteName, ENT_QUOTES, 'UTF-8') ?></span></li>
+                <li><span class="k">数据库</span><span class="mono"><?= htmlspecialchars((string) $dbLabel, ENT_QUOTES, 'UTF-8') ?></span></li>
+                <?php if (($siteDomain ?? '') !== ''): ?>
+                    <li><span class="k">域名</span><span class="mono"><?= htmlspecialchars((string) $siteDomain, ENT_QUOTES, 'UTF-8') ?></span></li>
+                <?php endif; ?>
+                <li>
+                    <span class="k">会话安全</span>
+                    <span>
+                        <?php if ($https): ?>
+                            <span class="pill ok">仅 HTTPS</span> 与当前访问方式一致
+                        <?php else: ?>
+                            <span class="pill warn">允许 HTTP</span>
+                            当前是 HTTP 访问。若正式对外提供 HTTPS，请登录后台把
+                            <code>session.secure</code> 打开
+                        <?php endif; ?>
+                    </span>
+                </li>
+                <?php if (($backup ?? null) !== null): ?>
+                    <li><span class="k">旧 .env 备份</span><span class="mono"><?= htmlspecialchars(basename((string) $backup), ENT_QUOTES, 'UTF-8') ?></span></li>
+                <?php endif; ?>
+            </ul>
+
+            <div class="alert info" style="margin-top:16px">
+                <?= icon('bolt', 17) ?>
+                <span>
+                    <b>还差最后一步：重启服务。</b><br>
+                    新配置（尤其是数据库连接）需要重启才会被<b>所有</b>工作进程读到。
+                    在此之前的访问可能仍连着旧数据库，看起来像「数据不见了」。<br>
+                    Linux：<code>systemctl restart aqua-api</code>
+                    &nbsp;·&nbsp; Windows：结束终端里的进程后重新执行 <code>php windows.php start</code>
+                </span>
+            </div>
+
+            <div class="actions-bar">
+                <a class="primary" href="<?= htmlspecialchars((string) $adminUrl, ENT_QUOTES, 'UTF-8') ?>">
+                    <?= icon('lock', 16) ?>前往后台登录
+                </a>
+                <a class="ghost" href="/"><?= icon('home', 15) ?>返回首页</a>
+            </div>
+
+            <p class="note">
+                管理员密码已直接写入数据库（bcrypt 哈希），<b>没有留在 .env 里</b> ——
+                .env 是长期存在的文件，少一处明文就少一处泄露面。<br>
+                忘记密码时可在服务器执行
+                <code>sudo -u www-data php scripts/reset-admin-password.php</code> 重置。
+            </p>
+        </section>
+
+    <?php else: ?>
+
+        <?php /* ── 安装表单 ────────────────────────────────── */ ?>
+        <div class="steps">
+            <div class="step on"><span class="n">1</span>环境检查</div>
+            <div class="step on"><span class="n">2</span>数据库</div>
+            <div class="step on"><span class="n">3</span>站点与管理员</div>
+            <div class="step on"><span class="n">4</span>完成</div>
+        </div>
+
+        <?php if (($error ?? '') !== ''): ?>
+            <div class="alert err">
+                <?= icon('alert', 17) ?>
+                <span><?= htmlspecialchars((string) $error, ENT_QUOTES, 'UTF-8') ?></span>
+            </div>
+        <?php endif; ?>
+
+        <section>
+            <h2><?= icon('shield', 18) ?>环境检查</h2>
+            <div class="table-scroll">
+                <table class="compact">
+                    <thead>
+                    <tr>
+                        <th style="width:26%">检查项</th>
+                        <th style="width:26%">当前</th>
+                        <th style="width:34%">要求</th>
+                        <th style="width:14%">结果</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($checks as $check): ?>
+                        <tr>
+                            <td><?= htmlspecialchars($check['label'], ENT_QUOTES, 'UTF-8') ?></td>
+                            <td class="mono"><?= htmlspecialchars($check['value'], ENT_QUOTES, 'UTF-8') ?></td>
+                            <td class="src"><?= htmlspecialchars($check['need'], ENT_QUOTES, 'UTF-8') ?></td>
+                            <td>
+                                <?php if ($check['ok']): ?>
+                                    <span class="pill ok">通过</span>
+                                <?php elseif ($check['required']): ?>
+                                    <span class="pill danger">不通过</span>
+                                <?php else: ?>
+                                    <span class="pill warn">建议</span>
+                                <?php endif; ?>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+            <p class="note">
+                标「通过/不通过」的项必须全部满足才能继续；标「建议」的项不影响安装。
+            </p>
+        </section>
+
+        <?php if (!empty($legacySqlite['exists'])): ?>
+            <div class="alert info">
+                <?= icon('info', 17) ?>
+                <span>
+                    检测到已存在的 SQLite 数据库文件（<code>runtime/aqua.sqlite</code>，
+                    <?= number_format((int) $legacySqlite['size'] / 1024, 1) ?> KB）。
+                    本次安装<b>不会</b>自动迁移其中的数据 —— 如果你想保留，
+                    请先完成安装再执行
+                    <code>php scripts/migrate-sqlite-to-mysql.php</code> 迁移。
+                </span>
+            </div>
+        <?php endif; ?>
+
+        <form method="post" action="/install">
+            <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
+
+            <section>
+                <h2><?= icon('database', 18) ?>数据库</h2>
+
+                <div class="field">
+                    <div class="lbl">数据库类型</div>
+                    <div class="radio-row">
+                        <label>
+                            <input type="radio" name="db_type" value="sqlite" <?= $val('db_type', 'sqlite') === 'sqlite' ? 'checked' : '' ?>>
+                            <span>
+                                <span class="t">SQLite（推荐先跑起来）</span>
+                                <span class="d">零配置，数据文件放在 runtime/ 下。适合单机、中小流量</span>
+                            </span>
+                        </label>
+                        <label>
+                            <input type="radio" name="db_type" value="mysql" <?= $val('db_type') === 'mysql' ? 'checked' : '' ?>>
+                            <span>
+                                <span class="t">MySQL（生产推荐）</span>
+                                <span class="d">多进程并发写入更稳，便于备份与迁移。需要先有 MySQL 服务</span>
+                            </span>
+                        </label>
+                    </div>
+                    <div class="tip">
+                        ⚠️ SQLite 在多进程写入下是单写者模型：站点规模上来后必须换 MySQL。
+                        换库可以用「安装后执行迁移脚本」的方式平滑完成。
+                    </div>
+                </div>
+
+                <div id="mysql-fields">
+                    <div class="two-col">
+                        <div class="field">
+                            <div class="lbl">主机</div>
+                            <input type="text" name="db_host" value="<?= htmlspecialchars($val('db_host', '127.0.0.1'), ENT_QUOTES, 'UTF-8') ?>">
+                            <div class="tip">本机 MySQL 填 <code>127.0.0.1</code>（比 localhost 更明确，避免走 socket）</div>
+                        </div>
+                        <div class="field">
+                            <div class="lbl">端口</div>
+                            <input type="text" name="db_port" value="<?= htmlspecialchars($val('db_port', '3306'), ENT_QUOTES, 'UTF-8') ?>">
+                        </div>
+                    </div>
+
+                    <div class="two-col">
+                        <div class="field">
+                            <div class="lbl">数据库名</div>
+                            <input type="text" name="db_name" value="<?= htmlspecialchars($val('db_name', 'aqua'), ENT_QUOTES, 'UTF-8') ?>">
+                            <div class="tip">库不存在时会尝试自动创建（需要账号有建库权限）</div>
+                        </div>
+                        <div class="field">
+                            <div class="lbl">用户名</div>
+                            <input type="text" name="db_user" value="<?= htmlspecialchars($val('db_user'), ENT_QUOTES, 'UTF-8') ?>">
+                        </div>
+                    </div>
+
+                    <div class="field">
+                        <div class="lbl">密码</div>
+                        <input type="password" name="db_password" autocomplete="new-password"
+                               value="<?= htmlspecialchars($val('db_password'), ENT_QUOTES, 'UTF-8') ?>">
+                        <div class="tip">会以 600 权限写入 <code>.env</code>，不会入库、不会写日志</div>
+                    </div>
+                </div>
+            </section>
+
+            <section>
+                <h2><?= icon('home', 18) ?>站点与管理员</h2>
+
+                <div class="two-col">
+                    <div class="field">
+                        <div class="lbl">站点名称</div>
+                        <input type="text" name="site_name" required maxlength="64"
+                               value="<?= htmlspecialchars($val('site_name', 'aqua-api-php'), ENT_QUOTES, 'UTF-8') ?>">
+                    </div>
+                    <div class="field">
+                        <div class="lbl">域名（可选，可留空）</div>
+                        <input type="text" name="site_domain" maxlength="128"
+                               placeholder="例如 aqua.is3.cc"
+                               value="<?= htmlspecialchars($val('site_domain'), ENT_QUOTES, 'UTF-8') ?>">
+                        <div class="tip">仅用于展示与将来生成绝对地址，<b>不做 Host 校验</b>，填错也不会导致打不开</div>
+                    </div>
+                </div>
+
+                <div class="field">
+                    <div class="lbl">站点模式</div>
+                    <select name="site_mode">
+                        <option value="commercial" <?= $val('site_mode', 'commercial') === 'commercial' ? 'selected' : '' ?>>
+                            商业站（显示定价、充值等入口）
+                        </option>
+                        <option value="public_welfare" <?= $val('site_mode') === 'public_welfare' ? 'selected' : '' ?>>
+                            公益站（隐藏计费入口，默认收紧限流）
+                        </option>
+                    </select>
+                </div>
+
+                <div class="two-col">
+                    <div class="field">
+                        <div class="lbl">管理员密码（至少 8 位）</div>
+                        <input type="password" name="admin_password" required autocomplete="new-password">
+                        <div class="tip">本项目后台<b>只要密码、不要用户名</b>，这是超级管理员入口</div>
+                    </div>
+                    <div class="field">
+                        <div class="lbl">再次输入</div>
+                        <input type="password" name="admin_password2" required autocomplete="new-password">
+                    </div>
+                </div>
+
+                <div class="field">
+                    <label class="check">
+                        <input type="checkbox" name="https" value="1" <?= $val('https', '1') === '1' ? 'checked' : '' ?>>
+                        <span>
+                            通过 HTTPS 访问（会话 Cookie 只允许加密传输）
+                            <?php if ($val('https', '1') === '1'): ?>
+                                <span class="pill ok">已按当前访问方式自动判断</span>
+                            <?php endif; ?>
+                        </span>
+                    </label>
+                    <div class="tip">
+                        如果你现在是通过 <code>http://</code> 打开这个安装页（例如本地
+                        <code>127.0.0.1:8787</code>），<b>请取消勾选</b> ——
+                        否则浏览器不会保存会话 Cookie，表现为「登录成功却立刻跳回登录页」。
+                        正式配好 HTTPS 后，可在后台把 <code>session.secure</code> 打开。
+                    </div>
+                </div>
+            </section>
+
+            <div class="actions-bar">
+                <button class="primary" type="submit"><?= icon('bolt', 16) ?>开始安装</button>
+            </div>
+
+            <p class="note">
+                安装会做这几件事：生成 <code>APP_KEY</code>（用于加密上游 Key，<b>一旦有数据就不可更换</b>）→
+                写入 <code>.env</code>（原文件会自动备份）→ 建表 → 创建管理员 → 写入
+                <code>runtime/install.lock</code> 锁定安装程序。<br>
+                管理员密码会以 bcrypt 哈希直接写入数据库，<b>不会留在 .env 里</b>。
+            </p>
+        </form>
+
+    <?php endif; ?>
+
+</div>
+
+<?php if ($stage === 'form'): ?>
+<script>
+    (function () {
+        // MySQL 相关字段只在选中 MySQL 时显示 —— 选 SQLite 的人不该被一堆
+        // 用不上的数据库参数吓到，这也是「零配置可用」这个定位的一部分
+        var fields = document.getElementById('mysql-fields');
+        var radios = document.querySelectorAll('input[name="db_type"]');
+
+        function sync() {
+            var checked = document.querySelector('input[name="db_type"]:checked');
+            fields.style.display = (checked && checked.value === 'mysql') ? '' : 'none';
+        }
+
+        radios.forEach(function (r) { r.addEventListener('change', sync); });
+        sync();
+    })();
+</script>
+<?php endif; ?>
+</body>
+</html>
