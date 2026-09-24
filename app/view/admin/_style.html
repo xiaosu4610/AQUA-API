@@ -14,8 +14,11 @@
  * 模板里**不要再写硬编码颜色**（如 style="color:#7ee2a8"），
  * 一律用下面的语义类：.text-ok / .text-danger / .text-warn / .muted
  * —— 否则换主题时必然漏改。
+ *
+ * 本文件被各页 include 在 <head> 里，因此 favicon 的声明也放在这里一处即可。
  */
 ?>
+<link rel="icon" href="/favicon.ico" sizes="any">
 <style>
     /* ── 基础 ───────────────────────────────────────────── */
     :root {
@@ -55,11 +58,12 @@
 
     /* ── 页头 ───────────────────────────────────────────── */
     header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; gap: 16px; }
-    h1 {
-        margin: 0; font-size: 19px; font-weight: 650;
-        display: flex; align-items: center; gap: 9px; letter-spacing: .2px;
+    h1 { margin: 0; font-size: 19px; font-weight: 650; display: flex; align-items: center; gap: 9px; letter-spacing: .2px; }
+    /* 品牌图标：站长的 ICO 同时用作 favicon 与 logo（浏览器会自动挑最合适的那一档尺寸） */
+    .brand-logo {
+        display: block; border-radius: 6px; flex: none;
+        width: 26px; height: 26px;
     }
-    h1 .brand-ico { color: var(--accent); }
     .mode {
         padding: 2px 10px; font-size: 12px; font-weight: 500; border-radius: 999px;
         background: var(--accent-soft); color: var(--accent-dark);

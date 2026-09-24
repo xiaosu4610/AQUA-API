@@ -23,6 +23,7 @@ require_once __DIR__ . '/_icons.html';
     <!-- 后台不需要被搜索引擎收录 -->
     <meta name="robots" content="noindex, nofollow">
     <title>管理后台 · 登录</title>
+    <link rel="icon" href="/favicon.ico" sizes="any">
     <style>
         * { box-sizing: border-box; }
         body {
@@ -50,6 +51,8 @@ require_once __DIR__ . '/_icons.html';
             background: #e6f6fa; color: #0a7f9c;
             border: 1px solid #cceaf2; border-radius: 12px;
         }
+        /* 品牌 logo：站长的 ICO，浏览器会自动挑最合适的那一档尺寸 */
+        .brand img { display: block; width: 30px; height: 30px; border-radius: 8px; }
         h1 { margin: 0 0 4px; font-size: 19px; font-weight: 650; letter-spacing: .2px; }
         .hint { margin: 0 0 22px; font-size: 13px; color: #6b7d8f; }
 
@@ -87,7 +90,7 @@ require_once __DIR__ . '/_icons.html';
 </head>
 <body>
 <form class="card" method="post" action="/admin/login">
-    <div class="brand"><?= icon('bolt', 24) ?></div>
+    <div class="brand"><img src="/favicon.ico" alt="" width="30" height="30"></div>
 
     <h1>管理后台</h1>
     <p class="hint">超级管理员后台 · 仅需密码</p>
