@@ -8,6 +8,12 @@
 #     该目录整体被忽略，任何情况下都不得提交；详见项目记忆
 /private/
 
+# ── 【本项目专用·最高优先级】文档目录不入远程仓库 ──
+#     docs/ 内含生产域名、备案号、服务器目录结构等「运营身份信息」，
+#     而本仓库是公开仓库，故整体排除，文档只保留在本地。
+#     面向公众的说明请写在根目录 README.md（勿含运营细节）。
+/docs/
+
 # ── 密钥 / 凭据类文件 ──
 .env
 .env.*
@@ -43,7 +49,11 @@ logs/
 
 # ── PHP 依赖与构建产物 ──
 /vendor/
+# Webman 运行时（日志 / 缓存 / 进程文件），必须忽略
+/runtime/
 node_modules/
+/tests/tmp/
+/tests/.phpunit.result.cache
 /dist/
 /build/
 *.cache

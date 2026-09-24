@@ -1,0 +1,56 @@
+{
+    "name": "xiaosu/aqua-api-php",
+    "type": "project",
+    "description": "小型 LLM API 资源管理网关：对外提供 OpenAI 兼容接口，对内管理多上游密钥池、路由、用量统计与配额，并针对 NVIDIA NIM 接口做专项优化。",
+    "keywords": [
+        "llm",
+        "api-gateway",
+        "openai",
+        "nvidia-nim",
+        "webman"
+    ],
+    "license": "MIT",
+    "require": {
+        "php": ">=8.1",
+        "ext-curl": "*",
+        "ext-json": "*",
+        "ext-mbstring": "*",
+        "ext-openssl": "*",
+        "ext-pdo": "*",
+        "workerman/webman-framework": "^2.1",
+        "monolog/monolog": "^2.0"
+    },
+    "suggest": {
+        "ext-event": "并发连接数大于 1024 时建议安装，以获得 epoll 支持",
+        "ext-pdo_sqlite": "默认数据库为 SQLite，需启用该扩展（或改用 MySQL 并启用 ext-pdo_mysql）",
+        "ext-pdo_mysql": "改用 MySQL 作为数据库时需要",
+        "ext-redis": "多机部署或高并发场景用于共享密钥池与限流计数",
+        "ext-pcntl": "Linux 下多进程运行需要（Windows 不支持该扩展，故不列入 require）",
+        "ext-posix": "Linux 下守护进程化等需要（Windows 不支持该扩展，故不列入 require）"
+    },
+    "autoload": {
+        "psr-4": {
+            "": "./",
+            "app\\": "./app",
+            "App\\": "./app",
+            "app\\View\\Components\\": "./app/view/components"
+        }
+    },
+    "scripts": {
+        "post-package-install": [
+            "support\\Plugin::install"
+        ],
+        "post-package-update": [
+            "support\\Plugin::install"
+        ],
+        "pre-package-uninstall": [
+            "support\\Plugin::uninstall"
+        ]
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true,
+    "config": {
+        "sort-packages": true,
+        "optimize-autoloader": true
+    }
+}
