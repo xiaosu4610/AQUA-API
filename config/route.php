@@ -12,8 +12,14 @@
 
 use app\controller\AdminController;
 use app\controller\HealthController;
+use app\controller\HomeController;
 use app\middleware\AdminAuth;
 use Webman\Route;
+
+// ── 站点首页（公开）──────────────────────────────────────
+// 定位是「站点门户 + 运行状态」。将来公益站的用量公示也挂在这里，
+// 所以从一开始就做成公开页面，而不是把根路径重定向到后台。
+Route::get('/', [HomeController::class, 'index']);
 
 // ── 探活 ────────────────────────────────────────────────
 // 不做鉴权，供运维 / 负载均衡 / 监控调用

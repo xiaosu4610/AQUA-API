@@ -134,9 +134,15 @@ class AdminController
     {
         $admin = Admin::find();
 
+        // 站点模式单独取出来传给视图。
+        // 之前这里是模板里用 $configs[1]['value'] 硬编码下标去取的，
+        // 一旦配置清单的顺序调整，徽标就会显示成别的值 —— 属于埋着的坑，已改成显式传入。
+        $mode = (string) Settings::get('site.mode', 'commercial');
+
         return view('admin/dashboard', [
             'csrf'       => Csrf::token(),
             'siteName'   => (string) Settings::get('site.name', 'aqua-api-php'),
+            'siteMode'   => $mode === 'public_welfare' ? '公益站' : '商业站',
             'phpVersion' => PHP_VERSION,
             'dbDriver'   => Db::isSqlite() ? 'SQLite' : 'MySQL',
             'debugOn'    => (bool) config('app.debug'),
