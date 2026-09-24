@@ -11,6 +11,7 @@
  */
 
 use app\controller\AdminController;
+use app\controller\ChannelController;
 use app\controller\HealthController;
 use app\controller\HomeController;
 use app\controller\SettingController;
@@ -46,6 +47,14 @@ Route::group('/admin', function () {
     Route::get('/settings', [SettingController::class, 'index']);
     Route::post('/settings', [SettingController::class, 'save']);
     Route::post('/settings/reset', [SettingController::class, 'reset']);
+
+    // 渠道与密钥池管理
+    Route::get('/channels', [ChannelController::class, 'index']);
+    Route::get('/channels/new', [ChannelController::class, 'createForm']);
+    Route::get('/channels/edit', [ChannelController::class, 'editForm']);
+    Route::post('/channels/save', [ChannelController::class, 'save']);
+    Route::post('/channels/delete', [ChannelController::class, 'delete']);
+    Route::post('/channels/test', [ChannelController::class, 'test']);
 
     // POST /admin/logout —— 退出登录
     Route::post('/logout', [AdminController::class, 'logout']);

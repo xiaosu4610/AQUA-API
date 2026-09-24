@@ -15,6 +15,7 @@ declare(strict_types=1);
 namespace app\bootstrap;
 
 use app\common\Admin;
+use app\common\Crypto;
 use app\common\Schema;
 use support\Log;
 use Throwable;
@@ -28,6 +29,7 @@ class InitDb implements Bootstrap
         try {
             Schema::ensure();
             self::ensureAdmin();
+            self::checkAppKey();
         } catch (Throwable $e) {
             // 初始化失败不能让整个进程崩溃 ——
             // 否则一旦数据库配置有误会变成「服务起不来」，
@@ -67,5 +69,25 @@ class InitDb implements Bootstrap
 
         Admin::setPassword($password);
         Log::info('已根据 .env 中的 ADMIN_PASSWORD 完成后台管理员初始化');
+    }
+
+    /**
+     * 检查 APP_KEY 是否已配置。
+     *
+     * 渠道的 API Key 需要用它做加密。不配置的话功能会在「第一次加渠道」时
+     * 才以 500 的形式暴露 —— 那时站长很难想到原因是少了一个环境变量。
+     * 所以在启动阶段就写一条告警，让它出现在日志的第一屏。
+     */
+    private static function checkAppKey(): void
+    {
+        if (Crypto::isConfigured()) {
+            return;
+        }
+
+        Log::warning(
+            'APP_KEY 未配置：渠道的 API Key 将无法加密保存。'
+            . '请在 .env 中设置 APP_KEY（php -r "echo bin2hex(random_bytes(32));"），'
+            . '然后重启服务。'
+        );
     }
 }

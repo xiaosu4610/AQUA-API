@@ -1,0 +1,191 @@
+<?php
+/**
+ * 后台 · 渠道新增 / 编辑表单
+ *
+ * ⚠️ 本页有一条必须守住的规矩：**绝不回显 API Key**。
+ * 编辑时只在提示文字里显示掩码（如 nvapi-…9f3a），输入框永远为空，
+ * 留空即表示「保持原 Key 不变」。理由：
+ *   · 回显会让 Key 进入浏览器缓存、DOM，可能被 XSS 读取；
+ *   · 也可能被截图、被浏览器密码管理器意外保存。
+ *
+ * @var string $csrf
+ * @var string $siteName
+ * @var string $siteMode
+ * @var bool   $isEdit
+ * @var int    $id
+ * @var string $name
+ * @var string $type
+ * @var string $baseUrl
+ * @var string $modelsText
+ * @var int    $priority
+ * @var int    $weight
+ * @var int    $rpmLimit
+ * @var bool   $enabled
+ * @var string $keyMasked
+ * @var array<string, array{label:string, base_url:string, adapter:string, hint:string}> $types
+ * @var bool   $keyBroken 已存 Key 但解密失败
+ */
+?>
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title><?= htmlspecialchars((string) $siteName, ENT_QUOTES, 'UTF-8') ?> · <?= $isEdit ? '编辑渠道' : '新增渠道' ?></title>
+    <?php include __DIR__ . '/_style.html'; ?>
+    <style>
+        .field { margin-bottom: 18px; }
+        .field > .lbl { font-size: 12px; color: #8aa2ae; margin-bottom: 6px; }
+        .field .tip { font-size: 12px; color: #7d95a1; margin-top: 5px; }
+        .two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; }
+        textarea {
+            width: 100%; min-height: 110px; padding: 9px 11px;
+            background: rgba(0,0,0,.25); color: #fff;
+            border: 1px solid rgba(255,255,255,.18); border-radius: 7px;
+            font-size: 13px; font-family: ui-monospace, Consolas, monospace;
+            outline: none; resize: vertical;
+        }
+        textarea:focus { border-color: #4fc3f7; }
+        select {
+            width: 100%; padding: 8px 11px;
+            background: rgba(0,0,0,.25); color: #fff;
+            border: 1px solid rgba(255,255,255,.18); border-radius: 7px;
+            font-size: 14px; font-family: inherit; outline: none;
+        }
+    </style>
+</head>
+<body>
+<div class="wrap">
+    <?php $active = 'channels'; include __DIR__ . '/_header.html'; ?>
+
+    <section style="max-width:720px">
+        <h2><?= $isEdit ? '编辑渠道' : '新增渠道' ?></h2>
+
+        <?php if (($keyBroken ?? false)): ?>
+            <div class="alert err">
+                该渠道已保存的 API Key <b>无法解密</b>。通常是因为 <code>APP_KEY</code> 被更换过。
+                请在下面重新填入 Key —— 注意：更换 APP_KEY 会导致<b>所有</b>渠道的 Key 失效。
+            </div>
+        <?php endif; ?>
+
+        <?php if (empty($keyConfigured)): ?>
+            <div class="alert err">
+                尚未配置 <code>APP_KEY</code>，<b>现在无法保存 API Key</b>。<br>
+                请在服务器 <code>.env</code> 加入 <code>APP_KEY=&lt;32 字节随机串&gt;</code> 并重启服务后再回来填写。
+            </div>
+        <?php endif; ?>
+
+        <form method="post" action="/admin/channels/save">
+            <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
+            <input type="hidden" name="id" value="<?= $id ?>">
+
+            <div class="field">
+                <div class="lbl">渠道名称</div>
+                <input type="text" name="name" required maxlength="128"
+                       placeholder="例如：NIM 主线路"
+                       value="<?= htmlspecialchars($name, ENT_QUOTES, 'UTF-8') ?>">
+                <div class="tip">只给自己看，用于在列表里区分不同渠道</div>
+            </div>
+
+            <div class="field">
+                <div class="lbl">上游类型</div>
+                <select name="type" id="type-select">
+                    <?php foreach ($types as $key => $t): ?>
+                        <option value="<?= htmlspecialchars($key, ENT_QUOTES, 'UTF-8') ?>"
+                                data-base-url="<?= htmlspecialchars($t['base_url'], ENT_QUOTES, 'UTF-8') ?>"
+                                data-hint="<?= htmlspecialchars($t['hint'], ENT_QUOTES, 'UTF-8') ?>"
+                            <?= $type === $key ? 'selected' : '' ?>>
+                            <?= htmlspecialchars($t['label'], ENT_QUOTES, 'UTF-8') ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+                <div class="tip" id="type-hint"></div>
+            </div>
+
+            <div class="field">
+                <div class="lbl">上游地址</div>
+                <input type="text" name="base_url" id="base-url" required maxlength="255"
+                       placeholder="https://integrate.api.nvidia.com/v1"
+                       value="<?= htmlspecialchars($baseUrl, ENT_QUOTES, 'UTF-8') ?>">
+                <div class="tip">填到 <code>/v1</code> 为止，不要带 <code>/chat/completions</code></div>
+            </div>
+
+            <div class="field">
+                <div class="lbl">API Key</div>
+                <input type="password" name="api_key" autocomplete="new-password"
+                       placeholder="<?= $isEdit ? '留空表示不修改' : '粘贴上游 API Key' ?>">
+                <div class="tip">
+                    <?php if ($isEdit): ?>
+                        当前已保存：<span class="mono"><?= htmlspecialchars($keyMasked, ENT_QUOTES, 'UTF-8') ?></span>
+                        —— 出于安全考虑不回显完整 Key；<b>留空即保持原值不变</b>。
+                    <?php else: ?>
+                        保存时会<b>加密</b>后入库（AES-256-GCM），数据库中不会出现明文。
+                    <?php endif; ?>
+                </div>
+            </div>
+
+            <div class="field">
+                <div class="lbl">可用模型</div>
+                <textarea name="models" placeholder="一行一个模型名，留空可稍后用「测活」自动拉取&#10;例如：&#10;meta/llama-3.1-8b-instruct&#10;nvidia/llama-3.3-nemotron-super-49b-v1"><?= htmlspecialchars($modelsText, ENT_QUOTES, 'UTF-8') ?></textarea>
+                <div class="tip">留空后点列表页的「测活」，会自动向上游拉取并回填模型清单</div>
+            </div>
+
+            <div class="two-col">
+                <div class="field">
+                    <div class="lbl">优先级</div>
+                    <input type="number" name="priority" min="0" max="9999" value="<?= $priority ?>">
+                    <div class="tip">数值越大越优先被选中</div>
+                </div>
+                <div class="field">
+                    <div class="lbl">权重</div>
+                    <input type="number" name="weight" min="0" max="1000" value="<?= $weight ?>">
+                    <div class="tip">同优先级内按权重分摊流量</div>
+                </div>
+                <div class="field">
+                    <div class="lbl">每分钟请求上限</div>
+                    <input type="number" name="rpm_limit" min="0" value="<?= $rpmLimit ?>">
+                    <div class="tip">0 表示沿用全局默认</div>
+                </div>
+            </div>
+
+            <div class="field">
+                <label class="check">
+                    <input type="checkbox" name="status" value="1" <?= $enabled ? 'checked' : '' ?>>
+                    <span>启用该渠道</span>
+                </label>
+            </div>
+
+            <div style="display:flex;gap:10px;margin-top:24px">
+                <button class="primary" type="submit"><?= $isEdit ? '保存修改' : '创建渠道' ?></button>
+                <a class="ghost-link" href="/admin/channels"
+                   style="padding:9px 18px;border-radius:8px;color:#9db4c0;border:1px solid rgba(255,255,255,.18);text-decoration:none;font-size:14px">返回列表</a>
+            </div>
+        </form>
+    </section>
+</div>
+<script>
+    // 切换上游类型时，若地址为空则预填该类型的默认地址，并显示提示
+    (function () {
+        var select = document.getElementById('type-select');
+        var baseUrl = document.getElementById('base-url');
+        var hint = document.getElementById('type-hint');
+
+        function sync(prefill) {
+            var opt = select.options[select.selectedIndex];
+            if (!opt) { return; }
+            if (prefill && baseUrl.value.trim() === '') {
+                baseUrl.value = opt.dataset.baseUrl || '';
+            }
+            hint.textContent = opt.dataset.hint || '';
+        }
+
+        select.addEventListener('change', function () { sync(true); });
+        sync(false);
+    })();
+</script>
+<style>
+    .ghost-link:hover { color: #fff !important; border-color: rgba(255,255,255,.4) !important; }
+</style>
+</body>
+</html>

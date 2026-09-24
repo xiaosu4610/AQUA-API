@@ -35,7 +35,7 @@ namespace app\common;
 final class Schema
 {
     /** 当前期望的表结构版本。新增迁移时递增。 */
-    public const VERSION = 1;
+    public const VERSION = 2;
 
     /**
      * 确保表结构存在且为最新版本。
@@ -50,9 +50,14 @@ final class Schema
             return;
         }
 
-        // v1：基础表
+        // 迁移必须**逐版本递进**、且每一步都可重复执行：
+        // 老部署可能停在 v1，新部署从 0 开始，两者都要能安全升到最新。
         if ($current < 1) {
             self::createV1();
+        }
+
+        if ($current < 2) {
+            self::createV2();
         }
 
         Settings::put('schema_version', (string) self::VERSION);
@@ -102,6 +107,59 @@ final class Schema
                 created_at      INTEGER      NOT NULL,
                 updated_at      INTEGER      NOT NULL,
                 PRIMARY KEY (id)
+            )
+        SQL);
+    }
+
+    /**
+     * v2：渠道表（上游连接配置）
+     *
+     * 设计要点：
+     *
+     * 1. **上游 Key 加密存储**（api_key_enc）。
+     *    这里存的是 app/common/Crypto.php 的输出，绝不是明文 ——
+     *    因为 Key 必须能还原原文（转发时要放进 Authorization 头），
+     *    所以用可逆加密而不是哈希。
+     *
+     * 2. **一个渠道可以对应多个模型**（models 字段，JSON 数组）。
+     *    这是「渠道池」的基础：同一个上游 Key 往往能调用多个模型，
+     *    路由时按「需要哪个模型」来筛可用渠道。将来还会引入
+     *    (渠道 × 模型) 的独立健康状态，那时会再加一张索引表。
+     *
+     * 3. **priority + weight 而不是单一顺序**。
+     *    priority 决定「先用谁」（数值大的优先），
+     *    weight 决定「同一优先级内按什么比例分摊流量」。
+     *    这两者分开，才能同时表达「主备」与「按比例负载」两种诉求。
+     *
+     * 4. **status 用整数而不是布尔**，为将来的多状态留余地
+     *    （例如「正常 / 降级 / 已下线」三态，见项目文档的渠道状态机设计）。
+     *
+     * 5. **测活结果落库**（last_test_*）。
+     *    站长最关心「这个 Key 还能不能用」，测试结果持久化后，
+     *    列表页可以直接展示，不必每次都重新探测。
+     */
+    private static function createV2(): void
+    {
+        $pdo = Db::pdo();
+        $autoId = self::autoId();
+
+        $pdo->exec(<<<SQL
+            CREATE TABLE IF NOT EXISTS channels (
+                id           {$autoId},
+                name         VARCHAR(128) NOT NULL,
+                type         VARCHAR(32)  NOT NULL,
+                base_url     VARCHAR(255) NOT NULL,
+                api_key_enc  TEXT         NULL,
+                models       TEXT         NULL,
+                priority     INTEGER      NOT NULL DEFAULT 0,
+                weight       INTEGER      NOT NULL DEFAULT 1,
+                status       INTEGER      NOT NULL DEFAULT 1,
+                rpm_limit    INTEGER      NOT NULL DEFAULT 0,
+                last_test_at INTEGER      NULL,
+                last_test_ok INTEGER      NULL,
+                last_error   VARCHAR(500) NULL,
+                created_at   INTEGER      NOT NULL,
+                updated_at   INTEGER      NOT NULL
             )
         SQL);
     }
