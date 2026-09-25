@@ -96,7 +96,8 @@ class MarketController
 
         return view('market', [
             'siteName' => (string) Settings::get('site.name', 'aqua-api-php'),
-            'modeLabel' => $mode === 'public_welfare' ? '公益站' : '商业站',
+            // 同首页：不对外展示站点模式标签，模式只影响功能可见性
+            'modeLabel' => '',
             'isWelfare' => $mode === 'public_welfare',
             'description' => trim((string) Settings::get('site.description', '')),
             'loggedIn' => AuthController::currentUserId() > 0,

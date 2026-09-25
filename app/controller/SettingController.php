@@ -76,8 +76,10 @@ class SettingController
      */
     private const ENUM_OPTIONS = [
         'site.mode' => [
-            'commercial' => '商业站',
-            'public_welfare' => '公益站',
+            // 刻意不用「商业站 / 公益站」这种划分说法：它只是「要不要向用户收费」的开关，
+            // 说清楚它会改变什么，比贴一个标签有用
+            'commercial' => '收费模式（显示定价、充值入口）',
+            'public_welfare' => '免费模式（隐藏定价、充值入口）',
         ],
         'mail.secure' => [
             'ssl' => 'SSL（连接即加密，通常 465）',

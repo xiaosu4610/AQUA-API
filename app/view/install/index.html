@@ -350,15 +350,16 @@ $val = static fn (string $key, string $default = ''): string => (string) ($old[$
                 </div>
 
                 <div class="field">
-                    <div class="lbl">站点模式</div>
+                    <div class="lbl">是否向用户收费</div>
                     <select name="site_mode">
                         <option value="commercial" <?= $val('site_mode', 'commercial') === 'commercial' ? 'selected' : '' ?>>
-                            商业站（显示定价、充值等入口）
+                            收费（显示定价、充值等入口）
                         </option>
                         <option value="public_welfare" <?= $val('site_mode') === 'public_welfare' ? 'selected' : '' ?>>
-                            公益站（隐藏计费入口，默认收紧限流）
+                            免费（隐藏定价与充值入口，默认收紧限流）
                         </option>
                     </select>
+                    <div class="tip">这只是「显示哪些入口」的开关，随时可以在后台配置里改，页面上不会出现任何标签。</div>
                 </div>
 
                 <div class="two-col">

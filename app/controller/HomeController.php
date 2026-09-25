@@ -67,7 +67,9 @@ class HomeController
 
         return view('home', [
             'siteName' => (string) Settings::get('site.name', 'aqua-api-php'),
-            'modeLabel' => $mode === 'public_welfare' ? '公益站' : '商业站',
+            // 不再对外展示「商业站 / 公益站」这类划分标签（见 Settings::siteModeLabel 的说明），
+            // 但站点模式本身仍决定页面显示哪些入口（isWelfare 用于按模式调整导航）
+            'modeLabel' => '',
             'isWelfare' => $mode === 'public_welfare',
             'description' => trim((string) Settings::get('site.description', '')),
             'announcement' => trim((string) Settings::get('site.announcement', '')),
