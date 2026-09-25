@@ -18,6 +18,7 @@ use app\controller\ConsoleController;
 use app\controller\HealthController;
 use app\controller\HomeController;
 use app\controller\InstallController;
+use app\controller\MarketController;
 use app\controller\OpenAiController;
 use app\controller\PricingController;
 use app\controller\RechargeController;
@@ -37,6 +38,12 @@ Route::post('/install.php', [InstallController::class, 'run']);
 // 定位是「站点门户 + 运行状态」。将来公益站的用量公示也挂在这里，
 // 所以从一开始就做成公开页面，而不是把根路径重定向到后台。
 Route::get('/', [HomeController::class, 'index']);
+
+// ── 模型广场（公开）──────────────────────────────────────
+// 让人在注册之前就能看到「有什么模型、多少钱」——
+// 这是中转站类产品转化率最高的一个页面。
+// 站长可以在配置里整体关掉它（site.show_models），关掉后本路由返回 404
+Route::get('/models', [MarketController::class, 'index']);
 
 // ── 探活 ────────────────────────────────────────────────
 // 不做鉴权，供运维 / 负载均衡 / 监控调用
