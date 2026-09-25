@@ -26,6 +26,7 @@ declare(strict_types=1);
 
 namespace app\exception;
 
+use app\middleware\SecurityHeaders;
 use Throwable;
 use Webman\Http\Request;
 use Webman\Http\Response;
@@ -47,16 +48,21 @@ class Handler extends \support\exception\Handler
             $status = 500;
         }
 
+        // 安全响应头必须由这里补一次：**未匹配到路由的请求不会经过全局中间件**
+        // （路由分发阶段就抛异常了），所以 404/500 这些响应默认是「裸的」。
+        // 而错误页恰恰是扫描者最常撞的一批页面。共用中间件那份清单，不另写一份
+        $headers = SecurityHeaders::headersFor(SecurityHeaders::normalizePath($request));
+
         if ($this->wantsJson($request)) {
-            return $this->jsonResponse($status, $exception);
+            return $this->jsonResponse($status, $exception, $headers);
         }
 
         // HTML 路径：先让异常自带渲染 —— 404 就是靠这一步去渲染 app/view/404.html
         if (method_exists($exception, 'render') && ($response = $exception->render($request))) {
-            return $response;
+            return $response->withHeaders($headers);
         }
 
-        return $this->htmlResponse($status, $exception);
+        return $this->htmlResponse($status, $exception, $headers);
     }
 
     /**
@@ -76,8 +82,10 @@ class Handler extends \support\exception\Handler
 
     /**
      * JSON 响应：沿用 OpenAI 的错误信封，让各家 SDK 能按既有逻辑解析。
+     *
+     * @param array<string, string> $headers 安全响应头（与全局中间件同一份清单）
      */
-    private function jsonResponse(int $status, Throwable $exception): Response
+    private function jsonResponse(int $status, Throwable $exception, array $headers): Response
     {
         // 生产环境不回显异常原文 —— 里面可能有路径、SQL、上游响应
         $message = $this->debug ? $exception->getMessage() : $this->publicMessage($status);
@@ -91,13 +99,15 @@ class Handler extends \support\exception\Handler
             ],
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
-        return response($body, $status, ['Content-Type' => 'application/json; charset=utf-8']);
+        return response($body, $status, $headers + ['Content-Type' => 'application/json; charset=utf-8']);
     }
 
     /**
      * HTML 响应：渲染共用的错误页。
+     *
+     * @param array<string, string> $headers 安全响应头（与全局中间件同一份清单）
      */
-    private function htmlResponse(int $status, Throwable $exception): Response
+    private function htmlResponse(int $status, Throwable $exception, array $headers): Response
     {
         $html = raw_view('_error', [
             'code' => $status,
@@ -105,7 +115,7 @@ class Handler extends \support\exception\Handler
             'debugDetail' => $this->debug ? (string) $exception : '',
         ], '')->rawBody();
 
-        return response($html, $status, ['Content-Type' => 'text/html; charset=utf-8']);
+        return response($html, $status, $headers + ['Content-Type' => 'text/html; charset=utf-8']);
     }
 
     /**

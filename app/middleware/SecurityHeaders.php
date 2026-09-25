@@ -30,6 +30,23 @@ class SecurityHeaders implements MiddlewareInterface
         /** @var Response $response */
         $response = $handler($request);
 
+        return $response->withHeaders(self::headersFor(self::normalizePath($request)));
+    }
+
+    /**
+     * 该加哪些安全响应头。
+     *
+     * ⚠️ 这个方法刻意是 **public static** 的：异常处理器也要用同一份。
+     *
+     * 原因是 Webman 的一个边界 —— **未匹配到路由的请求不会经过全局中间件**
+     * （路由分发阶段就抛了 PageNotFoundException）。所以「404 页面」
+     * 拿不到这些头。既然错误页恰恰是扫描者最常看到的一批页面，
+     * 就不能让它是半吊子的：让两处共用同一个来源，而不是各写一份。
+     *
+     * @return array<string, string>
+     */
+    public static function headersFor(string $path): array
+    {
         $headers = [
             // 禁止浏览器「猜」内容类型。
             // 不加这条时，某些浏览器会把一个纯文本响应按 HTML 解析，
@@ -57,11 +74,11 @@ class SecurityHeaders implements MiddlewareInterface
         //
         // 后台尤其重要：路径不公开也得加这条 —— 爬虫会撞路径、外链会泄露地址，
         // 一旦被收录，「后台入口」就等于挂在搜索结果里
-        if ($this->normalizePath($request) !== '/') {
+        if ($path !== '/') {
             $headers['X-Robots-Tag'] = 'noindex, nofollow, noarchive';
         }
 
-        return $response->withHeaders($headers);
+        return $headers;
     }
 
     /**
@@ -70,7 +87,7 @@ class SecurityHeaders implements MiddlewareInterface
      * Webman 的 path() 不带前导斜杠，且不同版本行为略有差别，
      * 所以统一在这里规范化一次，避免比较时踩坑（例如 '/admin' 与 'admin' 判成不同）。
      */
-    private function normalizePath(Request $request): string
+    public static function normalizePath(Request $request): string
     {
         $path = '/' . trim($request->path(), '/');
 
