@@ -166,6 +166,39 @@ function aqua_encrypt(string $plain, string $appKey): string
 }
 
 /**
+ * 与 app/common/Crypto.php 完全一致的解密实现。
+ *
+ * 必须与上面的 aqua_encrypt 严格对称，否则「脚本读不出程序写的数据」。
+ * 有它的原因是：脚本里有些操作需要**用**上游 Key 去发真实请求
+ * （例如探测某个渠道到底哪些模型可用），那就必须能把密文还原成明文。
+ *
+ * 解密失败一律抛异常，不返回空串 —— 静默返回空串会让「解密失败」
+ * 表现成「上游返回 401」，排查时会绕很远的路（这与 Crypto 的取舍一致）。
+ */
+function aqua_decrypt(string $payload, string $appKey): string
+{
+    if (!str_starts_with($payload, 'v1:')) {
+        throw new RuntimeException('密文格式无法识别（缺少 v1: 前缀）');
+    }
+
+    $raw = base64_decode(substr($payload, 3), true);
+    if ($raw === false || strlen($raw) <= 12 + 16) {
+        throw new RuntimeException('密文内容损坏');
+    }
+
+    $iv = substr($raw, 0, 12);
+    $tag = substr($raw, 12, 16);
+    $ciphertext = substr($raw, 28);
+
+    $plain = openssl_decrypt($ciphertext, 'aes-256-gcm', hash('sha256', $appKey, true), OPENSSL_RAW_DATA, $iv, $tag);
+    if ($plain === false) {
+        throw new RuntimeException('解密失败：APP_KEY 与加密时不一致，或密文已被篡改');
+    }
+
+    return $plain;
+}
+
+/**
  * 读取密钥文件，返回去空行后的明文列表。
  *
  * 兼容的输入格式：
