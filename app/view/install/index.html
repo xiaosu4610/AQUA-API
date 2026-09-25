@@ -118,9 +118,16 @@ $val = static fn (string $key, string $default = ''): string => (string) ($old[$
             <?php endif; ?>
 
             <div class="actions-bar">
-                <a class="primary" href="/admin/login"><?= icon('lock', 16) ?>进入管理后台</a>
                 <a class="ghost" href="/"><?= icon('home', 15) ?>返回首页</a>
             </div>
+
+            <p class="note">
+                <b>管理后台地址见项目文档</b>（<code>README.md</code> 的「管理后台」一节）。<br>
+                <b>这里刻意不放直达链接</b> —— 安装向导既可能在未加固的部署上被公网访问到，
+                也可能在装完后仍留着（若没在 Nginx 层屏蔽 <code>/install</code>）。
+                在这种页面上放后台入口，等于把后台地址公告给扫描者。
+                后台地址本身不是秘密（默认路径是公开可查的），但没有任何理由主动送出去。
+            </p>
 
             <p class="note">
                 <b>确实要重装怎么办？</b>安装锁定有两道判断，缺一不可：<br>
