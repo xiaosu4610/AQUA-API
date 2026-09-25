@@ -29,6 +29,7 @@ namespace app\controller;
 
 use app\common\Crypto;
 use app\common\Csrf;
+use app\common\Mailer;
 use app\common\Settings;
 use support\Request;
 use support\Response;
@@ -103,10 +104,77 @@ class SettingController
             'siteName'   => Settings::siteName(),
             'siteMode'   => Settings::siteModeLabel(),
             'groups'     => $this->buildGroups(),
+            // 配置之间的依赖检查：单项都合法、组合起来却是坏的，
+            // 这类问题最难自己发现（比如「要求邮箱验证」+「没配邮件服务」
+            // 会让所有新用户注册后卡在门外）
+            'warnings'   => $this->configWarnings(),
             // pull 会读取并删除，保证提示只显示一次
             'notice'     => (string) session()->pull(self::FLASH_NOTICE, ''),
             'noticeType' => (string) session()->pull(self::FLASH_TYPE, 'info'),
         ], '');
+    }
+
+    /**
+     * 检查配置项之间的组合是否自相矛盾。
+     *
+     * 为什么要有这一块：单个配置项的取值都是合法的，
+     * 但组合起来会产生一个谁也想不到的后果 —— 而站长在页面上
+     * 逐个看过去是看不出来的（每一项都"正常"）。
+     *
+     * @return array<int, array{level:string, title:string, detail:string}>
+     */
+    private function configWarnings(): array
+    {
+        $warnings = [];
+
+        $needVerify = Settings::bool('register.need_verify', true);
+        $mailEnabled = Settings::bool('mail.enabled', false);
+        $mailReady = Mailer::isConfigured();
+
+        // ① 要求邮箱验证，却发不出邮件 → 用户注册完永远是「未验证」状态，
+        //    既登录不了也没法自己解决
+        if ($needVerify && (!$mailEnabled || !$mailReady)) {
+            $warnings[] = [
+                'level' => 'err',
+                'title' => '注册流程可能是坏的：要求邮箱验证，但邮件发不出去',
+                'detail' => $mailEnabled
+                    ? '「邮件」组里还没有填齐 SMTP 服务器与发件人地址。'
+                        . '此时新用户注册后会卡在「邮箱未验证」进不来。'
+                    : '「邮件」组里的「是否启用发信」是关闭的。'
+                        . '此时新用户注册后会卡在「邮箱未验证」进不来。'
+                        . '（系统会临时放行，但这是不该依赖的兜底）',
+            ];
+        }
+
+        // ② 做收件人探测却没有发件地址 → 探测会退化成只查 MX，
+        //    挡不住「域名对但邮箱不存在」这类无效地址
+        if (Settings::bool('register.verify_email', true)
+            && Settings::bool('register.verify_smtp', true)
+            && trim((string) Settings::get('mail.from', '')) === ''
+        ) {
+            $warnings[] = [
+                'level' => 'warn',
+                'title' => '邮箱真实性验证的强度被削弱了',
+                'detail' => '收件人探测需要一个发件地址（SMTP 对话里的 MAIL FROM）。'
+                    . '现在「邮件」组里的发件人地址是空的，探测会退化成只检查域名 MX —— '
+                    . '能挡掉拼错的域名，但挡不住「域名存在而邮箱不存在」的地址。',
+            ];
+        }
+
+        // ③ 开了收件人探测但本机 25 端口不通（云厂商常封）—— 这条只能提示，
+        //    不能真去连一次（每打开一次配置页都探测会很慢也很失礼）
+        if (Settings::bool('register.verify_email', true) && Settings::bool('register.verify_smtp', true)) {
+            $warnings[] = [
+                'level' => 'info',
+                'title' => '收件人探测需要服务器能访问外部 25 端口',
+                'detail' => '阿里云、腾讯云等厂商默认可能封禁 25 端口出站。'
+                    . '若发现验证日志里大量出现「无法连接对方邮件服务器」，'
+                    . '说明 25 端口不通 —— 此时请把「是否做收件人探测」关掉，'
+                    . '前三级仍然有效（此时注册不会再被拖慢）。',
+            ];
+        }
+
+        return $warnings;
     }
 
     /**

@@ -51,6 +51,17 @@ $srcKind = ['database' => 'accent', 'env' => 'warn'];
         </div>
     <?php endif; ?>
 
+    <?php /* 配置项之间的依赖检查：单项都合法、组合起来却坏了的情况 */ ?>
+    <?php foreach (($warnings ?? []) as $warning): ?>
+        <div class="alert <?= $warning['level'] === 'err' ? 'err' : ($warning['level'] === 'warn' ? 'info' : 'info') ?>">
+            <?= icon($warning['level'] === 'err' ? 'alert' : 'info', 17) ?>
+            <span>
+                <b><?= htmlspecialchars($warning['title'], ENT_QUOTES, 'UTF-8') ?></b><br>
+                <?= htmlspecialchars($warning['detail'], ENT_QUOTES, 'UTF-8') ?>
+            </span>
+        </div>
+    <?php endforeach; ?>
+
     <form method="post" action="/admin/settings">
         <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
 

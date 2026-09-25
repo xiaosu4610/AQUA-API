@@ -30,6 +30,7 @@ declare(strict_types=1);
 namespace app\controller;
 
 use app\common\Csrf;
+use app\common\EmailVerifier;
 use app\common\Mailer;
 use app\common\Settings;
 use app\common\Url;
@@ -193,6 +194,28 @@ class AuthController
 
         if ($password !== $password2) {
             return $this->registerFormError($request, '两次输入的密码不一致', $email, $invite);
+        }
+
+        // ── 邮箱真实性验证 ──
+        //
+        // 放在这里（前面那些便宜的检查都过了之后）而不是最前面：
+        // 密码不一致、邀请码错这类错误应当立刻返回，
+        // 没必要为了它们去连一次外部邮件服务器（最长十几秒）。
+        //
+        // 这一步的意义是保护**发信信誉**：邮件服务商会统计无效地址率，
+        // 指标一高整条通道会被降级甚至封禁，那时连真用户都收不到信。
+        if (Settings::bool('register.verify_email', true)) {
+            $check = EmailVerifier::verify($email);
+
+            if ($check['result'] === EmailVerifier::INVALID) {
+                return $this->registerFormError($request, $check['message'], $email, $invite);
+            }
+
+            // UNKNOWN 放行，但记一条日志 —— 站长据此能看出探测的实际有效率。
+            // 判不了就拒绝是错的：那会挡掉真用户，比放进几个无效地址严重得多
+            if ($check['result'] === EmailVerifier::UNKNOWN) {
+                Log::info("注册邮箱未能确认存在性（{$check['stage']}）：{$email} —— {$check['message']}");
+            }
         }
 
         // ── 是否需要邮箱验证 ──
