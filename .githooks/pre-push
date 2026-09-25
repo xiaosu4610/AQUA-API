@@ -1,0 +1,35 @@
+#!/bin/sh
+# 受保护分支的本地护栏：main（稳定/发行）与 dev（集成）都不接受直推。
+#
+# 它挡的是「手滑」和「本地配置漏了保护」这两种情况 ——
+# 真正的护栏在 Gitee/GitHub 的分支保护规则上（服务端才管得住别人）。
+# 本文件随仓库分发，启用方式：git config core.hooksPath .githooks
+
+protected="refs/heads/main refs/heads/dev"
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    case " $protected " in
+        *" $remote_ref "*) ;;
+        *) continue ;;
+    esac
+
+    if [ "${AQUA_ALLOW_MAIN_PUSH}" = "1" ]; then
+        echo "⚠ AQUA_ALLOW_MAIN_PUSH=1：已放行对 $remote_ref 的推送（仅限维护者应急）" >&2
+        continue
+    fi
+
+    # 非快进 = 覆盖/删除已有历史，这比「多加一个提交」严重得多
+    if [ "$remote_sha" != "0000000000000000000000000000000000000000" ]; then
+        if ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+            echo "✗ 拒绝对 $remote_ref 的非快进推送：它会覆盖远端已有历史。" >&2
+            exit 1
+        fi
+    fi
+
+    echo "✗ $remote_ref 是受保护分支，禁止直接推送。" >&2
+    echo "  流程：从 dev 开 feat/xxx 分支 → 推到自己的分支 → 在 Gitee 提 Pull Request → 由维护者合并。" >&2
+    echo "  确需直推（仅限维护者应急）：AQUA_ALLOW_MAIN_PUSH=1 git push" >&2
+    exit 1
+done
+
+exit 0
