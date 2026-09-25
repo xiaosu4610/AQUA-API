@@ -66,6 +66,16 @@ final class EmailVerifier
     private const MAX_MX_TRY = 2;
 
     /**
+     * 整个探测过程的总时间预算（秒）。
+     *
+     * ⚠️ 必须有这个上限：单次尝试的最坏情况是「连接超时 5s + 读取超时 5s」，
+     * 两台 MX 就是 20 秒 —— 让用户在注册表单上干等 20 秒是不可接受的
+     * （实测第一版就出现过 6 秒以上的注册耗时）。
+     * 超出预算就立刻返回「判不了」并放行，宁可少挡一个无效地址。
+     */
+    private const TOTAL_BUDGET = 8;
+
+    /**
      * 内置的一次性 / 临时邮箱域名。
      *
      * 不求穷尽（这类域名每天都在新增），只覆盖最常见的一批 ——
@@ -291,17 +301,33 @@ final class EmailVerifier
 
         $tried = 0;
         $lastReason = '对方邮件服务器无响应';
+        $deadline = microtime(true) + self::TOTAL_BUDGET;
 
         foreach ($mxHosts as $host) {
             if ($tried >= self::MAX_MX_TRY) {
                 break;
             }
+
+            // 超出总预算就不再试了，直接放行 —— 见 TOTAL_BUDGET 的说明
+            if (microtime(true) >= $deadline) {
+                $lastReason = '探测超出时间预算';
+                break;
+            }
+
             $tried++;
 
-            $probe = self::smtpProbe($host, $email);
+            $probe = self::smtpProbe($host, $email, $deadline);
 
             if ($probe['code'] === 0) {
                 $lastReason = $probe['text'] !== '' ? $probe['text'] : '无法连接对方邮件服务器';
+
+                // 若失败原因是「对方拒绝了我们」（发件人被拒、IP 信誉、黑名单），
+                // 换一台 MX 结果几乎一定相同 —— 对方的收信集群共享同一套策略。
+                // 提前收手可以省下最长 5 秒的用户等待时间
+                if ($probe['ourFault']) {
+                    break;
+                }
+
                 continue;
             }
 
@@ -332,23 +358,34 @@ final class EmailVerifier
      * 由于我们只问「收不收这个地址」，**不发送任何邮件内容**，
      * 因此不会打扰收件人，也不会消耗发信额度。
      *
-     * @return array{code:int, text:string} code 为 0 表示连接或对话失败
+     * @param float $deadline 总时间预算的截止时刻（microtime），用于压缩连接超时
+     * @return array{code:int, text:string, ourFault:bool}
+     *         code 为 0 表示连接或对话失败；ourFault 表示失败原因是「对方拒绝我们」
+     *         而非「这个地址不存在」——调用方据此决定要不要换 MX 再试
      */
-    private static function smtpProbe(string $host, string $email): array
+    private static function smtpProbe(string $host, string $email, float $deadline): array
     {
         $from = self::mailFromAddress();
 
-        $socket = @fsockopen($host, 25, $errno, $errstr, self::CONNECT_TIMEOUT);
-        if ($socket === false) {
-            return ['code' => 0, 'text' => "连接 {$host}:25 失败（{$errstr}）"];
+        // 连接超时不能超过剩余预算，否则总耗时会被拖长到用户无法接受
+        $remaining = $deadline - microtime(true);
+        if ($remaining <= 0.5) {
+            return ['code' => 0, 'text' => '探测时间预算已用尽', 'ourFault' => false];
         }
 
-        stream_set_timeout($socket, self::READ_TIMEOUT);
+        $timeout = (int) max(1, min(self::CONNECT_TIMEOUT, floor($remaining)));
+
+        $socket = @fsockopen($host, 25, $errno, $errstr, $timeout);
+        if ($socket === false) {
+            return ['code' => 0, 'text' => "连接 {$host}:25 失败（{$errstr}）", 'ourFault' => false];
+        }
+
+        stream_set_timeout($socket, min(self::READ_TIMEOUT, max(1, (int) ceil($remaining))));
 
         try {
             $greeting = self::readResponse($socket);
             if ($greeting === null || !str_starts_with($greeting, '2')) {
-                return ['code' => 0, 'text' => '对方未正常问候'];
+                return ['code' => 0, 'text' => '对方未正常问候', 'ourFault' => false];
             }
 
             // EHLO 用本机主机名：部分服务器会因 HELO 缺失或非法而直接拒绝
@@ -359,15 +396,20 @@ final class EmailVerifier
                 self::write($socket, 'HELO ' . self::localHostname());
                 $helo = self::readResponse($socket);
                 if ($helo === null || !str_starts_with($helo, '2')) {
-                    return ['code' => 0, 'text' => '对方拒绝了 EHLO/HELO'];
+                    return ['code' => 0, 'text' => '对方拒绝了 EHLO/HELO', 'ourFault' => true];
                 }
             }
 
             self::write($socket, 'MAIL FROM:<' . $from . '>');
             $mail = self::readResponse($socket);
             if ($mail === null || !str_starts_with($mail, '2')) {
-                // 连发件人都被拒 —— 这是「我们的问题」，绝不能算作收件人不存在
-                return ['code' => 0, 'text' => '对方拒绝了我们的发件人地址（可能本机 IP 信誉不足）'];
+                // 连发件人都被拒 —— 这是「我们的问题」，绝不能算作收件人不存在。
+                // 而且换 MX 也一样（同一家收信集群共享策略），所以标记 ourFault
+                return [
+                    'code' => 0,
+                    'text' => '对方拒绝了我们的发件人地址（可能本机 IP 信誉不足）',
+                    'ourFault' => true,
+                ];
             }
 
             self::write($socket, 'RCPT TO:<' . $email . '>');
@@ -376,20 +418,41 @@ final class EmailVerifier
             @fwrite($socket, "QUIT\r\n");
 
             if ($rcpt === null) {
-                return ['code' => 0, 'text' => '对方对 RCPT TO 没有响应（超时）'];
+                return ['code' => 0, 'text' => '对方对 RCPT TO 没有响应（超时）', 'ourFault' => false];
             }
 
+            $code = (int) substr($rcpt, 0, 3);
+            $text = trim(substr($rcpt, 4));
+
             return [
-                'code' => (int) substr($rcpt, 0, 3),
-                'text' => trim(substr($rcpt, 4)),
+                'code' => $code,
+                'text' => $text,
+                // 响应文本里出现「黑名单/信誉/策略」类词，说明是对方在拒我们
+                'ourFault' => self::looksLikeOurFault($text),
             ];
         } catch (Throwable $e) {
-            return ['code' => 0, 'text' => '探测过程异常：' . $e->getMessage()];
+            return ['code' => 0, 'text' => '探测过程异常：' . $e->getMessage(), 'ourFault' => false];
         } finally {
             if (is_resource($socket)) {
                 @fclose($socket);
             }
         }
+    }
+
+    /**
+     * 响应文本是否表示「对方在拒绝我们」而不是「地址不存在」。
+     */
+    private static function looksLikeOurFault(string $text): bool
+    {
+        $lower = strtolower($text);
+
+        foreach (self::OUR_FAULT_HINTS as $hint) {
+            if (str_contains($lower, $hint)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -409,12 +472,8 @@ final class EmailVerifier
      */
     private static function classifyRcpt(int $code, string $text): string
     {
-        $lower = strtolower($text);
-
-        foreach (self::OUR_FAULT_HINTS as $hint) {
-            if (str_contains($lower, $hint)) {
-                return self::UNKNOWN;
-            }
+        if (self::looksLikeOurFault($text)) {
+            return self::UNKNOWN;
         }
 
         return match (true) {
