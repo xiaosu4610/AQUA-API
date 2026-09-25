@@ -37,7 +37,7 @@ use Throwable;
 final class Schema
 {
     /** 当前期望的表结构版本。新增迁移时递增。 */
-    public const VERSION = 8;
+    public const VERSION = 9;
 
     /**
      * 确保表结构存在且为最新版本。
@@ -84,6 +84,10 @@ final class Schema
 
         if ($current < 8) {
             self::createV8();
+        }
+
+        if ($current < 9) {
+            self::createV9();
         }
 
         Settings::put('schema_version', (string) self::VERSION);
@@ -502,6 +506,27 @@ final class Schema
     {
         self::addColumnIfMissing('channels', 'fail_streak', 'INTEGER NOT NULL DEFAULT 0');
         self::addColumnIfMissing('channels', 'breaker_until', 'INTEGER NULL');
+    }
+
+    /**
+     * v9：给下游用户也加上「登录失败锁定」
+     *
+     * 解决的问题：后台（admins 表）从 v1 起就有 failed_attempts / locked_until，
+     * 但**下游用户一直没有任何防暴力破解机制** —— 也就是说**用户这一侧的密码
+     * 是可以被无限次尝试的**。
+     *
+     * 这个缺口比它看起来严重：用户账号后面挂的是真金白银的余额（还有站长自掏腰包
+     * 买来的上游额度）。撞开一个账号就能把余额跑光，而日志里只会留下一串
+     * 「登录失败」，看不出这是一次持续攻击。
+     *
+     * 为什么不在 v7 建表时直接写上这两列：
+     *   迁移必须逐版本递进，而 v7 已经在生产上跑过了。补列只能靠新版本，
+     *   这样老部署升级与新装部署走的是同一条路径，行为一致。
+     */
+    private static function createV9(): void
+    {
+        self::addColumnIfMissing('users', 'failed_attempts', 'INTEGER NOT NULL DEFAULT 0');
+        self::addColumnIfMissing('users', 'locked_until', 'INTEGER NULL');
     }
 
     /**

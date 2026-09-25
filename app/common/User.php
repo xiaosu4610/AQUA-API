@@ -152,13 +152,44 @@ final class User
      * 失败原因刻意区分「密码错」与「邮箱未验证」——
      * 后者不是攻击行为，含糊其辞只会让用户反复重试密码。
      *
+     * ═══ 防暴力破解（v9 补上） ═══
+     *
+     * 后台（Admin）从一开始就有失败计数与锁定，但用户这边一直没有 ——
+     * 等于**用户密码可以被无限次尝试**。而用户账号后面挂的是真金白银的余额
+     * 和站长自己买来的上游额度，撞开一个就能把额度跑光。
+     * 所以这里补齐：连续失败到阈值即锁定一段时间，锁定期间**连密码都不校验**
+     * （否则「锁定」只是个提示，暴力破解照样继续试）。
+     *
+     * 已知的一个覆盖不到的地方：**邮箱根本不存在时无法计数**（没有对应的用户行可改），
+     * 所以攻击者仍然可以拿随机邮箱无限试探接口。但这不会攻破任何具体账号，
+     * 且要按 IP 计数就得再建一张表 —— 收益不抵复杂度，明确记为已知取舍。
+     *
      * @return array{ok:bool, message:string, user:array<string,mixed>|null}
      */
     public static function attempt(string $email, string $password, ?string $ip = null): array
     {
         $user = self::findByEmail($email);
 
+        // ① 锁定中：直接拒绝
+        if ($user !== null) {
+            $remaining = self::lockRemainingSeconds($user);
+
+            if ($remaining > 0) {
+                return [
+                    'ok' => false,
+                    'message' => '尝试次数过多，请等待 ' . (int) ceil($remaining / 60) . ' 分钟后再试',
+                    'user' => null,
+                ];
+            }
+        }
+
+        // ② 密码不对。注意「邮箱不存在」与「密码错」给**同一句提示**，
+        //    否则这个接口就成了一个免费的账号枚举工具
         if ($user === null || !password_verify($password, (string) $user['password_hash'])) {
+            if ($user !== null) {
+                self::recordLoginFailure($user, $ip);
+            }
+
             return ['ok' => false, 'message' => '邮箱或密码不正确', 'user' => null];
         }
 
@@ -170,13 +201,69 @@ final class User
             return ['ok' => false, 'message' => '邮箱尚未验证，请先点击验证邮件里的链接', 'user' => null];
         }
 
+        // ③ 成功：清零失败计数与锁定，再记录本次登录
         $now = time();
         Db::execute(
-            'UPDATE users SET last_login_at = ?, last_login_ip = ?, updated_at = ? WHERE id = ?',
+            'UPDATE users
+             SET failed_attempts = 0, locked_until = NULL,
+                 last_login_at = ?, last_login_ip = ?, updated_at = ?
+             WHERE id = ?',
             [$now, mb_substr((string) $ip, 0, 45), $now, (int) $user['id']]
         );
 
         return ['ok' => true, 'message' => '', 'user' => $user];
+    }
+
+    /** 锁定剩余秒数（未锁定返回 0） */
+    private static function lockRemainingSeconds(array $user): int
+    {
+        $until = (int) ($user['locked_until'] ?? 0);
+
+        return $until > time() ? $until - time() : 0;
+    }
+
+    /**
+     * 记录一次登录失败；达到阈值则锁定。
+     *
+     * ⚠️ 日志里只记邮箱、次数与来源 IP，**绝不记录用户尝试的密码内容** ——
+     * 日志文件是运维最容易随手翻看、最容易被整个打包带走的东西。
+     */
+    private static function recordLoginFailure(array $user, ?string $ip): void
+    {
+        $failed = (int) ($user['failed_attempts'] ?? 0) + 1;
+        $now = time();
+
+        $threshold = max(1, Settings::int('security.user_login_max_attempts', 10));
+        $lockSeconds = max(1, Settings::int('security.user_login_lock_minutes', 15)) * 60;
+
+        if ($failed >= $threshold) {
+            Db::execute(
+                'UPDATE users SET failed_attempts = ?, locked_until = ?, updated_at = ? WHERE id = ?',
+                [$failed, $now + $lockSeconds, $now, (int) $user['id']]
+            );
+
+            \support\Log::warning(sprintf(
+                '用户登录连续失败 %d 次，已锁定 %d 分钟：%s，来源 IP：%s',
+                $failed,
+                (int) ($lockSeconds / 60),
+                (string) $user['email'],
+                (string) $ip
+            ));
+
+            return;
+        }
+
+        Db::execute(
+            'UPDATE users SET failed_attempts = ?, updated_at = ? WHERE id = ?',
+            [$failed, $now, (int) $user['id']]
+        );
+
+        \support\Log::warning(sprintf(
+            '用户登录失败（第 %d 次）：%s，来源 IP：%s',
+            $failed,
+            (string) $user['email'],
+            (string) $ip
+        ));
     }
 
     /** 邮箱是否已验证 */
