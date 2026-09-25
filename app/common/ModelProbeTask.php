@@ -93,7 +93,7 @@ final class ModelProbeTask
         );
     }
 
-    /** @param array{model:string,upstream_model:string,result:string,http:int,summary:string} $result */
+    /** @param array{model:string,upstream_model:string,result:string,http:int,summary:string,latency_ms?:int} $result */
     public static function addResult(int $taskId, array $result): void
     {
         $pdo = Db::pdo();
@@ -101,8 +101,8 @@ final class ModelProbeTask
         try {
             Db::execute(
                 'INSERT INTO channel_model_probe_results
-                 (task_id, model, upstream_model, classification, http_status, response_summary, completed_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)',
+                 (task_id, model, upstream_model, classification, http_status, response_summary, latency_ms, completed_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
                 [
                     $taskId,
                     mb_substr($result['model'], 0, 191),
@@ -110,6 +110,8 @@ final class ModelProbeTask
                     $result['result'],
                     $result['http'],
                     mb_substr($result['summary'], 0, 500),
+                    // 探测内核会给，历史调用方可能不给 —— 缺了就记 0（页面显示「暂无数据」）
+                    max(0, (int) ($result['latency_ms'] ?? 0)),
                     time(),
                 ]
             );

@@ -82,6 +82,7 @@ $result = ModelProbe::probe($channel, 'sk-test-key', 'public-name', 20, $sender)
 check('200 → 可用', $result['result'] === ModelProbe::OK, $result['result']);
 check('模型映射生效（public-name → vendor-name）', $result['upstream_model'] === 'vendor-name', $result['upstream_model']);
 check('返回结构中的 model 是调用方传入的名字', $result['model'] === 'public-name', $result['model']);
+check('返回结构里带本次耗时（毫秒）', isset($result['latency_ms']) && is_int($result['latency_ms']) && $result['latency_ms'] >= 0, var_export($result['latency_ms'] ?? null, true));
 check('只请求一次，不做无谓重试', count($specs) === 1, '实际 ' . count($specs) . ' 次');
 check('请求体里带的是上游模型名', str_contains($specs[0]['body'], '"model":"vendor-name"'), $specs[0]['body']);
 check('鉴权头带上了凭据', in_array('Authorization: Bearer sk-test-key', $specs[0]['headers'], true));

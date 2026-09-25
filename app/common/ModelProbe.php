@@ -48,7 +48,7 @@ final class ModelProbe
     /**
      * @param array<string, mixed> $channel
      * @param callable|null $sender 测试注入点，签名 fn(array $spec): array
-     * @return array{model:string,upstream_model:string,result:string,http:int,summary:string}
+     * @return array{model:string,upstream_model:string,result:string,http:int,summary:string,latency_ms:int}
      */
     public static function probe(
         array $channel,
@@ -61,12 +61,18 @@ final class ModelProbe
         $spec = self::buildSpec($channel, $key, $upstreamModel, $timeout);
         $sender ??= [self::class, 'send'];
 
+        $started = microtime(true);
         $response = $sender($spec);
+        $latency = (int) round((microtime(true) - $started) * 1000);
         $classification = self::classify($response);
 
         if (self::retryable($response)) {
             usleep(800_000);
+            $started = microtime(true);
             $response = $sender($spec);
+            // 重试后的耗时才算数：拿到的是「最终这一次」的真实速度。
+            // 把首次超时的 20 秒留在页面上会让人以为模型一直这么慢
+            $latency = (int) round((microtime(true) - $started) * 1000);
             $classification = self::classify($response);
         }
 
@@ -76,6 +82,7 @@ final class ModelProbe
             'result' => $classification,
             'http' => (int) $response['http'],
             'summary' => self::summary((string) $response['body'], $key),
+            'latency_ms' => $latency,
         ];
     }
 

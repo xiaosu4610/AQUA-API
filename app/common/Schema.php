@@ -37,7 +37,7 @@ use Throwable;
 final class Schema
 {
     /** 当前期望的表结构版本。新增迁移时递增。 */
-    public const VERSION = 10;
+    public const VERSION = 11;
 
     /**
      * 确保表结构存在且为最新版本。
@@ -92,6 +92,10 @@ final class Schema
 
         if ($current < 10) {
             self::createV10();
+        }
+
+        if ($current < 11) {
+            self::createV11();
         }
 
         Settings::put('schema_version', (string) self::VERSION);
@@ -531,6 +535,23 @@ final class Schema
     {
         self::addColumnIfMissing('users', 'failed_attempts', 'INTEGER NOT NULL DEFAULT 0');
         self::addColumnIfMissing('users', 'locked_until', 'INTEGER NULL');
+    }
+
+    /**
+     * v11：给探测结果加「这次请求花了多少毫秒」。
+     *
+     * 为什么要单独存耗时，而不是只看「可用/不可用」：
+     *   像 NVIDIA NIM 这种免费上游，一大半模型其实**能调通**，
+     *   只是首包要十几秒。用户真正想知道的是「哪个模型反应快、哪个慢」——
+     *   只给一个「可用」会让人踩到最慢的那个然后以为站点有问题。
+     *
+     * 取值是**单次 HTTP 往返的实际耗时**（含重试则以最后一次为准），
+     * 不是流式首字节耗时（探测用的是非流式请求，本来就等价于首字节）。
+     * 老数据补 0，页面据此显示「暂无数据」而不是假装它是 0 毫秒。
+     */
+    private static function createV11(): void
+    {
+        self::addColumnIfMissing('channel_model_probe_results', 'latency_ms', 'INTEGER NOT NULL DEFAULT 0');
     }
 
     /**
