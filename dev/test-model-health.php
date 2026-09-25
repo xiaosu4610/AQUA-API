@@ -41,7 +41,7 @@ probe_seed_admin('health-pass-1234');
 
 echo "一、迁移与表结构\n";
 
-check('schema 版本升到 14', (int) Settings::get('schema_version', 0) === 14, (string) Settings::get('schema_version', '无'));
+check('schema 版本是当前版本', (int) Settings::get('schema_version', 0) === Schema::VERSION, (string) Settings::get('schema_version', '无'));
 check('model_health 表已建出', (static function (): bool {
     try {
         Db::selectOne('SELECT COUNT(*) AS c FROM model_health');
@@ -59,7 +59,7 @@ check('schema_version 以 JSON 字符串存储', str_starts_with((string) Settin
 Settings::put('schema_version', '13');
 Settings::forget();
 Schema::ensure();
-check('版本号被改小后重跑迁移是安全的（幂等）', (int) Settings::get('schema_version', 0) === 14, (string) Settings::get('schema_version', '无'));
+check('版本号被改小后重跑迁移是安全的（幂等）', (int) Settings::get('schema_version', 0) === Schema::VERSION, (string) Settings::get('schema_version', '无'));
 
 echo "\n二、健康度判定（纯逻辑）\n";
 
