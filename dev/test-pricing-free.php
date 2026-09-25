@@ -113,4 +113,29 @@ probe_http($port, 'POST', '/admin/pricing/free', ['_csrf' => $csrf, 'id' => (str
 $freeCount = (int) (Db::selectOne("SELECT COUNT(*) AS c FROM pricing WHERE billing_mode = 'free'")['c'] ?? 0);
 check('两次操作后两行都是免费', $freeCount === 2, '实际 ' . $freeCount . ' 行');
 
+echo "\n四、全站一键：全部设为免费 / 全部恢复计费\n";
+
+// 上游全是免费模型时，「让所有人都能用」是整站口径的操作 ——
+// 逐个点上百个模型既不现实，也必然漏掉几个（漏掉的表现是
+// 「有的模型能用、有的提示余额不足」，最难查）
+$noCsrfAll = probe_http($port, 'POST', '/admin/pricing/free-all', ['free' => '1'], $jar);
+check('没有 CSRF → 被拒', $noCsrfAll['status'] === 302 && $noCsrfAll['location'] === '/admin/pricing', $noCsrfAll['location']);
+
+$all = probe_http($port, 'POST', '/admin/pricing/free-all', ['_csrf' => $csrf, 'free' => '1'], $jar);
+check('一键全部设为免费 → 跳回列表', $all['status'] === 302 && $all['location'] === '/admin/pricing', $all['location']);
+check('全部行都变成免费', Pricing::countByMode(Pricing::MODE_FREE) === 2, (string) Pricing::countByMode(Pricing::MODE_FREE));
+check('价格没有被清零（可逆）', (float) Pricing::find($pricingId)['downstream_input_price'] === 1.5, (string) Pricing::find($pricingId)['downstream_input_price']);
+check('列表提示已全部设为免费', str_contains(probe_http($port, 'GET', '/admin/pricing', [], $jar)['body'], '已把全部 2 个模型设为免费'));
+
+$listWithFree = probe_http($port, 'GET', '/admin/pricing', [], $jar)['body'];
+check('列出了「全部恢复计费」按钮', str_contains($listWithFree, '全部恢复计费'), '没有恢复按钮');
+
+$back2 = probe_http($port, 'POST', '/admin/pricing/free-all', ['_csrf' => $csrf, 'free' => '0'], $jar);
+check('一键全部恢复计费 → 跳回列表', $back2['status'] === 302);
+check('全部行都恢复为按 Token', Pricing::countByMode(Pricing::MODE_FREE) === 0, (string) Pricing::countByMode(Pricing::MODE_FREE));
+check('恢复后价格仍在', (float) Pricing::find($pricingId)['downstream_input_price'] === 1.5, (string) Pricing::find($pricingId)['downstream_input_price']);
+
+$listNoFree = probe_http($port, 'GET', '/admin/pricing', [], $jar)['body'];
+check('没有免费行时不再显示「恢复计费」按钮', !str_contains($listNoFree, '全部恢复计费'), '按钮还在');
+
 exit(probe_test_report());

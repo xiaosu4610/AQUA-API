@@ -330,6 +330,36 @@ final class Pricing
         return (string) ($pricing['billing_mode'] ?? self::MODE_TOKEN) !== self::MODE_FREE;
     }
 
+    /** 某个计费模式下的条数（页面用它决定要不要显示「全部恢复计费」按钮） */
+    public static function countByMode(string $mode): int
+    {
+        $row = Db::selectOne('SELECT COUNT(*) AS c FROM pricing WHERE billing_mode = ?', [$mode]);
+
+        return (int) ($row['c'] ?? 0);
+    }
+
+    /**
+     * 批量设置计费模式：把所有定价行一次改成「免费」或恢复「按 Token 计费」。
+     *
+     * 为什么需要批量：站长的场景常常是**整站一个口径**——
+     * 「上游都是免费模型，先让大家都能用」或「开始收费了，全部恢复」。
+     * 上百个模型逐个点，既费时又容易漏掉几个，而漏掉的那几个会继续
+     * 按收费处理，表现成「有的模型能用、有的说余额不足」，很难查。
+     *
+     * **只改 billing_mode 一个字段**（价格原样保留），所以来回切换是无损的：
+     * 以后想恢复收费，价格还在原处。支持「免费 / 收费」两个方向。
+     *
+     * @param bool $free true = 全部设为免费；false = 全部恢复按 Token 计费
+     * @return int 受影响的行数
+     */
+    public static function setAllMode(bool $free): int
+    {
+        return Db::execute(
+            'UPDATE pricing SET billing_mode = ?, updated_at = ?',
+            [$free ? self::MODE_FREE : self::MODE_TOKEN, time()]
+        );
+    }
+
     /**
      * 算出一次请求的上游成本与下游售价。
      *

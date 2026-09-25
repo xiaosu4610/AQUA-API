@@ -139,6 +139,7 @@ Route::group('/admin', function () {
     Route::post('/pricing/save', [PricingController::class, 'save']);
     Route::post('/pricing/delete', [PricingController::class, 'delete']);
     Route::post('/pricing/free', [PricingController::class, 'setFree']);
+    Route::post('/pricing/free-all', [PricingController::class, 'setFreeAll']);
     Route::post('/pricing/sync', [PricingController::class, 'sync']);
 
     // 用量与报表（趋势 / 模型汇总 / 用户排行 / 失败原因 / 明细）

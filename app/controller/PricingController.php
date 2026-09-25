@@ -25,6 +25,7 @@ use app\common\Csrf;
 use app\common\Pricing;
 use app\common\Settings;
 use app\common\UsageLog;
+use support\Log;
 use support\Request;
 use support\Response;
 
@@ -62,6 +63,9 @@ class PricingController
             'page' => $page,
             'pages' => $pages,
             'total' => $total,
+            // 有多少条是「免费」：页面据此决定要不要显示「全部恢复计费」按钮 ——
+            // 一条免费都没有时显示它只会让人误点
+            'freeCount' => Pricing::countByMode(Pricing::MODE_FREE),
             'currency' => (string) Settings::get('billing.currency', 'CNY'),
             'modes' => Pricing::MODES,
             'kinds' => Pricing::UPSTREAM_KINDS,
@@ -180,6 +184,37 @@ class PricingController
         return $free
             ? $this->back("「{$model}」已设为免费，这一项不再计费", 'ok')
             : $this->back("「{$model}」已恢复按 Token 计费（价格沿用原来填的值）", 'ok');
+    }
+
+    /**
+     * POST /admin/pricing/free-all —— 全站一键：全部设为免费 / 全部恢复计费
+     *
+     * 与单条 setFree 同样是「只改计费模式，价格原样保留」，因此可逆。
+     * 之所以要整站一键，是因为「上游都是免费模型、先让大家都能用」这种场景
+     * 是整站口径的，逐个点上百个模型既不现实也必然漏掉几个 ——
+     * 而漏掉的表现是「有的模型能用、有的提示余额不足」，最难排查。
+     */
+    public function setFreeAll(Request $request): Response
+    {
+        if (!Csrf::check($request->post('_csrf'))) {
+            return $this->back('页面已过期，请重新提交', 'err');
+        }
+
+        $free = (string) $request->post('free', '1') === '1';
+        $count = Pricing::setAllMode($free);
+
+        Log::warning(sprintf(
+            '管理员批量%s了全部模型定价（共 %d 条），价格原样保留',
+            $free ? '设为免费' : '恢复计费',
+            $count
+        ));
+
+        return $this->back(
+            $free
+                ? "已把全部 {$count} 个模型设为免费：现在任何用户（哪怕余额为 0）都能调用。价格原样保留，随时可一键恢复计费"
+                : "已把全部 {$count} 个模型恢复为按 Token 计费（价格沿用原来填的值）",
+            'ok'
+        );
     }
 
     /**

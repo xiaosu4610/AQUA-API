@@ -235,33 +235,37 @@ $tokenRows = doctor_all(
      ORDER BY t.id'
 );
 
-$blocked = [];
+$blocked = [];      // 一定会被拒（令牌/账号本身的问题）
+$conditional = [];  // 只在调「收费模型」时被拒（余额问题）
 $healthy = 0;
 foreach ($tokenRows as $row) {
-    $reasons = [];
+    $fatal = [];
+    $limited = [];
 
     if ((int) $row['status'] !== 1) {
-        $reasons[] = '令牌已停用';
+        $fatal[] = '令牌已停用';
     }
     if ((string) ($row['expires_at'] ?? '') !== '' && (int) $row['expires_at'] > 0 && (int) $row['expires_at'] <= time()) {
-        $reasons[] = '令牌已过期（' . date('Y-m-d H:i', (int) $row['expires_at']) . '）';
+        $fatal[] = '令牌已过期（' . date('Y-m-d H:i', (int) $row['expires_at']) . '）';
     }
     if ((float) $row['quota_limit'] > 0 && (float) $row['quota_used'] >= (float) $row['quota_limit']) {
-        $reasons[] = '令牌额度已用完（' . $row['quota_used'] . '/' . $row['quota_limit'] . '）';
+        $fatal[] = '令牌额度已用完（' . $row['quota_used'] . '/' . $row['quota_limit'] . '）';
     }
     if ($row['email'] === null) {
-        $reasons[] = '所属用户不存在（user_id=' . (int) $row['user_id'] . '）';
+        $fatal[] = '所属用户不存在（user_id=' . (int) $row['user_id'] . '）';
     } else {
         if ((int) $row['user_status'] !== 1) {
-            $reasons[] = '所属账号已被停用';
+            $fatal[] = '所属账号已被停用';
         }
+        // ⚠️ 余额为 0 **不是**「令牌一定不能用」：免费/未定价模型照样能调。
+        // 早先把这一条也算成「会被拒绝」，于是诊断结论会把「只能调免费模型」
+        // 说成「全都调不通」—— 诊断工具自己把话说重了，比不说更误导
         if ($requireBalance && (float) $row['balance'] <= 0) {
-            $reasons[] = '账号余额为 ' . (float) $row['balance']
-                . '，收费模型会被判「402 余额不足」（免费模型不受影响）';
+            $limited[] = '账号余额为 ' . (float) $row['balance'] . '，调收费模型会被判 402「余额不足」';
         }
     }
 
-    if ($reasons === []) {
+    if ($fatal === [] && $limited === []) {
         $healthy++;
         if ($showTokens) {
             printf("  [可用] #%d %s %s（%s）\n", (int) $row['id'], (string) $row['key_mask'], (string) $row['email'], (string) $row['name']);
@@ -269,19 +273,31 @@ foreach ($tokenRows as $row) {
         continue;
     }
 
-    $blocked[] = ['id' => (int) $row['id'], 'mask' => (string) $row['key_mask'], 'email' => (string) ($row['email'] ?? '?'), 'reasons' => $reasons];
+    $item = ['id' => (int) $row['id'], 'mask' => (string) $row['key_mask'], 'email' => (string) ($row['email'] ?? '?')];
+
+    if ($fatal !== []) {
+        $blocked[] = $item + ['reasons' => $fatal];
+        continue;
+    }
+
+    $conditional[] = $item + ['reasons' => $limited];
 }
 
-echo '  可用令牌 ' . $healthy . ' 把，会被拒绝的 ' . count($blocked) . " 把\n";
+echo '  完全可用 ' . $healthy . ' 把；令牌本身有问题（一定被拒）' . count($blocked)
+    . ' 把；只能调免费模型 ' . count($conditional) . " 把\n";
+
 foreach (array_slice($blocked, 0, 20) as $item) {
-    printf("  [拒绝] #%d %s %s → %s\n", $item['id'], $item['mask'], $item['email'], implode('；', $item['reasons']));
+    printf("  [一定被拒] #%d %s %s → %s\n", $item['id'], $item['mask'], $item['email'], implode('；', $item['reasons']));
 }
-if (count($blocked) > 20) {
-    echo '  …还有 ' . (count($blocked) - 20) . " 把（用 --tokens 看全部）\n";
+foreach (array_slice($conditional, 0, 20) as $item) {
+    printf("  [仅收费模型被拒] #%d %s %s → %s\n", $item['id'], $item['mask'], $item['email'], implode('；', $item['reasons']));
+}
+if (count($blocked) + count($conditional) > 40) {
+    echo '  …还有更多（用 --tokens 看全部）' . "\n";
 }
 
-if ($healthy === 0 && $tokenTotal > 0) {
-    $problems[] = '**所有令牌都会被拒绝** —— 这就是「一律 401」的直接原因，逐条原因见上方列表';
+if ($blocked !== [] && count($blocked) === $tokenTotal) {
+    $problems[] = '**所有令牌都一定被拒** —— 逐条原因见上方「[一定被拒]」列表';
 }
 
 // 余额为 0 且开关开着：这是最常见的「明明 Key 没问题却调不通」
@@ -306,6 +322,9 @@ if ($problems === [] && $cautions === []) {
     echo "  一切正常：渠道、密钥、模型、定价、用户、令牌都在可用状态，可以正常调用。\n";
     echo "  用户侧接入地址与示例见：/docs\n";
 } else {
+    if ($problems === []) {
+        echo "  没有致命问题。但下面这些会造成「接口用不了」的观感，建议处理：\n";
+    }
     foreach ($problems as $index => $text) {
         echo '  [阻塞 ' . ($index + 1) . '] ' . $text . "\n";
     }
