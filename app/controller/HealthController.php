@@ -21,6 +21,7 @@ declare(strict_types=1);
 
 namespace app\controller;
 
+use app\common\RelayEngine;
 use support\Request;
 use support\Response;
 use Workerman\Worker;
@@ -39,6 +40,17 @@ class HealthController
     {
         $payload = [
             'status' => 'ok',
+            'relay' => [
+                // 本进程当前在途的转发数，以及进程启动以来的峰值。
+                //
+                // 为什么把它放进探活而不是只给后台看：网关最该被观测的指标就是
+                // 「一个进程同时扛了多少条流」。后台页面每次请求落到哪个进程是
+                // 不确定的，只有频繁采样探活端点才能看出真实并发度。
+                // 注意这是**单进程**的数字（常驻内存模型下进程间不共享状态），
+                // 反代层看到的并发总量需要把各进程相加。
+                'active' => RelayEngine::activeCount(),
+                'peak' => RelayEngine::peakCount(),
+            ],
         ];
 
         // 仅在调试模式下补充版本信息

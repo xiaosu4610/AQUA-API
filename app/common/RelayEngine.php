@@ -82,6 +82,9 @@ final class RelayEngine
     /** @var array<int, RelayJob> 任务序号 => 任务 */
     private static array $jobs = [];
 
+    /** 同时活跃过的最大转发数（用于验证非阻塞确实生效） */
+    private static int $peak = 0;
+
     private static ?int $timerId = null;
 
     private static float $timerInterval = 0.0;
@@ -100,6 +103,9 @@ final class RelayEngine
     {
         $job->id = self::nextJobId();
         self::$jobs[$job->id] = $job;
+
+        // 记录并发峰值：这是「非阻塞是否真的生效」的唯一直接证据
+        self::$peak = max(self::$peak, count(self::$jobs));
 
         $first = self::prepare($job, null, '首次请求');
 
@@ -200,6 +206,21 @@ final class RelayEngine
     public static function activeCount(): int
     {
         return count(self::$jobs);
+    }
+
+    /**
+     * 进程启动以来同时活跃的最大转发数。
+     *
+     * 用它判断「非阻塞到底有没有生效」最直接：如果这个数字超过了
+     * 「一个进程只处理一条流」的上限（例如 8 个进程却出现 20），
+     * 就说明引擎确实在单个进程里同时推进了多条流 ——
+     * 换成阻塞式 curl 不可能出现这种数字。
+     *
+     * ⚠️ 常驻内存模型下这是**单进程**的数字，反代看到的总量需各进程相加。
+     */
+    public static function peakCount(): int
+    {
+        return self::$peak;
     }
 
     // ═══════════════════════════════════════════════════════════
