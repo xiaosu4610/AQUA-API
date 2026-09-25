@@ -156,13 +156,13 @@ $tokenPaid = UserToken::create($uid, '只走专线', 0, null, null, 'siliconflow
 $tokenDefault = UserToken::create($uid, '默认线', 0, null, null, null);
 $tokenNone = UserToken::create($uid, '不给线路', 0, null, null, 'nonexistent_code');
 
-check('指定线路的令牌存下了代号', (string) UserToken::find($tokenFree['id'])['groups'] === 'free');
-check('默认令牌留空（跟着默认可见走）', (string) UserToken::find($tokenDefault['id'])['groups'] === '', '实际「' . (string) UserToken::find($tokenDefault['id'])['groups'] . '」');
-check('不存在的代号被丢掉', (string) UserToken::find($tokenNone['id'])['groups'] === '', (string) UserToken::find($tokenNone['id'])['groups']);
+check('指定线路的令牌存下了代号', (string) UserToken::find($tokenFree['id'])['allow_groups'] === 'free');
+check('默认令牌留空（跟着默认可见走）', (string) UserToken::find($tokenDefault['id'])['allow_groups'] === '', '实际「' . (string) UserToken::find($tokenDefault['id'])['allow_groups'] . '」');
+check('不存在的代号被丢掉', (string) UserToken::find($tokenNone['id'])['allow_groups'] === '', (string) UserToken::find($tokenNone['id'])['allow_groups']);
 
 // 「勾的就是默认那一组」也应该留空 —— 否则以后新开线路要回头改每一把令牌
 $tokenSameAsDefault = UserToken::create($uid, '勾了默认那组', 0, null, null, 'paid,free');
-check('勾选结果等于默认值 → 存空串', (string) UserToken::find($tokenSameAsDefault['id'])['groups'] === '', (string) UserToken::find($tokenSameAsDefault['id'])['groups']);
+check('勾选结果等于默认值 → 存空串', (string) UserToken::find($tokenSameAsDefault['id'])['allow_groups'] === '', (string) UserToken::find($tokenSameAsDefault['id'])['allow_groups']);
 
 $app = probe_app_start();
 $port = $app['port'];
@@ -192,8 +192,8 @@ check('指定了不存在的线路 → 按默认线路处理（没被卡死）',
 // 否则「我删了一个分组」会变成「所有令牌都能用」这种危险的反向结果
 check(
     '令牌里全是已删除的代号 → 视为没有任何线路',
-    Group::codesOfToken(['groups' => 'ghost_group']) === [],
-    implode(',', Group::codesOfToken(['groups' => 'ghost_group']))
+    Group::codesOfToken(['allow_groups' => 'ghost_group']) === [],
+    implode(',', Group::codesOfToken(['allow_groups' => 'ghost_group']))
 );
 
 echo "\n六、/v1/models 也按线路过滤\n";
@@ -273,8 +273,8 @@ check('真实调用把成本记到了密钥上', $mine !== null && (float) $mine
 
 echo "\n九、放开专线可见 → 广场分板块 + 显示临时免费\n";
 
-Db::execute('UPDATE groups SET visible = 1 WHERE id = ?', [$siliconId]);
-Db::execute('UPDATE groups SET default_visible = 1 WHERE id = ?', [$siliconId]);
+Db::execute('UPDATE line_groups SET visible = 1 WHERE id = ?', [$siliconId]);
+Db::execute('UPDATE line_groups SET default_visible = 1 WHERE id = ?', [$siliconId]);
 Group::forget();
 sleep(6); // 等服务站进程的分组缓存过期，理由同上
 
@@ -287,7 +287,7 @@ $after = Group::defaultVisibleCodes();
 check('新开线路后默认开放自动包含它', in_array('siliconflow', $after, true), implode(',', $after));
 
 $newToken = UserToken::create($uid, '放开之后建的', 0, null, null, null);
-check('新令牌仍然留空（跟着默认走）', (string) UserToken::find($newToken['id'])['groups'] === '');
+check('新令牌仍然留空（跟着默认走）', (string) UserToken::find($newToken['id'])['allow_groups'] === '');
 $r = v1Call($port, (string) $newToken['plain'], 'ok-paid');
 check('新令牌能调专线（因为默认开放了它）', $r['status'] === 200, 'HTTP ' . $r['status'] . ' ' . mb_substr($r['body'], 0, 200));
 

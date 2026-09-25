@@ -43,7 +43,7 @@ $appKey = aqua_require_app_key();
 // 分组表是 Schema v15 建的。表不在就说明服务还没用新版本启动过 ——
 // 与其让脚本抛一个 SQL 报错，不如直说该做什么
 try {
-    $pdo->query('SELECT 1 FROM groups LIMIT 1');
+    $pdo->query('SELECT 1 FROM line_groups LIMIT 1');
 } catch (PDOException) {
     fwrite(STDERR, "数据库里还没有分组表（数据库结构未升级到 v15）。\n");
     fwrite(STDERR, "请先用新版本启动一次服务，让它完成建表：\n");
@@ -119,12 +119,12 @@ $log = static function (string $line) use ($dryRun): void {
 echo "═══ 一、线路分组 ═══\n";
 
 foreach ($lines as $line) {
-    $row = $pdo->query("SELECT * FROM groups WHERE code = " . $pdo->quote($line['group']))->fetch(PDO::FETCH_ASSOC);
+    $row = $pdo->query("SELECT * FROM line_groups WHERE code = " . $pdo->quote($line['group']))->fetch(PDO::FETCH_ASSOC);
 
     if ($row === false) {
         if (!$dryRun) {
             $stmt = $pdo->prepare(
-                'INSERT INTO groups (code, label, description, cost_mode, price_mode, visible, default_visible, sort, status, created_at, updated_at)
+                'INSERT INTO line_groups (code, label, description, cost_mode, price_mode, visible, default_visible, sort, status, created_at, updated_at)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)'
             );
             $stmt->execute([
@@ -147,7 +147,7 @@ foreach ($lines as $line) {
     // 已存在：只把它拉回该有的状态，不动它的 code
     if (!$dryRun) {
         $stmt = $pdo->prepare(
-            'UPDATE groups SET cost_mode = ?, price_mode = ?, visible = ?, default_visible = ?, status = 1, updated_at = ? WHERE id = ?'
+            'UPDATE line_groups SET cost_mode = ?, price_mode = ?, visible = ?, default_visible = ?, status = 1, updated_at = ? WHERE id = ?'
         );
         $stmt->execute([
             'paid',
@@ -168,7 +168,7 @@ foreach ($lines as $line) {
 echo "\n═══ 二、渠道与密钥 ═══\n";
 
 foreach ($lines as $line) {
-    $groupRow = $pdo->query("SELECT * FROM groups WHERE code = " . $pdo->quote($line['group']))->fetch(PDO::FETCH_ASSOC);
+    $groupRow = $pdo->query("SELECT * FROM line_groups WHERE code = " . $pdo->quote($line['group']))->fetch(PDO::FETCH_ASSOC);
     $groupId = (int) ($groupRow['id'] ?? 0);
 
     $models = [];
@@ -271,7 +271,7 @@ foreach ($lines as $line) {
 echo "\n═══ 三、定价（上游成本与对外售价都用官方价）═══\n";
 
 foreach ($lines as $line) {
-    $groupRow = $pdo->query("SELECT * FROM groups WHERE code = " . $pdo->quote($line['group']))->fetch(PDO::FETCH_ASSOC);
+    $groupRow = $pdo->query("SELECT * FROM line_groups WHERE code = " . $pdo->quote($line['group']))->fetch(PDO::FETCH_ASSOC);
     $groupId = (int) ($groupRow['id'] ?? 0);
 
     foreach ($line['models'] as $m) {
@@ -343,7 +343,7 @@ if ($dryRun) {
 }
 
 foreach ($lines as $line) {
-    $groupRow = $pdo->query("SELECT * FROM groups WHERE code = " . $pdo->quote($line['group']))->fetch(PDO::FETCH_ASSOC);
+    $groupRow = $pdo->query("SELECT * FROM line_groups WHERE code = " . $pdo->quote($line['group']))->fetch(PDO::FETCH_ASSOC);
     $groupId = (int) ($groupRow['id'] ?? 0);
 
     $stmt = $pdo->prepare('SELECT COUNT(*) AS c FROM channel_keys k JOIN channels c2 ON c2.id = k.channel_id WHERE c2.group_id = ? AND k.status = 1');

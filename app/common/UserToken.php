@@ -245,7 +245,7 @@ final class UserToken
 
         Db::execute(
             'INSERT INTO tokens
-                (user_id, name, key_hash, key_mask, key_enc, quota_limit, quota_used, models, groups, expires_at, status, created_at, updated_at)
+                (user_id, name, key_hash, key_mask, key_enc, quota_limit, quota_used, models, allow_groups, expires_at, status, created_at, updated_at)
              VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)',
             [
                 $userId,
@@ -292,7 +292,7 @@ final class UserToken
     public static function setGroups(int $id, string $groups): void
     {
         Db::execute(
-            'UPDATE tokens SET groups = ?, updated_at = ? WHERE id = ?',
+            'UPDATE tokens SET allow_groups = ?, updated_at = ? WHERE id = ?',
             [self::normalizeGroups($groups), time(), $id]
         );
     }

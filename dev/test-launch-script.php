@@ -63,24 +63,24 @@ check('建了五条定价', $count('SELECT COUNT(*) AS c FROM pricing') === 5, (
 check(
     '硅基流动两把密钥各 16 元',
     $count("SELECT COUNT(*) AS c FROM channel_keys k JOIN channels c2 ON c2.id = k.channel_id
-            JOIN groups g ON g.id = c2.group_id WHERE g.code = 'siliconflow' AND k.budget_total = 16") === 2
+            JOIN line_groups g ON g.id = c2.group_id WHERE g.code = 'siliconflow' AND k.budget_total = 16") === 2
 );
 check(
     'TierFlow 两把密钥各 74 元',
     $count("SELECT COUNT(*) AS c FROM channel_keys k JOIN channels c2 ON c2.id = k.channel_id
-            JOIN groups g ON g.id = c2.group_id WHERE g.code = 'tierflow' AND k.budget_total = 74") === 2
+            JOIN line_groups g ON g.id = c2.group_id WHERE g.code = 'tierflow' AND k.budget_total = 74") === 2
 );
 check('密钥都是启用状态', $count('SELECT COUNT(*) AS c FROM channel_keys WHERE status = 1') === 4);
 
 echo "\n三、临时模型 ID 的映射\n";
 
-$glmChannel = Db::selectOne("SELECT c.* FROM channels c JOIN groups g ON g.id = c.group_id WHERE g.code = 'tierflow'");
+$glmChannel = Db::selectOne("SELECT c.* FROM channels c JOIN line_groups g ON g.id = c.group_id WHERE g.code = 'tierflow'");
 check('专线渠道归到了 tierflow 分组', $glmChannel !== null);
 check('渠道清单里是对外名 aqua/GLM-5.3', in_array('aqua/GLM-5.3', Channel::modelsOf($glmChannel), true));
 check('转发时翻译成上游真实名', Channel::upstreamModel($glmChannel, 'aqua/GLM-5.3') === 'GLM-5.3');
 check('aqua/Qwen3.8-Flash 也能翻译', Channel::upstreamModel($glmChannel, 'aqua/Qwen3.8-Flash') === 'Qwen3.8-Flash');
 
-$sfChannel = Db::selectOne("SELECT c.* FROM channels c JOIN groups g ON g.id = c.group_id WHERE g.code = 'siliconflow'");
+$sfChannel = Db::selectOne("SELECT c.* FROM channels c JOIN line_groups g ON g.id = c.group_id WHERE g.code = 'siliconflow'");
 check('硅基流动渠道地址正确', (string) $sfChannel['base_url'] === 'https://api.siliconflow.cn/v1', (string) $sfChannel['base_url']);
 check('硅基流动只上了 1 个模型', count(Channel::modelsOf($sfChannel)) === 1);
 check('带斜杠的模型名也能映射', Channel::upstreamModel($sfChannel, 'aqua/DeepSeek-V4-Flash') === 'deepseek-ai/DeepSeek-V4-Flash');

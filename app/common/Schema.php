@@ -37,7 +37,7 @@ use Throwable;
 final class Schema
 {
     /** 当前期望的表结构版本。新增迁移时递增。 */
-    public const VERSION = 15;
+    public const VERSION = 16;
 
     /**
      * 确保表结构存在且为最新版本。
@@ -121,8 +121,16 @@ final class Schema
             self::createV14();
         }
 
-        if ($current < 15) {
-            self::createV15();
+        // ⚠️ 这段原来叫 v15、表名用的是 `groups`。`groups` 是 **MySQL 8 的保留字**，
+        // 于是 MySQL 部署上 CREATE TABLE / SELECT / INSERT 全部语法错误，
+        // 整段迁移在第一步就中断 —— 表与列一个都没建成，而版本号停在 14。
+        // 更糟的是「看起来没事」：服务照常启动（InitDb 把异常记进日志就继续了），
+        // 直到新代码去写 `tokens.groups` 这类不存在的列，才以「新建令牌失败」的形式爆出来。
+        // 现在表名改成 `line_groups`，并把版本推到 16：
+        // 所有停在 15 之前的库（包括那次失败的 MySQL 库）都会补跑这一遍。
+        // 旧的 `groups` 表刻意不删（迁移只加不删），它已不再被任何代码引用。
+        if ($current < 16) {
+            self::createV16();
         }
 
         Settings::put('schema_version', (string) self::VERSION);
@@ -582,7 +590,9 @@ final class Schema
     }
 
     /**
-     * v15：分组（`groups`）+ 计费口径 + 密钥额度
+     * v16：分组（`line_groups`）+ 计费口径 + 密钥额度
+     *
+     * （这段内容原本是 v15，因为表名撞上 MySQL 保留字而整体失败，见 ensure() 里的说明。）
      *
      * ═══ 为什么要有「分组」═══
      *
@@ -614,13 +624,13 @@ final class Schema
      *   · `usage_logs.cached_tokens`    记账要能被审计：事后要能拿这条记录重算一遍成本
      *   · `tokens.groups`               令牌可访问的分组（默认「所有默认可见的分组」）
      */
-    private static function createV15(): void
+    private static function createV16(): void
     {
         $pdo = Db::pdo();
         $autoId = self::autoId();
 
         $pdo->exec(<<<SQL
-            CREATE TABLE IF NOT EXISTS groups (
+            CREATE TABLE IF NOT EXISTS line_groups (
                 id              {$autoId},
                 code            VARCHAR(32)  NOT NULL,
                 label           VARCHAR(64)  NOT NULL,
@@ -640,7 +650,7 @@ final class Schema
         // 渠道 / 定价 / 令牌 各挂一个分组维度
         self::addColumnIfMissing('channels', 'group_id', 'INTEGER NOT NULL DEFAULT 0');
         self::addColumnIfMissing('pricing', 'group_id', 'INTEGER NOT NULL DEFAULT 0');
-        self::addColumnIfMissing('tokens', 'groups', 'VARCHAR(191) NULL');
+        self::addColumnIfMissing('tokens', 'allow_groups', 'VARCHAR(191) NULL');
 
         // 计费的两个新维度（缓存命中 + 时段价）
         self::addColumnIfMissing('pricing', 'upstream_cache_hit_price', 'DECIMAL(20,10) NOT NULL DEFAULT 0');
@@ -676,7 +686,7 @@ final class Schema
 
         // 现有渠道与定价全部归入「免费共享线路」——
         // 这样 group_id 永远指向一个真实分组，不必到处写「0 表示免费」这种隐形约定
-        $freeId = (int) (Db::selectOne("SELECT id FROM groups WHERE code = 'free'")['id'] ?? 0);
+        $freeId = (int) (Db::selectOne("SELECT id FROM line_groups WHERE code = 'free'")['id'] ?? 0);
         if ($freeId > 0) {
             Db::execute('UPDATE channels SET group_id = ? WHERE group_id = 0', [$freeId]);
             Db::execute('UPDATE pricing SET group_id = ? WHERE group_id = 0', [$freeId]);
@@ -700,7 +710,7 @@ final class Schema
         int $defaultVisible,
         int $sort
     ): void {
-        if (Db::selectOne('SELECT id FROM groups WHERE code = ?', [$code]) !== null) {
+        if (Db::selectOne('SELECT id FROM line_groups WHERE code = ?', [$code]) !== null) {
             return;
         }
 
@@ -708,7 +718,7 @@ final class Schema
 
         try {
             Db::execute(
-                'INSERT INTO groups (code, label, description, cost_mode, price_mode, visible, default_visible, sort, status, created_at, updated_at)
+                'INSERT INTO line_groups (code, label, description, cost_mode, price_mode, visible, default_visible, sort, status, created_at, updated_at)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)',
                 [$code, $label, $description, $costMode, $priceMode, $visible, $defaultVisible, $sort, $now, $now]
             );

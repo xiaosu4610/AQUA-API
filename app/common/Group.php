@@ -83,7 +83,7 @@ final class Group
         }
 
         try {
-            $rows = Db::select('SELECT * FROM groups ORDER BY sort ASC, id ASC');
+            $rows = Db::select('SELECT * FROM line_groups ORDER BY sort ASC, id ASC');
         } catch (Throwable) {
             // 表还没建好（首次启动时序）时不能把转发链路带崩
             $rows = [];
@@ -202,7 +202,7 @@ final class Group
      */
     public static function codesOfToken(?array $token): array
     {
-        $raw = trim((string) ($token['groups'] ?? ''));
+        $raw = trim((string) ($token['allow_groups'] ?? ''));
 
         if ($raw === '') {
             return self::defaultVisibleCodes();
@@ -399,7 +399,7 @@ final class Group
 
         try {
             Db::execute(
-                'INSERT INTO groups (code, label, description, cost_mode, price_mode, visible, default_visible, sort, status, created_at, updated_at)
+                'INSERT INTO line_groups (code, label, description, cost_mode, price_mode, visible, default_visible, sort, status, created_at, updated_at)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                 [
                     $code,
@@ -445,7 +445,7 @@ final class Group
 
         try {
             Db::execute(
-                'UPDATE groups SET label = ?, description = ?, cost_mode = ?, price_mode = ?, visible = ?, default_visible = ?, sort = ?, status = ?, updated_at = ?
+                'UPDATE line_groups SET label = ?, description = ?, cost_mode = ?, price_mode = ?, visible = ?, default_visible = ?, sort = ?, status = ?, updated_at = ?
                  WHERE id = ?',
                 [
                     mb_substr($label, 0, 64),
@@ -498,7 +498,7 @@ final class Group
         }
 
         try {
-            Db::execute('DELETE FROM groups WHERE id = ?', [$id]);
+            Db::execute('DELETE FROM line_groups WHERE id = ?', [$id]);
         } catch (Throwable $e) {
             return ['ok' => false, 'message' => '删除失败：' . $e->getMessage()];
         }
