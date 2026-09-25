@@ -70,6 +70,18 @@ $srcKind = ['database' => 'accent', 'env' => 'warn'];
                 <h2><?= icon('settings', 17) ?><?= htmlspecialchars($group['label'], ENT_QUOTES, 'UTF-8') ?></h2>
                 <p class="tip" style="margin:-8px 0 14px"><?= htmlspecialchars($group['hint'], ENT_QUOTES, 'UTF-8') ?></p>
 
+                <?php if ($group['key'] === 'payment' && !empty($payNotes)): ?>
+                    <?php /* 支付接口类型选不同时，它需要的参数不一样。这里把每种类型的说明
+                             都渲染出来、由 JS 只显示当前选中的那一份 ——
+                             比让站长去文档里找「我这个类型要填什么」要省事得多 */ ?>
+                    <?php foreach ($payNotes as $gw => $meta): ?>
+                        <div class="pay-note" data-pay-note="<?= htmlspecialchars((string) $gw, ENT_QUOTES, 'UTF-8') ?>" hidden>
+                            <b><?= htmlspecialchars((string) $meta['label'], ENT_QUOTES, 'UTF-8') ?></b>
+                            ：<?= htmlspecialchars((string) $meta['note'], ENT_QUOTES, 'UTF-8') ?>
+                        </div>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+
                 <div class="table-scroll">
                     <table>
                         <thead>
@@ -82,7 +94,7 @@ $srcKind = ['database' => 'accent', 'env' => 'warn'];
                         </thead>
                         <tbody>
                         <?php foreach ($group['items'] as $item): ?>
-                            <tr>
+                            <tr<?= ($item['gateways'] ?? []) !== [] ? ' data-gateways="' . htmlspecialchars(implode(',', $item['gateways']), ENT_QUOTES, 'UTF-8') . '"' : '' ?>>
                                 <td>
                                     <div class="cfg-label"><?= htmlspecialchars((string) $item['label'], ENT_QUOTES, 'UTF-8') ?></div>
                                     <?php if (($item['hint'] ?? '') !== ''): ?>
@@ -177,5 +189,44 @@ $srcKind = ['database' => 'accent', 'env' => 'warn'];
         </p>
     </section>
 </div>
+
+<style>
+    .pay-note {
+        margin: -6px 0 14px; padding: 10px 13px;
+        background: #f4f8fd; border: 1px solid #d8e4f3; border-radius: 9px;
+        font-size: 12.5px; line-height: 1.85; color: #33475c;
+    }
+</style>
+
+<script>
+    // 支付：只显示当前接口类型需要的配置项。
+    //
+    // 为什么要在前端做：不同支付接口要的参数完全不同（易支付是「地址+商户号+密钥」，
+    // 支付宝当面付要「APPID+应用私钥+支付宝公钥」）。全摊在页面上，
+    // 站长根本看不出哪些跟自己有关 —— 于是要么乱填、要么来问你。
+    //
+    // 纯前端隐藏 + 后端照旧校验：被隐藏的项提交时仍是原值，不会因为切换类型被清空。
+    (function () {
+        var select = document.querySelector('select[name="v[payment.gateway]"]');
+        if (!select) { return; }
+
+        var rows = document.querySelectorAll('tr[data-gateways]');
+        var notes = document.querySelectorAll('[data-pay-note]');
+
+        var apply = function () {
+            var current = select.value;
+            rows.forEach(function (row) {
+                var list = (row.getAttribute('data-gateways') || '').split(',');
+                row.hidden = list.indexOf(current) === -1;
+            });
+            notes.forEach(function (note) {
+                note.hidden = note.getAttribute('data-pay-note') !== current;
+            });
+        };
+
+        select.addEventListener('change', apply);
+        apply();
+    })();
+</script>
 </body>
 </html>

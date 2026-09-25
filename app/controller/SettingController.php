@@ -188,6 +188,34 @@ class SettingController
     ];
 
     /**
+     * 每种支付接口类型需要填哪些项，以及它「怎么走」。
+     *
+     * 为什么要有这张表：不同支付接口要的参数根本不一样 ——
+     * 易支付只要「地址 + 商户号 + 密钥」，而将来的支付宝当面付需要
+     * 「APPID + 应用私钥 + 支付宝公钥」，Stripe 又要「公钥 + 私钥 + Webhook 密钥」。
+     * 把全部参数一次性摊在页面上，站长根本不知道哪些跟自己有关，
+     * 于是要么乱填、要么去问人。所以：**只显示当前选中的那个类型需要的项**。
+     *
+     * fields 里没列到的键（enabled / gateway / min_amount 这类）对所有类型都通用，始终显示。
+     */
+    private const PAY_GATEWAY_FIELDS = [
+        'epay_v1' => [
+            'label' => '易支付 V1（页面跳转型）',
+            'fields' => ['api_url', 'pid', 'key', 'submit_path'],
+            'note' => '需要：支付站地址、商户 PID、商户密钥。默认走 /submit.php，'
+                . '用户点充值后会跳到支付站的收银台页面。兼容性最好，新站建议先用它。',
+        ],
+        'epay_v2' => [
+            'label' => '易支付 V2（API 型）',
+            'fields' => ['api_url', 'pid', 'key', 'submit_path'],
+            'note' => '需要：支付站地址、商户 PID、商户密钥。默认走 /mapi.php，'
+                . '由本站请求接口拿到支付链接再跳转，适合想做自定义收银台的情况。'
+                . '注意 V2 的签名规则与 V1 不同（是否保留空值），本站已按各自约定处理，'
+                . '切换类型后请重新确认一遍密钥是否填对。',
+        ],
+    ];
+
+    /**
      * 配置项的中文名 / 说明（供本页与仪表盘共用）。
      *
      * 放在这里而不是散在各页面：中文名是「这个键是说给人听的说法」，
@@ -225,6 +253,8 @@ class SettingController
             'siteName'   => Settings::siteName(),
             'siteMode'   => Settings::siteModeLabel(),
             'groups'     => $this->buildGroups(),
+            // 支付接口类型 → 它需要哪些项、怎么走。页面据此只显示当前类型要填的项
+            'payNotes'   => self::PAY_GATEWAY_FIELDS,
             // 配置之间的依赖检查：单项都合法、组合起来却是坏的，
             // 这类问题最难自己发现（比如「要求邮箱验证」+「没配邮件服务」
             // 会让所有新用户注册后卡在门外）
@@ -449,7 +479,7 @@ class SettingController
                 ];
             }
 
-            $groups[$prefix]['items'][] = [
+            $item = [
                 'key'         => $key,
                 // 中文名 + 大白话说明（缺失时退回键名，至少不会显示成空白）
                 'label'       => self::labelOf($key),
@@ -467,10 +497,37 @@ class SettingController
                 'configured'  => Settings::isSecret($key) ? Settings::hasSecret($key) : false,
                 // 只有数据库里存在覆盖值时才谈得上「恢复默认」
                 'canReset'    => $source === 'database',
+                // 这一项属于哪些支付接口类型（空数组 = 对所有类型通用，始终显示）。
+                // 模板据此在行上打 data-gateways，切换接口类型时由一小段 JS 收起不相关的行
+                'gateways'    => self::gatewaysUsing($key),
             ];
+
+            $groups[$prefix]['items'][] = $item;
         }
 
         return array_values($groups);
+    }
+
+    /**
+     * 某个配置键被哪些支付接口类型需要（空数组 = 通用项）。
+     *
+     * @return array<int, string>
+     */
+    private static function gatewaysUsing(string $key): array
+    {
+        if (!str_starts_with($key, 'payment.')) {
+            return [];
+        }
+
+        $field = substr($key, strlen('payment.'));
+        $used = [];
+        foreach (self::PAY_GATEWAY_FIELDS as $gateway => $meta) {
+            if (in_array($field, $meta['fields'], true)) {
+                $used[] = (string) $gateway;
+            }
+        }
+
+        return $used;
     }
 
     /**
