@@ -194,15 +194,26 @@ final class Settings
     public static function put(string $key, mixed $value): void
     {
         $encoded = json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $now = time();
 
-        // 先删后插，避免依赖各家数据库的 upsert 语法差异
-        // （SQLite 是 INSERT OR REPLACE，MySQL 是 ON DUPLICATE KEY UPDATE，
-        //   用 delete + insert 两者通吃，且逻辑一眼看懂）
-        Db::execute('DELETE FROM options WHERE opt_key = ?', [$key]);
-        Db::execute(
-            'INSERT INTO options (opt_key, opt_value, updated_at) VALUES (?, ?, ?)',
-            [$key, $encoded, time()]
-        );
+        // ⚠️ 这里**不能**用「先 DELETE 再 INSERT」。
+        //    服务是多进程常驻模型，每个工作进程启动时都会跑一次 Schema::ensure()，
+        //    升级版本号那一行必然被多个进程同时写：
+        //    进程 A 删完、进程 B 也删完，然后两个都 INSERT —— 后一个直接
+        //    撞主键报 “Duplicate entry 'schema_version'”，表现为**随机某个工作进程
+        //    启动失败**（其余进程正常，所以服务看起来还好，只有日志里一堆异常）。
+        //    这个坑在生产的 v11 迁移上真实出现过。
+        //
+        //    正确做法是一条原子 upsert，让数据库自己保证「有则更新、无则插入」。
+        //    两家的写法只差一个子句，参数顺序完全一致（值绑定两次），
+        //    所以不需要维护两套 SQL。
+        $upsert = Db::isSqlite()
+            ? 'INSERT INTO options (opt_key, opt_value, updated_at) VALUES (?, ?, ?)
+               ON CONFLICT(opt_key) DO UPDATE SET opt_value = ?, updated_at = ?'
+            : 'INSERT INTO options (opt_key, opt_value, updated_at) VALUES (?, ?, ?)
+               ON DUPLICATE KEY UPDATE opt_value = ?, updated_at = ?';
+
+        Db::execute($upsert, [$key, $encoded, $now, $encoded, $now]);
 
         // 同步更新本进程缓存，让写入方立刻读到自己刚写的值
         self::$cache[$key] = $value;
