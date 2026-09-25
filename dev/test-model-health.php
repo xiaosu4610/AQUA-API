@@ -109,7 +109,7 @@ Settings::forget();
 
 $mock = probe_mock_start(0);
 $mockBase = 'http://127.0.0.1:' . $mock['port'];
-probe_seed_channel('健康度测试渠道', $mockBase . '/mock', ['ok-1', 'boom-1', 'denied-1'], ['sk-upstream-key']);
+probe_seed_channel('健康度测试渠道', $mockBase . '/mock', ['ok-1', 'boom-1', 'denied-1', 'learn-1'], ['sk-upstream-key']);
 
 $created = User::register('healthy@example.com', 'password123', '127.0.0.1', false, 10.0);
 $token = (string) UserToken::create((int) $created['id'], '测试令牌')['plain'];
@@ -153,11 +153,11 @@ $http = static function (string $method, string $path, string $token = '', ?arra
     ];
 };
 
-$chat = static function (string $model, string $token) use ($http): array {
-    return $http('POST', '/v1/chat/completions', $token, [
+$chat = static function (string $model, string $token, array $extra = []) use ($http): array {
+    return $http('POST', '/v1/chat/completions', $token, array_merge([
         'model' => $model,
         'messages' => [['role' => 'user', 'content' => 'hi']],
-    ]);
+    ], $extra));
 };
 
 // 先让 ok-1 成功一次（证明健康模型不受影响，并给 alternatives 提供「近期成功过」的候选）
@@ -337,6 +337,23 @@ $thinkingSpec = Channel::buildSpec(Channel::find(1), 'sk-upstream-key', '/chat/c
 ], 60);
 $thinkingSent = json_decode((string) $thinkingSpec['body'], true);
 check('非标准的「推理开关」默认不转发（本次线上 400 的根因）', !isset($thinkingSent['enable_thinking'], $thinkingSent['thinking']), (string) $thinkingSpec['body']);
+
+Settings::put('gateway.auto_strip_params', '');
+Settings::forget();
+
+echo "\n六之三、端到端：第一次被拒后，第二次就不再带那个字段（真的不失败第二次）\n";
+
+// 上游的剧本：请求体里只要出现 prompt_cache_key 就回 400 并点名它。
+// 所以「第一次 400、第二次 200」就同时证明了：学到了、而且真的不再发
+$first = $chat('learn-1', $token, ['prompt_cache_key' => 'cache-me']);
+check('第一次带上被拒的字段 → 上游 400', $first['status'] === 400, (string) $first['status']);
+
+Settings::forget();
+check('程序把上游点名的字段学下来了', in_array('prompt_cache_key', Channel::autoStripFields(), true), implode(',', Channel::autoStripFields()));
+
+$second = $chat('learn-1', $token, ['prompt_cache_key' => 'cache-me']);
+check('第二次仍然带同一个字段（客户端没改），但请求成功了', $second['status'] === 200, $second['status'] . ' ' . mb_substr($second['body'], 0, 200));
+check('说明字段确实被剥掉后才发出去的', ($second['json']['choices'][0]['message']['content'] ?? '') === 'ok');
 
 Settings::put('gateway.auto_strip_params', '');
 Settings::forget();

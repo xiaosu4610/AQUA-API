@@ -362,6 +362,10 @@ class OpenAiController
         // 与上面 recordFailure 里的渠道/密钥维度是两码事（见 RelayJob::onFailure 的说明）
         $job->onFailure = static function (RelayJob $job, string $error): void {
             ModelHealth::markFailure($job->model, $job->httpStatus, $error, $job->latencyMs);
+
+            // 上游点名说不认识的字段，在这里兜住 —— 这是**唯一一定会执行**的失败收尾点
+            // （recordFailure 只在换渠道重试时被调用，而 400 默认不重试）
+            Channel::learnUnsupportedParams($error);
         };
 
         // ── 6. 交给引擎；本方法随即返回 ──
@@ -442,10 +446,13 @@ class OpenAiController
 
         // 上游点名说「不认识这些字段」时，把它们记下来 —— 之后不再发给上游。
         //
-        // 放在这里而不是「最终失败」处，是因为**每一次尝试**都会经过这里：
-        // 一个请求换渠道重试时，第二次就会带着新的剥离清单出去。
-        // 而且这是唯一能自愈的做法：各家上游支持的字段不一样，
-        // 硬编码一份清单永远追不上（实测 NIM 拒绝 `prompt_cache_key`）。
+        // 放在这里的好处是「学得早」：一个请求换渠道重试时，
+        // 下一次尝试就已经带上新的剥离清单了。
+        //
+        // ⚠️ 但**不能只放这里**：recordFailure 只在「换渠道重试」这条路上被调用，
+        //    而 400 默认不在 gateway.retry_status 里 —— 也就是说这类错误
+        //    根本走不到这里。所以 onFailure（最终失败一定会触发）里还要兜一次。
+        //    这个疏漏在生产上实测过：部署后 9 次 400 一次都没学进去。
         Channel::learnUnsupportedParams($message);
 
         if ($this->isRouteLevelFailure($job, $status)) {

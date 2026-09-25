@@ -278,6 +278,17 @@ if (str_starts_with($model, 'badreq-')) {
     echo '{"error":"bad request"}';
     return;
 }
+// 用来验证「按上游原话学习不认识的字段」：带上 prompt_cache_key 就 400，
+// 剥掉它之后就该 200 —— 这样一趟就能证明「学到了、而且真的不再发」
+if (str_starts_with($model, 'learn-')) {
+    if (isset($decoded['prompt_cache_key'])) {
+        http_response_code(400);
+        echo '{"error":"Validation: Unsupported parameter(s): `prompt_cache_key`"}';
+        return;
+    }
+    echo '{"id":"mock","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}';
+    return;
+}
 if (str_starts_with($model, 'unprocessable-')) {
     http_response_code(422);
     echo '{"error":"unprocessable entity"}';
