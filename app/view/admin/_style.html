@@ -39,6 +39,15 @@
         --warn-soft: #fdf4e3;
         --radius: 10px;
         --shadow: 0 1px 2px rgba(16, 24, 40, .04), 0 1px 3px rgba(16, 24, 40, .06);
+
+        /* 间距刻度：模板里只用这五档。
+           各处随手写 margin/padding 的数值，是页面之间「松紧不一致」的主要来源 */
+        --sp-1: 4px;
+        --sp-2: 8px;
+        --sp-3: 12px;
+        --sp-4: 18px;
+        --sp-5: 26px;
+        --sp-6: 38px;
     }
 
     * { box-sizing: border-box; }
@@ -267,4 +276,194 @@
     .mt-0 { margin-top: 0; }
     .mb-0 { margin-bottom: 0; }
     hr.sep { border: 0; border-top: 1px solid var(--border); margin: 20px 0; }
+
+    /* ══════════════════════════════════════════════════════
+       页面骨架：数据页固定四段式
+         页头 → 筛选栏 → 汇总卡 → 表格
+       所有列表页都长这样。**一致本身就是「好看」的主要来源** ——
+       用户学会一个页面就学会了全部，也就不用每个页面重新找东西。
+       ══════════════════════════════════════════════════════ */
+
+    /* ── 第一段：页头 ───────────────────────────────────── */
+    .page-head {
+        display: flex; align-items: flex-start; justify-content: space-between;
+        gap: var(--sp-3); flex-wrap: wrap; margin-bottom: var(--sp-4);
+    }
+    .page-head .ph-main { min-width: 0; }
+    .page-head h1 { font-size: 20px; }
+    .page-head .ph-desc { margin: var(--sp-1) 0 0; font-size: 13px; color: var(--muted); }
+    .page-head .ph-actions { display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; }
+
+    .crumb { font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
+    .crumb a { color: var(--muted); text-decoration: none; }
+    .crumb a:hover { color: var(--accent-dark); }
+    .crumb .sep { margin: 0 6px; color: var(--border-strong); }
+
+    /* ── 第二段：筛选栏 ─────────────────────────────────── */
+    .filter-bar {
+        display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap;
+        padding: var(--sp-3); margin-bottom: var(--sp-3);
+        background: #fafcfe; border: 1px solid var(--border); border-radius: var(--radius);
+    }
+    /* 用 display:contents 让 <form> 不产生额外盒子，
+       这样筛选控件仍与栏内其它元素在同一行 */
+    .filter-bar form { display: contents; }
+    .filter-bar input[type=text], .filter-bar input[type=search], .filter-bar select {
+        width: auto; min-width: 130px; padding: 6px 10px; font-size: 13px;
+    }
+    .filter-bar .spacer { margin-left: auto; }
+
+    /* 已生效的筛选条件显示成可移除的标签：
+       让人随时看得出「现在筛的是什么」，并且能单独去掉一个 ——
+       比让人回头去猜下拉框里的值要可靠 */
+    .tag {
+        display: inline-flex; align-items: center; gap: 5px;
+        padding: 2px 4px 2px 10px; font-size: 12px; border-radius: 999px;
+        background: var(--accent-soft); color: var(--accent-dark); border: 1px solid #cceaf2;
+    }
+    .tag a { color: inherit; text-decoration: none; opacity: .6; padding: 0 3px; font-size: 15px; line-height: 1; }
+    .tag a:hover { opacity: 1; }
+
+    /* ── 第三段：汇总卡（用已有的 .stats / .stat）────────── */
+
+    /* ── 卡片：section 的另一种写法（语义等价，表格页更顺手）── */
+    .card {
+        background: var(--surface); border: 1px solid var(--border);
+        border-radius: 14px; box-shadow: var(--shadow);
+        padding: 22px; margin-bottom: 20px;
+    }
+    /* flush：表格卡片不要内边距，让表头贴边，横向滚动条也就不会内缩 */
+    .card.flush { padding: 0; overflow: hidden; }
+    .card.flush .card-head { padding: 18px 22px 14px; margin-bottom: 0; }
+    .card.flush .table-scroll { border-top: 1px solid var(--border); }
+    .card.flush .pager { padding: 0 22px 18px; }
+    .card-head {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: var(--sp-3); flex-wrap: wrap; margin-bottom: var(--sp-3);
+    }
+    .card-head h2 { margin: 0; }
+
+    /* ══════════════════════════════════════════════════════
+       三态：加载 / 空 / 错误
+       三种都必须齐备 —— 「丑」的主要来源就是缺这几个状态，
+       于是用户看到的是白屏、空白表格或者一个转圈的圈。
+       ══════════════════════════════════════════════════════ */
+
+    /* 加载态用**骨架屏**而不是转圈：
+       转圈只说明「在忙」，骨架屏还说明了「将会出现什么、出现在哪里」，
+       这是感知速度差异最大的一个细节 */
+    .skeleton {
+        border-radius: 6px;
+        background: linear-gradient(90deg, #eef2f6 25%, #e3e9f0 37%, #eef2f6 63%);
+        background-size: 400% 100%;
+        animation: sk 1.4s ease-in-out infinite;
+    }
+    .skeleton.line { height: 12px; margin: var(--sp-2) 0; }
+    .skeleton.cell { height: 12px; }
+    @keyframes sk { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
+    /* 尊重系统的「减少动态效果」设置 */
+    @media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
+
+    /* 空态必须给**下一步动作** —— 只写「暂无数据」等于把用户丢在原地 */
+    .empty .empty-ico { color: #b6c3d0; }
+    .empty .empty-title { margin: 6px 0 4px; font-size: 14px; font-weight: 600; color: var(--text); }
+    .empty .empty-text { margin: 0 auto; max-width: 460px; line-height: 1.75; }
+    .empty .empty-actions { margin-top: var(--sp-3); display: flex; gap: var(--sp-2); justify-content: center; flex-wrap: wrap; }
+
+    /* 错误态必须给**重试** —— 用户唯一能做的就是再试一次，那就把按钮给他 */
+    .error-state {
+        padding: var(--sp-5) var(--sp-4); text-align: center;
+        border: 1px solid #f7cfd0; background: var(--danger-soft);
+        border-radius: var(--radius); color: #a82f34; font-size: 13.5px;
+    }
+    .error-state .es-title { font-weight: 600; margin-bottom: 4px; }
+    .error-state .es-text { color: #b45156; }
+    .error-state .es-actions { margin-top: var(--sp-3); }
+
+    /* ── 分页 ───────────────────────────────────────────── */
+    .pager { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: var(--sp-4); font-size: 13px; }
+    .pager .pg-info { color: var(--muted); margin-right: auto; }
+    .pager a, .pager .pg-cur, .pager .pg-off {
+        display: inline-flex; align-items: center; justify-content: center;
+        min-width: 32px; height: 32px; padding: 0 9px;
+        border: 1px solid var(--border-strong); border-radius: 7px;
+        background: #fff; color: var(--text); text-decoration: none;
+    }
+    .pager a:hover { border-color: var(--accent); background: var(--accent-soft); }
+    .pager .pg-cur { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+    .pager .pg-off { color: #b6c3d0; background: #f6f8fa; }
+    .pager .pg-gap { color: var(--muted); padding: 0 2px; }
+
+    /* ── 进度条（额度、套餐窗口用量）────────────────────── */
+    .progress { height: 7px; border-radius: 999px; background: #e8eef4; overflow: hidden; }
+    .progress > i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+    .progress.warn > i { background: var(--warn); }
+    .progress.danger > i { background: var(--danger); }
+    .progress-row { display: flex; align-items: center; gap: var(--sp-2); }
+    .progress-row .progress { flex: 1; min-width: 80px; }
+    .progress-row .pv { font-size: 12px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+    /* ── 撤销条 ─────────────────────────────────────────── */
+    /* 非破坏性操作「先执行、再给一次后悔的机会」，而不是每次都弹确认框。
+       对所有操作都弹确认，用户会养成闭眼点「确定」的习惯，
+       于是真正危险的那一次也会被点掉（见 docs/13 硬规则 4） */
+    .toast {
+        position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%);
+        display: flex; align-items: center; gap: var(--sp-3);
+        padding: 11px 16px; z-index: 60; max-width: calc(100vw - 32px);
+        background: #1b2733; color: #fff; border-radius: 10px;
+        box-shadow: 0 8px 24px rgba(16, 24, 40, .22); font-size: 13.5px;
+    }
+    .toast a { color: #7fe0f0; font-weight: 600; text-decoration: none; }
+    .toast a:hover { text-decoration: underline; }
+    .toast button.x { background: none; border: 0; color: #9fb0c0; cursor: pointer; font-size: 16px; line-height: 1; padding: 0 2px; }
+
+    /* ── 危险区：不可逆操作集中一处，并在旁边写明**具体后果**── */
+    .danger-zone { border: 1px solid #f2c9ca; border-radius: var(--radius); overflow: hidden; }
+    .danger-zone .dz-head {
+        padding: 12px 16px; background: var(--danger-soft); color: #a82f34;
+        font-weight: 600; font-size: 13.5px; display: flex; align-items: center; gap: 8px;
+    }
+    .danger-zone .dz-body { padding: 16px; }
+    .danger-zone .dz-conseq { margin: 0 0 var(--sp-3); font-size: 13px; color: var(--muted); line-height: 1.85; }
+    .danger-zone .dz-conseq b { color: var(--danger); }
+
+    /* ── 表单错误态 ─────────────────────────────────────── */
+    input.invalid, select.invalid, textarea.invalid { border-color: var(--danger); }
+    input.invalid:focus, select.invalid:focus, textarea.invalid:focus { box-shadow: 0 0 0 3px rgba(229, 72, 77, .13); }
+    .field-error { margin-top: 5px; font-size: 12px; color: var(--danger); display: flex; align-items: center; gap: 5px; }
+
+    /* ── 表格里的数字右对齐 ─────────────────────────────── */
+    /* 金额、用量左对齐很难扫读；右对齐 + 等宽数字才能一眼比出大小 */
+    th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+    /* ── 小按钮与一键复制 ───────────────────────────────── */
+    button.ghost.sm, a.ghost.sm { padding: 3px 9px; font-size: 12px; }
+    button.primary.sm, a.primary.sm { padding: 5px 13px; font-size: 13px; }
+    .copy { display: inline-flex; align-items: center; gap: 5px; }
+    .copy .cp-done { color: var(--ok); }
+
+    /* ── 独立错误页（4xx / 5xx）─────────────────────────── */
+    .err-page { min-height: 70vh; display: flex; align-items: center; justify-content: center; }
+    .err-box { width: 100%; max-width: 560px; text-align: center; }
+    .err-code { font-size: 60px; font-weight: 700; line-height: 1; letter-spacing: -2px; color: var(--accent); }
+    .err-box h1 { justify-content: center; font-size: 21px; margin: var(--sp-4) 0 var(--sp-2); }
+    .err-box .err-text { color: var(--muted); font-size: 14px; }
+    .err-reasons {
+        margin: var(--sp-5) 0 0; padding: var(--sp-4);
+        text-align: left; background: #fafcfe;
+        border: 1px solid var(--border); border-radius: var(--radius);
+        font-size: 13px; color: var(--muted); line-height: 1.9;
+    }
+    .err-reasons b { display: block; margin-bottom: 6px; color: var(--text); font-size: 13px; }
+    .err-reasons ul { margin: 0; padding-left: 18px; }
+    .err-actions { margin-top: var(--sp-5); display: flex; gap: var(--sp-2); justify-content: center; flex-wrap: wrap; }
+    .err-meta { margin-top: var(--sp-5); font-size: 12px; color: #9aa9b8; }
+
+    /* ── 分隔与无障碍 ───────────────────────────────────── */
+    hr.divider { border: 0; border-top: 1px solid var(--border); margin: var(--sp-4) 0; }
+    .sr-only {
+        position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+        overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+    }
 </style>
