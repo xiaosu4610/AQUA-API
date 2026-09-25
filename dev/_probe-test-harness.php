@@ -234,6 +234,11 @@ if (str_starts_with($path, '/authfail403/')) {
     echo '{"status":403,"title":"Forbidden","detail":"Authorization failed"}';
     return;
 }
+// 拉模型清单：测活时 Channel::test() 会先 GET /models
+if (str_ends_with($path, '/models')) {
+    echo '{"data":[{"id":"ok-list-1"},{"id":"denied-list-1"},{"id":"ok-list-2"}]}';
+    return;
+}
 if (str_starts_with($model, 'slow-')) {
     sleep(30);
     echo '{"choices":[]}';

@@ -19,9 +19,15 @@ use app\common\Db;
 use app\common\ModelProbe;
 use app\common\ModelProbeTask;
 use app\common\Schema;
+use app\common\Settings;
 
 $dbFile = probe_test_temp('task-db', '.sqlite');
 probe_test_bootstrap($dbFile);
+
+// 本文件验证的是「站长手动勾选哪些模型下架」这条路径，
+// 所以先关掉「只上架能真正调用的模型」——它会把无权限的模型**自动**一并下架，
+// 那是另一条路径，由 dev/test-model-free-only.php 专门覆盖。
+Settings::put('probe.free_only', false);
 
 function insertChannel(string $name, array $models): int
 {

@@ -301,6 +301,8 @@ class ChannelController
             'task' => $task,
             'results' => ModelProbeTask::results((int) $task['id']),
             'modelCount' => count(Channel::modelsOf($channel)),
+            // 「只上架能真正调用的模型」开关：页面据此把「无权限」的说法讲清楚
+            'freeOnly' => Settings::bool('probe.free_only', true),
             // 下架失败会带着 flash 跳回本页；这一页不读它的话，
             // 用户只会看到「点了按钮、页面刷新了、什么都没变」，完全不知道为什么
             'notice' => (string) session()->pull(self::FLASH_NOTICE, ''),
@@ -343,9 +345,16 @@ class ChannelController
 
         try {
             $result = ModelProbeTask::apply($taskId, $selected);
+            $extra = $result['auto_added'] === []
+                ? ''
+                : '；其中 ' . count($result['auto_added']) . ' 个「上游无权限」的模型按「不是免费模型」自动一并下架';
+
             return $this->back(
-                "已下架 {$result['removed']} 个模型，模型总数 {$result['before']} → {$result['after']}，原始清单已备份",
-                'ok'
+                "已下架 {$result['removed']} 个模型，模型总数 {$result['before']} → {$result['after']}，原始清单已备份{$extra}",
+                'ok',
+                // 回任务页而不是渠道列表：站长刚点的是「下架」，
+                // 他想确认的是「哪些被下架了」，留在这一页才看得到
+                '/admin/channels/probe?id=' . $taskId
             );
         } catch (RuntimeException $e) {
             return $this->back($e->getMessage(), 'err', '/admin/channels/probe?id=' . $taskId);

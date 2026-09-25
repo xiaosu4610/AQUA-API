@@ -218,10 +218,14 @@ final class Channel
             'hint' => '逗号分隔。有些上游收到无法识别的参数会直接报错，这里把它们去掉',
         ],
         'model_map' => [
-            'label' => '模型名映射',
+            'label' => '模型名映射（对外名=上游名）',
             'type' => 'pairs',
             'default' => [],
-            'hint' => '每行一个 对外名=上游真实名。用于把统一模型名映射到各家不同的命名',
+            'hint' => '每行一条，格式：对外名=上游真实名。'
+                . '例：本站展示、用户调用的模型叫 llama-3.1-8b，而上游要求写 meta/llama-3.1-8b-instruct，'
+                . '就填 llama-3.1-8b=meta/llama-3.1-8b-instruct。'
+                . '用户始终用「对外名」请求本站，本站按这里的规则换成上游名再转发 —— 用户完全无感。'
+                . '留空表示两边名字一致',
         ],
         'usage_fallback' => [
             'label' => '上游不返回用量时',
@@ -733,6 +737,23 @@ final class Channel
 
         $models = self::extractModelIds($listResponse['body']);
 
+        // 「只上架能真正调用的模型」开着时，把**已经确定**不能用的模型先剔掉再上架。
+        //
+        // 依据是上一次检测的结论（no_access / unroutable）。首次拉取时还没检测过，
+        // 此时不剔任何东西 —— 判定必须有据可依，不能凭猜。
+        $dropped = 0;
+        if ($models !== [] && Settings::bool('probe.free_only', true)) {
+            $unusable = ModelProbeTask::unusableModels($id);
+            if ($unusable !== []) {
+                $filtered = array_values(array_filter(
+                    $models,
+                    static fn (string $m): bool => !in_array($m, $unusable, true)
+                ));
+                $dropped = count($models) - count($filtered);
+                $models = $filtered;
+            }
+        }
+
         // 若渠道还没配置模型清单，把拉到的清单回填，省去手工录入。
         // 注意判断方式：空数组存进库是字符串 `'[]'` 而不是空串，
         // 所以这里必须用 modelsOf() 判断「逻辑上是否为空」，
@@ -768,6 +789,10 @@ final class Channel
         ]));
 
         $result = self::interpretProbe($chatResponse, $probeModel, $models);
+        if ($dropped > 0) {
+            // 如实说明剔掉了几个：否则站长会觉得「上游明明有 80 个模型，怎么只上架了 60 个」
+            $result['message'] .= "（已按「只上架能真正调用的模型」跳过 {$dropped} 个已知无权限/不支持的模型）";
+        }
         self::recordTest($id, $result);
 
         // 把探测结果反馈到密钥池，让池子的健康状态跟着更新。
@@ -875,11 +900,24 @@ final class Channel
     private static function pickProbeModel(array $channel, array $upstreamModels): string
     {
         $configured = self::modelsOf($channel);
-        if ($configured !== []) {
-            return $configured[0];
+        $candidates = $configured !== [] ? $configured : $upstreamModels;
+
+        // 避开已知无权限的模型：拿一个明知道会 403 的模型去验证 Key，
+        // 会把一把好 Key 判成「无效」—— 那是最容易让人白折腾半天的误报
+        if (Settings::bool('probe.free_only', true)) {
+            $unusable = ModelProbeTask::unusableModels((int) ($channel['id'] ?? 0));
+            if ($unusable !== []) {
+                $usable = array_values(array_filter(
+                    $candidates,
+                    static fn (mixed $m): bool => !in_array((string) $m, $unusable, true)
+                ));
+                if ($usable !== []) {
+                    $candidates = $usable;
+                }
+            }
         }
 
-        return $upstreamModels[0];
+        return (string) $candidates[0];
     }
 
     /**

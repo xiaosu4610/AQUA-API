@@ -195,8 +195,42 @@ final class ModelProbeTask
     }
 
     /**
+     * 该渠道最近一次检测里「不能上架」的模型。
+     *
+     * 两类：
+     *   · no_access  —— 上游说没有权限。对 NVIDIA 这类免费上游，
+     *                   这就是「不是免费模型」的准确信号
+     *   · unroutable —— 这个模型不认 chat/completions（比如向量化、重排模型）
+     *
+     * ⚠️ 刻意**不包含** inconclusive（超时 / 无法判定）：
+     * 免费模型往往很慢，一次超时并不等于不能用。把它算作不可用
+     * 会把一堆好模型误伤掉 —— 宁可少下架几个，也不要把能用的删掉。
+     *
+     * @return array<int, string>
+     */
+    public static function unusableModels(int $channelId): array
+    {
+        $task = Db::selectOne(
+            "SELECT id FROM channel_model_probe_tasks
+             WHERE channel_id = ? AND status = 'completed' ORDER BY id DESC LIMIT 1",
+            [$channelId]
+        );
+        if ($task === null) {
+            return [];
+        }
+
+        $rows = Db::select(
+            "SELECT DISTINCT model FROM channel_model_probe_results
+             WHERE task_id = ? AND classification IN ('no_access', 'unroutable')",
+            [(int) $task['id']]
+        );
+
+        return array_values(array_map(static fn (array $r): string => (string) $r['model'], $rows));
+    }
+
+    /**
      * @param array<int, string> $selected
-     * @return array{removed:int,before:int,after:int,backup:string}
+     * @return array{removed:int,before:int,after:int,backup:string,auto_added:array<int,string>}
      */
     public static function apply(int $taskId, array $selected, string $operator = 'admin'): array
     {
@@ -209,12 +243,29 @@ final class ModelProbeTask
         }
 
         $allowedRows = Db::select(
-            "SELECT model FROM channel_model_probe_results
+            "SELECT model, classification FROM channel_model_probe_results
              WHERE task_id = ? AND classification IN ('no_access', 'unroutable')",
             [$taskId]
         );
         $allowed = array_column($allowedRows, 'model');
         $selected = array_values(array_unique(array_filter(array_map('strval', $selected))));
+
+        // 「只上架能真正调用的模型」开关打开时，无权限的模型**不需要**站长逐条勾选：
+        // 上游已经明确说「你没有这个模型的权限」，那就是不该上架的模型。
+        // 自动补进下架清单，避免「漏勾一个，用户拿它去调用就吃 403」。
+        $autoAdded = [];
+        if (Settings::bool('probe.free_only', true)) {
+            foreach ($allowedRows as $row) {
+                if ((string) $row['classification'] !== ModelProbe::NO_ACCESS) {
+                    continue;
+                }
+                if (!in_array((string) $row['model'], $selected, true)) {
+                    $selected[] = (string) $row['model'];
+                    $autoAdded[] = (string) $row['model'];
+                }
+            }
+        }
+
         foreach ($selected as $model) {
             if (!in_array($model, $allowed, true)) {
                 throw new RuntimeException('提交包含不允许下架的模型');
@@ -264,6 +315,12 @@ final class ModelProbeTask
             throw $e;
         }
 
-        return ['removed' => $removed, 'before' => count($original), 'after' => count($kept), 'backup' => $backup];
+        return [
+            'removed' => $removed,
+            'before' => count($original),
+            'after' => count($kept),
+            'backup' => $backup,
+            'auto_added' => $autoAdded,
+        ];
     }
 }

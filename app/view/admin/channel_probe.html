@@ -4,11 +4,14 @@ $groups = ['ok' => [], 'no_access' => [], 'unroutable' => [], 'inconclusive' => 
 foreach ($results as $row) {
     $groups[$row['classification']][] = $row;
 }
+// 「只上架能真正调用的模型」开着时，「无权限」的含义就是「这不是免费模型」——
+// 这么说站长才能立刻明白该不该下架它（而不是以为是自己配错了）
+$freeOnly = (bool) ($freeOnly ?? true);
 $labels = [
-    'ok' => '可用',
-    'no_access' => '无权限',
+    'ok' => '可用（可上架）',
+    'no_access' => $freeOnly ? '非免费模型（上游说没有权限）' : '无权限',
     'unroutable' => '当前协议不可用',
-    'inconclusive' => '无法判定（保留）',
+    'inconclusive' => $freeOnly ? '无法判定（保留，免费模型只是慢）' : '无法判定（保留）',
 ];
 $status = (string) $task['status'];
 $done = $status === 'completed';
@@ -104,6 +107,10 @@ $statusLabel = $statusLabels[$status] ?? $status;
                                     <?php else: ?>
                                         <div><?= htmlspecialchars((string) $row['model'], ENT_QUOTES, 'UTF-8') ?></div>
                                     <?php endif; ?>
+                                    <?php if ((string) ($row['upstream_model'] ?? '') !== '' && (string) $row['upstream_model'] !== (string) $row['model']): ?>
+                                        <?php /* 配了「模型名映射」时把它显示出来：否则站长会疑惑「我测的是 A，为什么日志里是 B」 */ ?>
+                                        <div class="src">上游实际收到：<code><?= htmlspecialchars((string) $row['upstream_model'], ENT_QUOTES, 'UTF-8') ?></code></div>
+                                    <?php endif; ?>
                                     <div class="src">HTTP <?= (int) $row['http_status'] ?><?= $row['response_summary'] !== '' ? ' · ' . htmlspecialchars((string) $row['response_summary'], ENT_QUOTES, 'UTF-8') : '' ?></div>
                                 </li>
                             <?php endforeach; ?>
@@ -118,6 +125,21 @@ $statusLabel = $statusLabels[$status] ?? $status;
                 <div class="dz-head">确认下架</div>
                 <div class="dz-body">
                     <p class="dz-conseq">只允许下架上方已确认的无权限或当前协议不可用模型。当前模型总数 <b><?= (int) $modelCount ?> → <span id="after-count"><?= max(0, (int) $modelCount - $removable) ?></span></b>，将移除 <b id="remove-count"><?= $removable ?></b> 个。</p>
+                    <?php if ($freeOnly && count($groups['no_access']) > 0): ?>
+                        <p class="dz-conseq">
+                            「只上架能真正调用的模型」已开启：这
+                            <b><?= count($groups['no_access']) ?></b> 个「上游说没有权限」的模型，
+                            按「不是免费模型」处理，<b>即使不勾选也会一起下架</b>。
+                            想保留它们，请先到「配置管理 → 模型上架」关掉这个开关。
+                        </p>
+                    <?php endif; ?>
+                    <?php if (count($groups['inconclusive']) > 0): ?>
+                        <p class="dz-conseq">
+                            另有 <b><?= count($groups['inconclusive']) ?></b> 个模型只是超时或无法判定，
+                            <b>不会</b>被下架 —— 免费上游的模型本来就慢，一次超时不等于不能用。
+                            想确认它们的话，可以单独再测一遍。
+                        </p>
+                    <?php endif; ?>
                     <form id="apply-form" method="post" action="/admin/channels/probe/apply" onsubmit="return confirm('确定下架选中的模型？原始模型清单会先备份。');">
                         <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
                         <input type="hidden" name="id" value="<?= (int) $task['id'] ?>">
