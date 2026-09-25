@@ -157,8 +157,16 @@ if ($modelSet === []) {
 
 $pricingTotal = doctor_count($pdo, 'SELECT COUNT(*) FROM pricing');
 $pricingFree = doctor_count($pdo, "SELECT COUNT(*) FROM pricing WHERE billing_mode = 'free'");
+$pricingPaid = max(0, $pricingTotal - $pricingFree);
 echo '  定价条目          ' . $pricingTotal . '（其中免费 ' . $pricingFree . "）\n";
 echo '  未定价模型        ' . max(0, count($modelSet) - $pricingTotal) . " 个（按 billing.unpriced_is_free 决定是否扣费）\n";
+
+// 「还有没有要花钱的模型」——余额门槛只对它们有意义。
+// 全站免费时，余额为 0 完全不影响调用，诊断里就不该再拿余额说事，
+// 否则会把「一切正常」说成「大家都只能调免费模型」，等于自己制造恐慌
+$unpricedIsFree = (bool) doctor_cfg($settings, 'billing.unpriced_is_free', true);
+$chargeable = $pricingPaid + ($unpricedIsFree ? 0 : max(0, count($modelSet) - $pricingTotal));
+echo '  其中收费模型      ' . $chargeable . " 个（只有这些受余额限制）\n";
 
 // ═══════════════════════════════════════════════════════════
 // 三、下游（用户 / 令牌）
@@ -210,11 +218,12 @@ foreach ($switches as $key => [$label, $default]) {
 // 这是最容易配错、也最难自查的一组组合，单独点出来
 $mode = (string) doctor_cfg($settings, 'site.mode', 'commercial');
 $gift = (float) doctor_cfg($settings, 'register.gift_balance', 0);
-if ($mode === 'commercial' && $requireBalance && $gift <= 0) {
-    $cautions[] = '当前是「收费模式 + 余额为 0 时拒绝调用 + 注册不赠送余额」：'
-        . '新用户注册后余额为 0，**一次都调不通**（用户看到 401，实际是余额不足）。'
+if ($mode === 'commercial' && $requireBalance && $gift <= 0 && $chargeable > 0) {
+    $cautions[] = '当前是「收费模式 + 余额为 0 时拒绝调用 + 注册不赠送余额 + 站内有收费模型」：'
+        . '新用户注册后余额为 0，调那些收费模型会拿到 402「余额不足」'
+        . '（状态码已与 401 分开，不会再让人以为是密钥问题）。'
         . '要么给注册赠送额度（register.gift_balance）、要么手工给用户充值，'
-        . '要么把「余额为 0 时拒绝调用」关掉';
+        . '要么把收费模型设为免费，要么把「余额为 0 时拒绝调用」关掉';
 }
 
 if ((bool) doctor_cfg($settings, 'register.need_verify', true) && !(bool) doctor_cfg($settings, 'mail.enabled', false)) {
@@ -258,10 +267,10 @@ foreach ($tokenRows as $row) {
             $fatal[] = '所属账号已被停用';
         }
         // ⚠️ 余额为 0 **不是**「令牌一定不能用」：免费/未定价模型照样能调。
-        // 早先把这一条也算成「会被拒绝」，于是诊断结论会把「只能调免费模型」
-        // 说成「全都调不通」—— 诊断工具自己把话说重了，比不说更误导
-        if ($requireBalance && (float) $row['balance'] <= 0) {
-            $limited[] = '账号余额为 ' . (float) $row['balance'] . '，调收费模型会被判 402「余额不足」';
+        // 而且只有**站内还存在收费模型**时，余额才可能挡住调用 ——
+        // 全站免费时余额完全不影响，诊断里提它只会造成恐慌
+        if ($requireBalance && $chargeable > 0 && (float) $row['balance'] <= 0) {
+            $limited[] = '账号余额为 ' . (float) $row['balance'] . '，调收费模型会判 402「余额不足」';
         }
     }
 
@@ -300,16 +309,16 @@ if ($blocked !== [] && count($blocked) === $tokenTotal) {
     $problems[] = '**所有令牌都一定被拒** —— 逐条原因见上方「[一定被拒]」列表';
 }
 
-// 余额为 0 且开关开着：这是最常见的「明明 Key 没问题却调不通」
-if ($requireBalance && $userZero > 0 && $userOn > 0) {
+// 余额为 0 且开关开着、且站内确实还有收费模型：这是最常见的「明明 Key 没问题却调不通」
+if ($requireBalance && $chargeable > 0 && $userZero > 0 && $userOn > 0) {
     $cautions[] = sprintf(
-        '有 %d 个启用用户的余额为 0，且 billing.require_balance=true：'
-        . '这些账号**只能调免费/未定价的模型**，调收费模型会被判 402「余额不足」'
-        . '（用户看到的状态码曾经是 401，看起来像密钥坏了，现在已分开）。'
-        . '三条路：把免费模型直接设为免费（定价页可一键设免费）、'
+        '有 %d 个启用用户的余额为 0，且 billing.require_balance=true，站内还有 %d 个收费模型：'
+        . '这些账号调那些收费模型会拿到 402「余额不足」（令牌本身没问题）。'
+        . '三条路：把模型设为免费（定价页有一键「全部设为免费」）、'
         . '给用户充值或设注册赠送额度（register.gift_balance）、'
         . '或把「余额为 0 时拒绝调用」关掉（适合免费站）',
-        $userZero
+        $userZero,
+        $chargeable
     );
 }
 
