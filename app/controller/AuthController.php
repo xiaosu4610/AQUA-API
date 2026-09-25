@@ -97,6 +97,10 @@ class AuthController
         session()->set(self::SESSION_KEY, (int) $result['user']['id']);
         session()->set('user_login_at', time());
 
+        // 防「会话固定」：登录是权限变化点，必须换一个新的会话 ID。
+        // 顺序要求「先写数据、再换 ID」，理由见 AdminController::login 里的说明
+        $request->sessionRegenerateId(true);
+
         return redirect('/console');
     }
 
@@ -263,6 +267,9 @@ class AuthController
         // 不需要验证：直接登录进控制台，并在页面上把令牌明文给他看一次
         session()->set(self::SESSION_KEY, $created['id']);
         session()->set('user_login_at', time());
+
+        // 注册即登录同样是权限变化点，换会话 ID（顺序要求见 AdminController::login）
+        $request->sessionRegenerateId(true);
 
         return $this->view('notice', [
             'title' => '注册成功',

@@ -115,6 +115,14 @@ class AdminController
         session()->set(AdminAuth::SESSION_KEY, 1);
         session()->set(AdminAuth::LOGIN_AT_KEY, time());
 
+        // ④ 防「会话固定」：换一个新的会话 ID，并把旧 ID 连同旧数据一起废弃。
+        //
+        //    ⚠️ 顺序不能反：sessionRegenerateId() 会把**当前会话里的数据**
+        //    复制到新 ID，然后才废弃旧的。所以必须「先写登录标记、再换 ID」；
+        //    反过来写的话登录标记会落在即将被废弃的那个旧 ID 上，
+        //    现象是「登录成功却立刻又跳回登录页」—— 极容易误判成会话配置问题。
+        $request->sessionRegenerateId(true);
+
         return response('', 302, ['Location' => '/admin']);
     }
 
