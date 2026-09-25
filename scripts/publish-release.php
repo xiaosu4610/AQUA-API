@@ -135,6 +135,73 @@ $notes = <<<TEXT
 本次更新要点见仓库提交记录与 tag {$tag}。
 TEXT;
 
+/**
+ * 跑一条 git 命令并取回标准输出（在项目根目录下执行）。
+ *
+ * ⚠️ 不用 shell_exec + escapeshellarg：Windows 上 escapeshellarg 生成的单引号
+ * 在 cmd.exe 里**不是引号**，路径会被当成带引号的字符串，命令直接失败 ——
+ * 失败的表现只是「取不到值」，护栏于是静默失效（实测第一次写就是这样：
+ * `git -C '...' rev-parse HEAD` 报「找不到路径」，护栏等于没装）。
+ * 用 proc_open 指定 cwd，两个平台都稳。
+ */
+function release_git_output(string $command): string
+{
+    $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+    $process = proc_open($command, $descriptors, $pipes, aqua_root());
+
+    if (!is_resource($process)) {
+        return '';
+    }
+
+    fclose($pipes[0]);
+    $output = (string) stream_get_contents($pipes[1]);
+    fclose($pipes[1]);
+    fclose($pipes[2]);
+    proc_close($process);
+
+    return trim($output);
+}
+
+/**
+ * 远端分支当前指向哪个提交（取不到返回空串）。
+ *
+ * 用它做发布前的护栏：平台的「创建 Release」接口在标签不存在时
+ * 会**拿默认分支的当前提交**建标签 —— 如果本地还没 push，
+ * 发行版的源码标签就指到了旧提交上，而发布脚本自己一无所知。
+ * 这个坑踩过一次：包里是 0.2.5 的代码，tag v0.2.5 却指向了旧提交。
+ */
+function release_remote_head(string $host, string $repo, string $branch = 'main'): string
+{
+    $output = release_git_output('git ls-remote https://' . $host . '/' . $repo . '.git refs/heads/' . $branch);
+    $parts = preg_split('/\s+/', $output ?: '');
+
+    return (string) ($parts[0] ?? '');
+}
+
+$localHead = release_git_output('git rev-parse HEAD');
+$unpushed = [];
+
+if (!$dryRun && $localHead !== '') {
+    foreach ([
+        'gitee.com' => 'xiaosu4610/aqua-api-php',
+        'github.com' => 'xiaosu4610/AQUA-API-PHP',
+    ] as $host => $repo) {
+        $remote = release_remote_head($host, $repo);
+        if ($remote !== '' && $remote !== $localHead) {
+            $unpushed[] = "{$host}（远端 " . substr($remote, 0, 7) . '，本地 ' . substr($localHead, 0, 7) . '）';
+        }
+    }
+
+    if ($unpushed !== [] && !isset($args['allow-unpushed'])) {
+        fwrite(STDERR, "\n发布中止：远端分支上还没有你这次的提交 ——\n  " . implode("\n  ", $unpushed) . "\n\n");
+        fwrite(STDERR, "平台的建标签动作会落在**远端当前提交**上，于是发行版挂着的源码标签\n");
+        fwrite(STDERR, "指的不是你这个版本（包里是新的、tag 是旧的）。请先：\n");
+        fwrite(STDERR, "    git push origin main          # 必要时 AQUA_ALLOW_MAIN_PUSH=1\n");
+        fwrite(STDERR, "再重新发布。确实要先发后推时加 --allow-unpushed。\n");
+        exit(1);
+    }
+}
+
 echo "════════════════════════════════════════════════════════\n";
 echo "发布发行版 {$version}\n";
 echo "════════════════════════════════════════════════════════\n";
@@ -246,6 +313,32 @@ foreach ($targets as $target) {
     }
 
     // ② 上传附件
+    //
+    // ⚠️ 先查一下这个 Release 上已经有哪些附件：重复发布（例如为了补 tag
+    //    再跑一次脚本）时，GitHub 会回 422 already_exists，
+    //    而 **Gitee 会老老实实再传一份同名附件** ——
+    //    结果是发行页上挂着两份一模一样的 zip，看着像发布出了问题。
+    $existingAssets = [];
+    $assetList = release_http(
+        'GET',
+        $isGitee
+            ? $api . '/releases/' . $releaseId . '?access_token=' . rawurlencode($target['token'])
+            : $api . '/releases/' . $releaseId,
+        $isGitee ? [] : $authHeader
+    );
+    foreach ((array) (json_decode($assetList['body'], true)['assets'] ?? []) as $asset) {
+        $existingAssets[(string) ($asset['name'] ?? '')] = true;
+    }
+
+    $wanted = [basename($zip), basename($shaFile)];
+    $missing = array_values(array_filter($wanted, static fn (string $name): bool => !isset($existingAssets[$name])));
+
+    if ($missing === []) {
+        echo '  附件已存在（' . implode('、', $wanted) . "），跳过上传\n";
+
+        continue;
+    }
+
     if ($isGitee) {
         $upload = release_http(
             'POST',
@@ -270,18 +363,20 @@ foreach ($targets as $target) {
         : "  附件上传返回 HTTP {$upload['code']}：" . mb_substr($upload['body'], 0, 200) . "\n";
 
     // ③ 同时把 .sha256 也传上去（便于下载后校验）
-    if ($isGitee) {
-        $uploadSha = release_http('POST', $api . '/releases/' . $releaseId . '/attach_files?access_token=' . rawurlencode($target['token']), [], null, $shaFile);
-    } else {
-        $uploadSha = release_http(
-            'POST',
-            'https://uploads.github.com/repos/' . $repo . '/releases/' . $releaseId . '/assets?name=' . rawurlencode(basename($shaFile)),
-            $authHeader + ['Content-Type: application/octet-stream'],
-            null,
-            $shaFile
-        );
+    if (!isset($existingAssets[basename($shaFile)])) {
+        if ($isGitee) {
+            $uploadSha = release_http('POST', $api . '/releases/' . $releaseId . '/attach_files?access_token=' . rawurlencode($target['token']), [], null, $shaFile);
+        } else {
+            $uploadSha = release_http(
+                'POST',
+                'https://uploads.github.com/repos/' . $repo . '/releases/' . $releaseId . '/assets?name=' . rawurlencode(basename($shaFile)),
+                $authHeader + ['Content-Type: application/octet-stream'],
+                null,
+                $shaFile
+            );
+        }
+        echo $uploadSha['code'] < 300 ? "  校验文件已上传\n" : "  校验文件上传返回 HTTP {$uploadSha['code']}\n";
     }
-    echo $uploadSha['code'] < 300 ? "  校验文件已上传\n" : "  校验文件上传返回 HTTP {$uploadSha['code']}\n";
 }
 
 echo "\n完成。发布页：\n";
