@@ -38,6 +38,12 @@ include __DIR__ . '/../admin/_style.html';
     .auth-card button.primary { width: 100%; justify-content: center; padding: 11px; font-size: 15px; }
     .auth-foot { margin-top: 20px; padding-top: 16px; border-top: 1px solid #e3e8ef; font-size: 12.5px; color: #6b7d8f; }
     .auth-foot a { color: #0a7f9c; }
+    /* 验证码一行：输入框吃掉剩余宽度、按钮固定宽度并在手机上也留在同一行。
+       把「获取验证码」挤到下一行会让人以为它是另一个动作 */
+    .code-row { display: flex; gap: 8px; align-items: stretch; }
+    .code-row input { flex: 1 1 auto; min-width: 0; letter-spacing: 2px; }
+    .code-row button { flex: 0 0 auto; white-space: nowrap; }
+    .code-row button[disabled] { opacity: .6; cursor: not-allowed; }
     .token-box {
         display: block; width: 100%; margin: 8px 0 4px; padding: 12px 13px;
         background: #f6f9fb; border: 1px dashed #cdd5df; border-radius: 9px;

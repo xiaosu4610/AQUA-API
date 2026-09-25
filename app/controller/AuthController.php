@@ -30,6 +30,7 @@ declare(strict_types=1);
 namespace app\controller;
 
 use app\common\Csrf;
+use app\common\EmailCode;
 use app\common\EmailVerifier;
 use app\common\Mailer;
 use app\common\Settings;
@@ -222,20 +223,46 @@ class AuthController
             }
         }
 
-        // ── 是否需要邮箱验证 ──
-        // 需要验证、但邮件服务没配好 → 直接视为已验证（见文件头说明）
+        // ── 邮箱验证码 ──
+        //
+        // 开关在后台「配置管理 → 注册」里（register.need_verify，默认开）。
+        // 开启且邮件服务可用时：**必须填对验证码才能注册**，
+        // 填对即视为邮箱已验证 —— 不再另发「点链接」的邮件，
+        // 让用户为同一件事验证两遍是很糟的体验。
+        //
+        // 邮件服务没配好时（站长刚部署、SMTP 还没填）不阻断注册：
+        // 否则一个人都注册不进来，而问题的根因在站长那边。
+        // 这种情况记一条 warning，站长在日志里能看到。
+        $verifyWanted = Settings::bool('register.need_verify', true);
         $mailReady = Mailer::enabled();
-        $needVerify = Settings::bool('register.need_verify', true) && $mailReady;
+        $codeRequired = $verifyWanted && $mailReady;
 
-        if (Settings::bool('register.need_verify', true) && !$mailReady) {
-            Log::warning('注册要求邮箱验证，但邮件服务未配置或未启用 —— 本次注册已直接完成验证，请尽快配置 SMTP');
+        if ($verifyWanted && !$mailReady) {
+            Log::warning('注册要求邮箱验证，但邮件服务未配置或未启用 —— 本次注册已直接放行，请尽快配置 SMTP');
         }
 
+        if ($codeRequired) {
+            $codeCheck = EmailCode::verify(
+                $email,
+                EmailCode::PURPOSE_REGISTER,
+                (string) $request->post('email_code', '')
+            );
+
+            if (!$codeCheck['ok']) {
+                return $this->registerFormError($request, $codeCheck['message'], $email, $invite);
+            }
+        }
+
+        // 第四个参数是「建出来的账号是否处于未验证状态」。
+        // 这里恒传 false（= 建出来就是已验证的）：走到这一行时，
+        // 要么验证码已经验过（邮箱已被证明可用），要么根本没要求验证，
+        // 要么邮件服务不可用（沿用的兜底：宁可少一道验证，也不能让所有人注册不进来）。
+        // 传 true 会建出一个「未验证且收不到验证信」的账号 —— 那等于把人锁在门外。
         $created = User::register(
             $email,
             $password,
             $request->getRealIp() ?: 'unknown',
-            $needVerify,
+            false,
             Settings::float('register.gift_balance', 0.0)
         );
 
@@ -251,18 +278,9 @@ class AuthController
             Settings::float('register.default_token_quota', 0.0)
         );
 
-        if ($needVerify) {
-            $this->sendVerifyMail($email, $created['verifyToken']);
-
-            return $this->view('notice', [
-                'title' => '注册成功，请验证邮箱',
-                'message' => '我们已向 ' . $email . ' 发送了一封验证邮件，'
-                    . '点击邮件里的链接即可激活账号。'
-                    . "\n" . '若长时间没收到，请检查垃圾邮件文件夹。',
-                'ok' => true,
-                'extra' => '提示：验证完成后即可用邮箱与密码登录。',
-            ]);
-        }
+        // 说明：注册不再发送「验证链接」邮件（改由验证码完成）。
+        // /verify 路由与 User::markVerified 仍然保留 ——
+        // 早前注册、链接还没点的用户需要它才能激活账号，不能因为改了流程就把他们锁在门外。
 
         // 不需要验证：直接登录进控制台，并在页面上把令牌明文给他看一次
         session()->set(self::SESSION_KEY, $created['id']);
@@ -422,8 +440,86 @@ class AuthController
     // ═══════════════════════════════════════════════════════════
 
     /**
-     * 注册表单出错：带着已填内容回到表单，省得用户重打一遍。
+     * POST /register/code —— 发送注册用的邮箱验证码（注册页的「获取验证码」按钮）。
+     *
+     * 返回 JSON 而不是跳转页：这是注册页上的一次异步动作，
+     * 用户不该因为「要个验证码」就丢掉已经填好的密码与邀请码。
+     *
+     * 这里做三件事，顺序不能变：
+     *   ① 注册没开放 / 不需要验证 / 邮件服务不可用 → 直接告诉前端别显示这个按钮
+     *   ② 邮箱格式与真实性检查（与注册时同一套，宁可先挡掉无效地址，
+     *      也不要往它们发信 —— 退信率会拖垮整个发信通道）
+     *   ③ 交给 EmailCode 做限流 + 发码
      */
+    public function sendRegisterCode(Request $request): Response
+    {
+        $json = static function (bool $ok, string $message, int $retryAfter = 0): Response {
+            return response(
+                (string) json_encode(
+                    ['ok' => $ok, 'message' => $message, 'retryAfter' => $retryAfter],
+                    JSON_UNESCAPED_UNICODE
+                ),
+                200,
+                ['Content-Type' => 'application/json; charset=utf-8', 'Cache-Control' => 'no-store']
+            );
+        };
+
+        if (!Csrf::check($request->post('_csrf'))) {
+            return $json(false, '页面已过期，请刷新后重试');
+        }
+
+        if (!Settings::bool('register.open', false)) {
+            return $json(false, '本站当前不开放自助注册');
+        }
+
+        if (!Settings::bool('register.need_verify', true)) {
+            return $json(false, '本站未开启邮箱验证，无需获取验证码');
+        }
+
+        if (!Mailer::enabled()) {
+            return $json(false, '本站的邮件服务尚未配置，暂时无法发送验证码');
+        }
+
+        $email = trim((string) $request->post('email', ''));
+        if (!User::isValidEmail($email)) {
+            return $json(false, '请先填写正确的邮箱地址');
+        }
+
+        if (Settings::bool('register.verify_email', true)) {
+            $check = EmailVerifier::verify($email);
+            if ($check['result'] === EmailVerifier::INVALID) {
+                return $json(false, $check['message']);
+            }
+        }
+
+        $issued = EmailCode::issue(
+            $email,
+            EmailCode::PURPOSE_REGISTER,
+            $request->getRealIp() ?: 'unknown'
+        );
+
+        if (!$issued['ok']) {
+            return $json(false, $issued['message'], (int) $issued['retryAfter']);
+        }
+
+        $html = Mailer::template('邮箱验证码', [
+            '你好，',
+            '你的邮箱验证码是：' . $issued['code'],
+            '验证码 10 分钟内有效。请勿把它转发给任何人 —— 拿到它就能用这个邮箱注册账号。',
+            '如果不是你本人操作，忽略这封邮件即可。',
+        ]);
+
+        $result = Mailer::send($email, '邮箱验证码', $html);
+        if (!$result['ok']) {
+            Log::error("向 {$email} 发送注册验证码失败：" . $result['error']);
+
+            return $json(false, '验证码发送失败，请稍后重试或联系站长');
+        }
+
+        return $json(true, '验证码已发送，请查收邮件（注意垃圾邮件文件夹）', (int) $issued['retryAfter']);
+    }
+
+    /** 注册表单出错：带着已填内容回到表单，省得用户重打一遍。 */
     private function registerFormError(Request $request, string $error, string $email = '', string $invite = ''): Response
     {
         return $this->view('register', [
@@ -434,11 +530,6 @@ class AuthController
             'needInvite' => trim((string) Settings::get('register.invite_code', '')) !== '',
             'mailReady' => Mailer::enabled(),
         ]);
-    }
-
-    private function sendVerifyMail(string $email, string $token): void
-    {
-        $this->sendMail($email, '验证你的邮箱', '点击下面的按钮完成邮箱验证', $token, 'verify', '验证邮箱');
     }
 
     private function sendResetMail(string $email, string $token): void

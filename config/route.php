@@ -59,6 +59,8 @@ Route::get('/login', [AuthController::class, 'loginPage']);
 Route::post('/login', [AuthController::class, 'login']);
 Route::get('/register', [AuthController::class, 'registerPage']);
 Route::post('/register', [AuthController::class, 'register']);
+// 注册页的「获取验证码」：异步发信，返回 JSON，不跳页（否则用户填好的表单会丢）
+Route::post('/register/code', [AuthController::class, 'sendRegisterCode']);
 Route::get('/verify', [AuthController::class, 'verify']);
 Route::get('/forgot', [AuthController::class, 'forgotPage']);
 Route::post('/forgot', [AuthController::class, 'forgot']);

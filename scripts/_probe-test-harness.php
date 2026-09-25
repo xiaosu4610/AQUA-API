@@ -75,7 +75,12 @@ function probe_test_report(): int
 
 function probe_test_temp(string $tag, string $suffix = '.tmp'): string
 {
-    $path = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'aqua-probe-' . $tag . '-' . getmypid() . $suffix;
+    // 加一个自增序号：同一个脚本里可能多次起服务（例如「开关打开」与「开关关闭」两次），
+    // 若文件名只按 pid 生成，第二次会撞上还被前一个进程占着的同名日志文件，
+    // 报 “Failed to open stream: Permission denied”
+    $GLOBALS['probeTestTempSeq'] = (int) ($GLOBALS['probeTestTempSeq'] ?? 0) + 1;
+    $path = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'aqua-probe-' . $tag . '-'
+        . getmypid() . '-' . $GLOBALS['probeTestTempSeq'] . $suffix;
     foreach (['', '-wal', '-shm'] as $tail) {
         if (is_file($path . $tail)) {
             @unlink($path . $tail);

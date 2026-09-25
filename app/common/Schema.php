@@ -37,7 +37,7 @@ use Throwable;
 final class Schema
 {
     /** 当前期望的表结构版本。新增迁移时递增。 */
-    public const VERSION = 11;
+    public const VERSION = 12;
 
     /**
      * 确保表结构存在且为最新版本。
@@ -96,6 +96,10 @@ final class Schema
 
         if ($current < 11) {
             self::createV11();
+        }
+
+        if ($current < 12) {
+            self::createV12();
         }
 
         Settings::put('schema_version', (string) self::VERSION);
@@ -552,6 +556,40 @@ final class Schema
     private static function createV11(): void
     {
         self::addColumnIfMissing('channel_model_probe_results', 'latency_ms', 'INTEGER NOT NULL DEFAULT 0');
+    }
+
+    /**
+     * v12：邮箱验证码。
+     *
+     * 为什么需要一张表，而不是把验证码放在会话里：
+     *   会话只活在「发码的那个浏览器」上 —— 用户在手机上申请、在电脑上填写就废了；
+     *   而注册这一步本来就常常发生在换设备/换网络的情况下。
+     *   放数据库还能顺便做限流（同一个邮箱/IP 每小时能发几次），
+     *   这是防「拿别人邮箱刷验证码」的关键。
+     *
+     * 只存**验证码的哈希**，不存明文：即使数据库被读走，
+     * 也无法直接拿去通过别人的注册验证（与用户密码同一原则）。
+     */
+    private static function createV12(): void
+    {
+        $pdo = Db::pdo();
+        $autoId = self::autoId();
+
+        $pdo->exec(<<<SQL
+            CREATE TABLE IF NOT EXISTS email_codes (
+                id         {$autoId},
+                email      VARCHAR(191) NOT NULL,
+                purpose    VARCHAR(32)  NOT NULL,
+                code_hash  VARCHAR(64)  NOT NULL,
+                ip         VARCHAR(64)  NOT NULL,
+                attempts   INTEGER      NOT NULL DEFAULT 0,
+                expires_at INTEGER      NOT NULL,
+                used_at    INTEGER      NULL,
+                created_at INTEGER      NOT NULL
+            )
+        SQL);
+
+        self::createIndexIfMissing('email_codes', 'idx_email_codes_lookup', ['email', 'purpose']);
     }
 
     /**
