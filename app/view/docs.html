@@ -211,10 +211,39 @@ data: [DONE]</pre>
             <h2>错误码与处理建议</h2>
             <table class="doc">
                 <tr><th style="width:18%">状态码</th><th>含义与建议动作</th></tr>
-                <tr><td><b>401</b></td><td>令牌缺失/无效/已停用。检查 <code>Authorization</code> 头与令牌状态。</td></tr>
-                <tr><td><b>402 / 403</b></td><td>余额不足、令牌额度用尽，或该令牌不允许调用这个模型。去控制台看余额与令牌的模型白名单。</td></tr>
+                <tr>
+                    <td><b>401</b><br><code>invalid_api_key</code></td>
+                    <td>
+                        令牌缺失、无效、已停用或已过期。<b>只需检查密钥本身</b>：
+                        确认用的是本站令牌（以 <code>sk-aqua-</code> 开头）、复制时没带空格或换行、
+                        请求头是 <code>Authorization: Bearer &lt;令牌&gt;</code>。
+                    </td>
+                </tr>
+                <tr>
+                    <td><b>402</b><br><code>insufficient_balance</code></td>
+                    <td>
+                        <b>令牌是好的，余额不够。</b>去<a href="/console">控制台</a>看余额，
+                        充值（或在「用量报表」里确认消费）后即可继续调用。
+                        这一条与 401 分开，就是为了不让人拿着好密钥反复排查。
+                    </td>
+                </tr>
+                <tr>
+                    <td><b>403</b><br><code>insufficient_quota</code><br><code>account_disabled</code><br><code>model_not_allowed</code></td>
+                    <td>
+                        令牌额度已用完（可到控制台「清额度」或新建令牌）、账号被站长停用、
+                        或该令牌的模型白名单里没有这个模型。
+                    </td>
+                </tr>
                 <tr><td><b>404</b></td><td>模型名不存在或当前渠道不支持。用 <code>/v1/models</code> 取准确名称。</td></tr>
+                <tr>
+                    <td><b>401 / 403</b><br>且 <code>type</code> 为 <code>upstream_error</code></td>
+                    <td>
+                        <b>这不是你的问题</b>：本站到上游的请求被拒了（上游把我们的密钥停了、或该模型对本站账号无权限）。
+                        本站会自动换渠道/换密钥重试，仍失败请把报错发给站长。
+                    </td>
+                </tr>
                 <tr><td><b>429</b></td><td>触发上游或本站限流。稍后重试，或降低并发。</td></tr>
+                <tr><td><b>503</b></td><td>当前没有可用渠道服务这个模型（渠道被禁用或熔断）。请稍后重试或联系站长。</td></tr>
                 <tr><td><b>5xx</b></td><td>上游异常。本站会自动换渠道重试；仍失败时请稍后再试。</td></tr>
                 <tr><td><b>超时</b></td><td>模型响应慢（免费渠道常见）。把客户端超时调到 60-120 秒，或换响应更快的模型。</td></tr>
             </table>
@@ -251,7 +280,9 @@ data: [DONE]</pre>
                 <li>
                     <b>「401 了怎么排查？」</b><br>
                     先确认令牌没被停用、没有写错（复制时别带空格）；再确认请求头是
-                    <code>Authorization: Bearer &lt;令牌&gt;</code>，而不是 <code>api-key</code>。
+                    <code>Authorization: Bearer &lt;令牌&gt;</code>，而不是 <code>api-key</code>。<br>
+                    如果错误里写的是<b>余额不足</b>，那是 <b>402</b> 不是密钥问题 ——
+                    去控制台充值即可，令牌不用换。
                 </li>
                 <li>
                     <b>「同一个账号多人用会互相影响吗？」</b><br>

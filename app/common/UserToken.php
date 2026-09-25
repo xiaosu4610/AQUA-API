@@ -171,42 +171,72 @@ final class UserToken
      * 最容易漏的就是「令牌有效但用户已被停用」这一条：
      * 站长停用了某个用户，如果只校验令牌，那个用户照旧能用。
      *
-     * @return array{ok:bool, reason:string, token:array<string,mixed>|null, user:array<string,mixed>|null}
+     * ═══ 为什么失败原因要带上状态码 ═══
+     *
+     * 早先的实现把所有失败都回成 401 + `invalid_api_key`，
+     * 于是「余额不足」也会显示成「API Key 错误」——
+     * 用户拿着一个好端端的令牌反复检查、重发、怀疑是本站的问题，
+     * 而真正要做的只是充值。这不是文案问题，是把人引到了错误的方向。
+     * 现在按 OpenAI 的惯例区分：
+     *   · 401 invalid_api_key      令牌本身有问题（缺失/无效/停用/过期）
+     *   · 402 insufficient_balance 余额不足（令牌是好的）
+     *   · 403 insufficient_quota   令牌额度用完 / 账号被停用
+     *
+     * @return array{ok:bool, reason:string, token:array<string,mixed>|null,
+     *               user:array<string,mixed>|null, status:int, code:string, type:string}
      */
     public static function authorize(string $plain): array
     {
-        $fail = static fn (string $reason): array => [
+        $fail = static fn (
+            string $reason,
+            int $status = 401,
+            string $code = 'invalid_api_key',
+            string $type = 'invalid_request_error'
+        ): array => [
             'ok' => false, 'reason' => $reason, 'token' => null, 'user' => null,
+            'status' => $status, 'code' => $code, 'type' => $type,
         ];
 
         $token = self::findByPlain($plain);
 
         if ($token === null) {
-            return $fail('令牌无效');
+            return $fail('令牌无效：请确认用的是本站令牌（以 sk-aqua- 开头），且复制时没有多余空格或换行');
         }
 
         $usable = self::usable($token);
         if (!$usable['ok']) {
-            return $fail($usable['reason']);
+            // 额度用尽属于「配额」而不是「密钥坏了」：换一把令牌或清额度就能解决
+            $isQuota = $usable['reason'] === '令牌额度已用完';
+
+            return $fail(
+                $usable['reason'],
+                $isQuota ? 403 : 401,
+                $isQuota ? 'insufficient_quota' : 'invalid_api_key',
+                $isQuota ? 'insufficient_quota' : 'invalid_request_error'
+            );
         }
 
         $user = User::find((int) $token['user_id']);
 
         if ($user === null) {
-            return $fail('令牌所属的用户不存在');
+            return $fail('令牌所属的用户不存在（账号可能已注销）');
         }
 
         if ((int) $user['status'] !== User::STATUS_ENABLED) {
-            return $fail('账号已被停用，请联系站长');
+            return $fail('账号已被停用，请联系站长', 403, 'account_disabled');
         }
 
-        // 是否允许「余额为 0 也放行」由站长决定：
-        // 商业站必须拒绝（否则等于免费送额度），公益站可以放行
-        if (Settings::bool('billing.require_balance', true) && (float) $user['balance'] <= 0) {
-            return $fail('余额不足，请先充值');
-        }
+        // ⚠️ 余额检查**不在这里**，而在调用方（OpenAiController::chatCompletions）。
+        //
+        // 原因：余额门槛只该拦住「要花钱的调用」。鉴权阶段还不知道用户要调哪个模型，
+        // 若在这里一刀切，就会出现「全都调用免费模型、余额为 0、于是谁都调不通」——
+        // 生产上就是这么炸的（27 个模型全是免费上游，28 个用户余额 0）。
+        // 判定「这个模型收不收费」需要定价信息，因此挪到看得到模型的地方。
 
-        return ['ok' => true, 'reason' => '', 'token' => $token, 'user' => $user];
+        return [
+            'ok' => true, 'reason' => '', 'token' => $token, 'user' => $user,
+            'status' => 200, 'code' => '', 'type' => '',
+        ];
     }
 
     /**

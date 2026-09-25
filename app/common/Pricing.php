@@ -306,6 +306,31 @@ final class Pricing
     // ═══════════════════════════════════════════════════════════
 
     /**
+     * 这次调用会不会向用户收费？
+     *
+     * 为什么需要单独一个方法：**余额门槛只该拦「要花钱的调用」**。
+     * 用一个 0 元的免费模型去卡余额是没道理的 —— 生产上真实出现过这种局面：
+     * 上游全是免费模型（NVIDIA 免费层）、用户余额全是 0，
+     * 于是所有人都收到「余额不足 / 401」，看起来像本站的密钥系统坏了。
+     *
+     * 判定口径：
+     *   · 未定价 → 按 billing.unpriced_is_free 决定（默认按免费处理）
+     *   · billing_mode = free → 不收费
+     *   · token / call / subscription → 要收费（订阅制向用户仍按 token 计费，
+     *     见 quote() 的说明）
+     *
+     * @param array<string, mixed>|null $pricing 定价行；null 表示未定价
+     */
+    public static function isChargeable(?array $pricing, bool $unpricedIsFree = true): bool
+    {
+        if ($pricing === null) {
+            return !$unpricedIsFree;
+        }
+
+        return (string) ($pricing['billing_mode'] ?? self::MODE_TOKEN) !== self::MODE_FREE;
+    }
+
+    /**
      * 算出一次请求的上游成本与下游售价。
      *
      * 计算规则（这是整个计费的核心，逐条说明为什么）：

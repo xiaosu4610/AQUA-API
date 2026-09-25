@@ -8,7 +8,8 @@
  *
  * ═══ 这一层只做三件事 ═══
  *
- *   1. **鉴权与准入**：令牌是否有效、账号是否可用、余额够不够、模型是否在白名单内；
+ *   1. **鉴权与准入**：令牌是否有效、账号是否可用、这个模型收不收费且余额够不够、
+ *      模型是否在白名单内；
  *   2. **选路**：按模型挑渠道、从密钥池取 Key、构造上游请求；
  *   3. **交给引擎**：把「搬字节」这件事交给 RelayEngine，本控制器随即返回。
  *
@@ -35,6 +36,7 @@ use app\common\Pricing;
 use app\common\RelayEngine;
 use app\common\RelayJob;
 use app\common\Settings;
+use app\common\User;
 use app\common\UserToken;
 use support\Request;
 use support\Response;
@@ -161,6 +163,24 @@ class OpenAiController
                 "模型 {$model} 尚未定价，本站当前不允许调用未定价的模型",
                 'invalid_request_error',
                 'model_not_priced'
+            );
+        }
+
+        // ── 3.1 余额门槛（只拦收费模型）──
+        //
+        // 为什么放在这里而不是鉴权里：这里才知道「这次调用收不收费」。
+        // 免费模型（billing_mode=free 或未定价按免费处理）即使余额为 0 也放行 ——
+        // 用 0 元的调用去卡余额没有意义，而生产上正是这样把所有人卡住的：
+        // 上游全是免费模型，用户余额全是 0，于是「人人 401 / 余额不足」。
+        if (Settings::bool('billing.require_balance', true)
+            && Pricing::isChargeable($pricing, Settings::bool('billing.unpriced_is_free', true))
+            && (float) $user['balance'] <= 0) {
+            return $this->error(
+                402,
+                '余额不足：当前余额 ' . User::money((float) $user['balance'])
+                . "。模型 {$model} 是收费的，充值后即可调用；本站的免费模型不受余额限制",
+                'insufficient_quota',
+                'insufficient_balance'
             );
         }
 
@@ -385,6 +405,15 @@ class OpenAiController
     /**
      * 校验调用令牌。
      *
+     * ⚠️ 失败的**状态码不能一律用 401**：鉴权失败有很多种，
+     * 用户要采取的动作完全不同 ——
+     *   · 401 → 去检查/重新复制令牌
+     *   · 402 → 去充值
+     *   · 403 → 去换令牌 / 找站长解封
+     * 全回 401（并把 code 写成 invalid_api_key）会让「余额不足」看起来
+     * 像「密钥错了」，用户就会一直卡在验证密钥上。状态码由
+     * UserToken::authorize() 一并给出，这里只负责透传。
+     *
      * @return array{ok:bool, response:Response|null, token:array<string,mixed>|null, user:array<string,mixed>|null}
      */
     private function authenticate(Request $request): array
@@ -410,7 +439,12 @@ class OpenAiController
         if (!$result['ok']) {
             return [
                 'ok' => false,
-                'response' => $this->error(401, $result['reason'], 'invalid_request_error', 'invalid_api_key'),
+                'response' => $this->error(
+                    (int) ($result['status'] ?? 401),
+                    $result['reason'],
+                    (string) ($result['type'] ?? 'invalid_request_error'),
+                    (string) ($result['code'] ?? 'invalid_api_key')
+                ),
                 'token' => null,
                 'user' => null,
             ];

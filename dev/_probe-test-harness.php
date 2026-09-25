@@ -245,7 +245,17 @@ if (str_starts_with($model, 'slow-')) {
     return;
 }
 if (str_starts_with($model, 'ok-')) {
-    echo '{"choices":[{"message":{"content":"hi"}}]}';
+    // 客户端要流式就回真正的 SSE：转发引擎对 SSE 与非流式走的是不同分支，
+    // 拿一个 JSON 体冒充 SSE 会把「流式链路」测成假的
+    if (!empty($decoded['stream'])) {
+        header('Content-Type: text/event-stream');
+        echo 'data: {"id":"mock","choices":[{"delta":{"content":"hi"}}]}' . "\n\n";
+        echo 'data: {"id":"mock","choices":[{"delta":{},"finish_reason":"stop"}],'
+            . '"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}' . "\n\n";
+        echo "data: [DONE]\n\n";
+        return;
+    }
+    echo '{"id":"mock","choices":[{"message":{"content":"hi"}}],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}';
     return;
 }
 if (str_starts_with($model, 'denied-')) {
