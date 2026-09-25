@@ -162,7 +162,9 @@
 
     /* ── 表单控件 ───────────────────────────────────────── */
     .field { margin-bottom: 18px; }
-    .lbl { font-size: 12px; color: var(--muted); margin-bottom: 6px; font-weight: 500; }
+    /* display:block 是必须的：标签现在写成 <label>（为了读屏与点击聚焦），
+       而 label 默认是行内元素，不加这条会与输入框挤在同一行 */
+    .lbl { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; font-weight: 500; }
     .tip { font-size: 12px; color: var(--muted); margin-top: 5px; }
 
     /* 所有「填字」类输入框统一成同一副样子。
@@ -380,8 +382,18 @@
     .skeleton.line { height: 12px; margin: var(--sp-2) 0; }
     .skeleton.cell { height: 12px; }
     @keyframes sk { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
-    /* 尊重系统的「减少动态效果」设置 */
-    @media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
+    /* 尊重系统的「减少动态效果」设置。
+       除了骨架屏，入场/悬停这类动效也一并关掉：这个偏好是给人用的，
+       多半意味着「动起来会让我不舒服」，不该只关一半 */
+    @media (prefers-reduced-motion: reduce) {
+        .skeleton { animation: none; }
+        *, *::before, *::after {
+            animation-duration: .01ms !important;
+            animation-delay: 0ms !important;
+            animation-iteration-count: 1 !important;
+            transition-duration: .01ms !important;
+        }
+    }
 
     /* 空态必须给**下一步动作** —— 只写「暂无数据」等于把用户丢在原地 */
     .empty .empty-ico { color: #b6c3d0; }
@@ -513,4 +525,48 @@
         position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
         overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
     }
+
+    /* ══════════════════════════════════════════════════════
+       动效：只做三件事 —— 入场、悬停、状态变化
+       ══════════════════════════════════════════════════════
+       后台是每天要看很多遍的工具，动效的职责是让人**感知到变化**
+       （这个块是新出来的、这个数字是个可点的、这里刚更新了），
+       而不是表演。所以：幅度小、时长短、不做无限循环的装饰动画。 */
+
+    @keyframes aqua-fade-up { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+    @keyframes aqua-slide-in { from { opacity: 0; transform: translateX(-6px); } to { opacity: 1; transform: none; } }
+
+    .page-head { animation: aqua-fade-up .26s ease-out both; }
+    section { animation: aqua-fade-up .3s ease-out both; }
+    /* 依次入场：自上而下形成顺序感，而不是一坨东西同时闪出来 */
+    section:nth-of-type(2) { animation-delay: .04s; }
+    section:nth-of-type(3) { animation-delay: .08s; }
+    section:nth-of-type(4) { animation-delay: .12s; }
+    section:nth-of-type(n+5) { animation-delay: .16s; }
+
+    /* 提示条从左侧滑入：它是「刚刚发生了什么」的报告，值得被注意到 */
+    .alert { animation: aqua-slide-in .26s ease-out both; }
+
+    /* 汇总卡可悬停：让人知道它是可以数的、可以对着看的 */
+    .stat { transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease; }
+    .stat:hover { transform: translateY(-2px); box-shadow: 0 5px 14px rgba(16, 24, 40, .07); }
+
+    tbody tr { transition: background .14s ease; }
+    tbody tr:hover { background: #f6fafe; }
+
+    button, a.ghost, a.primary, .tab, a.ghost.sm, a.primary.sm {
+        transition: background .16s ease, color .16s ease, border-color .16s ease,
+                    transform .12s ease, box-shadow .16s ease;
+    }
+    button:not(:disabled):hover { box-shadow: 0 2px 8px rgba(16, 24, 40, .07); }
+    button:not(:disabled):active, a.ghost:active, .tab:active { transform: translateY(1px); box-shadow: none; }
+    button:disabled { cursor: not-allowed; opacity: .55; }
+
+    /* 键盘可达性：只在键盘操作时画焦点环，鼠标点击不画 */
+    a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+        outline: 2px solid var(--accent); outline-offset: 2px;
+    }
+
+    /* 折叠区展开的过渡：details 原生是瞬间展开，这里给个轻微的下落感 */
+    details.adv > summary { transition: color .16s ease, background .16s ease; }
 </style>

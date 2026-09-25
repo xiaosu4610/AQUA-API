@@ -47,16 +47,17 @@
     <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
 
     <div class="field">
-        <div class="lbl">邮箱</div>
+        <?php /* 标签一律用 <label for>：读屏软件靠它念出字段名，点标签也能聚焦输入框 */ ?>
+        <label class="lbl" for="email-input">邮箱</label>
         <input type="email" name="email" id="email-input" required autocomplete="username"
                value="<?= htmlspecialchars((string) ($email ?? ''), ENT_QUOTES, 'UTF-8') ?>">
     </div>
 
     <?php if (!empty($needVerify) && !empty($mailReady)): ?>
         <div class="field">
-            <div class="lbl">邮箱验证码</div>
+            <label class="lbl" for="email-code">邮箱验证码</label>
             <div class="code-row">
-                <input type="text" name="email_code" inputmode="numeric" autocomplete="one-time-code"
+                <input type="text" name="email_code" id="email-code" inputmode="numeric" autocomplete="one-time-code"
                        maxlength="6" placeholder="邮件里的 6 位数字" required>
                 <button type="button" class="ghost" id="code-btn">获取验证码</button>
             </div>
@@ -65,19 +66,19 @@
     <?php endif; ?>
 
     <div class="field">
-        <div class="lbl">密码（至少 8 位）</div>
-        <input type="password" name="password" required autocomplete="new-password">
+        <label class="lbl" for="password">密码（至少 8 位）</label>
+        <input type="password" name="password" id="password" required autocomplete="new-password">
     </div>
 
     <div class="field">
-        <div class="lbl">再次输入密码</div>
-        <input type="password" name="password2" required autocomplete="new-password">
+        <label class="lbl" for="password2">再次输入密码</label>
+        <input type="password" name="password2" id="password2" required autocomplete="new-password">
     </div>
 
     <?php if (!empty($needInvite)): ?>
         <div class="field">
-            <div class="lbl">邀请码</div>
-            <input type="text" name="invite_code" required
+            <label class="lbl" for="invite-code">邀请码</label>
+            <input type="text" name="invite_code" id="invite-code" required
                    value="<?= htmlspecialchars((string) ($inviteCode ?? ''), ENT_QUOTES, 'UTF-8') ?>">
             <div class="tip">本站为邀请制，请填入站长提供的邀请码</div>
         </div>

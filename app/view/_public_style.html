@@ -171,4 +171,45 @@ include __DIR__ . '/admin/_style.html';
     }
     footer.site a { color: var(--muted); }
     .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; background: var(--ok); margin-right: 6px; }
+
+    /* ══════════════════════════════════════════════════════
+       动效（公开页）
+       ══════════════════════════════════════════════════════
+       公开页与后台的分寸不同：这里第一眼就要「像回事」，
+       所以首屏元素做一次入场；但正文区块**不做**滚动触发的逐个动画 ——
+       那会让访客在快速滚动时看到一片还没出现的空白。
+
+       后台那份样式已包含「减少动态效果」的全局开关（本文件先引入了它），
+       因此这里的动效同样会被系统偏好关掉。 */
+
+    @keyframes pub-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+
+    /* 首屏自上而下依次入场：标题 → 说明 → 按钮 → 数据 → 接入地址 */
+    .hero h1 { animation: pub-rise .45s ease-out both; }
+    .hero .lead { animation: pub-rise .45s ease-out .06s both; }
+    .hero .actions { animation: pub-rise .45s ease-out .12s both; }
+    .hero .base-quick { animation: pub-rise .45s ease-out .16s both; }
+    .hero .facts { animation: pub-rise .45s ease-out .22s both; }
+    .hero .notice { animation: pub-rise .45s ease-out .26s both; }
+
+    .fcard, .mcard {
+        transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+    }
+    .fcard:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(16, 24, 40, .06); border-color: var(--border-strong); }
+    /* 模型广场的卡片自带边框/阴影悬停样式（在那一页的 <style> 里），
+       这里只补上「轻微抬起」这一个动作：不同属性可以各自生效，不会打架 */
+    .mcard:hover { transform: translateY(-2px); }
+
+    .chip { transition: background .15s ease, color .15s ease, border-color .15s ease; }
+    .chip:hover { color: var(--text); border-color: var(--border-strong); }
+
+    .btn { transition: background .16s ease, color .16s ease, border-color .16s ease, transform .12s ease, box-shadow .16s ease; }
+    .btn:hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(13, 157, 191, .18); }
+    .btn:active { transform: translateY(0); box-shadow: none; }
+    a.ghost.sm, a.primary.sm { transition: background .15s ease, color .15s ease, border-color .15s ease; }
+
+    /* 键盘操作才画焦点环：鼠标点击时画环会显得页面「脏」 */
+    a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible {
+        outline: 2px solid var(--accent); outline-offset: 2px;
+    }
 </style>
