@@ -291,17 +291,14 @@ class OpenAiController
      * 两者的判据刻意不同（这是很容易写错的地方）：
      *   · **密钥级**：只有 401/403 才说明「这把 Key 失效了」，永久停用；
      *     429/5xx 只是上游现在忙，标记为瞬时失败（进冷却，到期自动恢复）。
-     *   · **渠道级**：连不上、超时、5xx 都算「这条线路不通」，
-     *     累计到阈值才熔断。
-     *   如果把 429 也当成渠道故障，上游一次限流就会把整条渠道关掉。
+     *   · **渠道级**：只有「这条线路根本不通」才计入熔断（见下）。
      */
     private function recordFailure(RelayJob $job, array $failedChannel, string $reason): void
     {
         $status = $job->httpStatus;
         $message = $job->error !== '' ? $job->error : $reason;
 
-        // 渠道级：只有「确实和上游通信失败」才计。密钥取不到、客户端断开等不计
-        if ($status > 0 || $job->error !== '') {
+        if ($this->isRouteLevelFailure($job, $status)) {
             Channel::markChannelFailure($failedChannel, $status, $message);
         }
 
@@ -311,6 +308,32 @@ class OpenAiController
 
             ChannelKey::markFailure((int) $job->poolKey['key_id'], $message, $permanent);
         }
+    }
+
+    /**
+     * 这次失败是否说明「渠道（线路）本身有问题」。
+     *
+     * 这个判断很关键，因为它决定要不要累计到渠道熔断。算错方向的两个后果：
+     *
+     *   · **算得太宽**（把 404、400 也算进去）：连续请求几个上游不存在的模型，
+     *     就能把一条完全健康的渠道熔断掉。这个坑是上线后实测踩到的 ——
+     *     NIM 的 /models 清单里有大量「列出来但账号无权调用」的模型，
+     *     逐個试过去正好凑满熔断阈值，随后正常请求也开始报「无可用渠道」。
+     *   · **算得太窄**（连超时都不算）：上游整体挂了也不会被熔断，
+     *     每个请求都要先撞一次墙才轮换，白白浪费用户的等待时间。
+     *
+     * 结论：只有「换一条线路就不一样」的失败才算 ——
+     * 连接层错误、5xx、429（这条线路现在被限流）、408（上游超时）。
+     * 而 4xx 里的其余情况（404 模型不存在、400 参数不对、422 等）
+     * 是**这次请求**的问题，不是线路的问题。
+     */
+    private function isRouteLevelFailure(RelayJob $job, int $status): bool
+    {
+        if ($job->error !== '') {
+            return true;
+        }
+
+        return $status >= 500 || in_array($status, [408, 429], true);
     }
 
     /**
