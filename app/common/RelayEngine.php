@@ -110,8 +110,20 @@ final class RelayEngine
         $first = self::prepare($job, null, '首次请求');
 
         if ($first === null) {
-            // 连一个可用渠道都没有，属于服务端配置问题
-            self::finishError($job, 503, '当前没有可用的上游渠道（渠道被禁用、不支持该模型，或密钥池全部用尽）');
+            // 连一个可用渠道都没有，属于服务端配置问题。
+            //
+            // ⚠️ 优先用 $job->error：prepare() 在「构造请求规格时抛异常」的情况下
+            //    会把原因写进去。原来这里一律回「无可用渠道」，
+            //    等于把一个明确的程序错误说成「渠道配置问题」——
+            //    实测踩过：一个配置解析 bug 让**所有**转发都回这句话，
+            //    排查方向完全跑偏（去查渠道和密钥池，而真正的问题在别处）
+            self::finishError(
+                $job,
+                503,
+                $job->error !== ''
+                    ? $job->error
+                    : '当前没有可用的上游渠道（渠道被禁用、不支持该模型，或密钥池全部用尽）'
+            );
 
             return;
         }
@@ -890,6 +902,17 @@ final class RelayEngine
                 Log::error('回写渠道健康状态失败：' . $e->getMessage());
             }
         }
+
+        // 失败时通知业务层回写**模型**健康度（连续失败到阈值就暂时摘掉这个模型）。
+        // 与上面的 onSuccess 严格对称：只在「最终失败」时触发一次，
+        // 重试过程中的中间失败不进这里 —— 那是渠道/密钥维度的账
+        if ($error !== null && $job->onFailure !== null) {
+            try {
+                ($job->onFailure)($job, (string) $error);
+            } catch (Throwable $e) {
+                Log::error('回写模型健康状态失败：' . $e->getMessage());
+            }
+        }
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -904,6 +927,7 @@ final class RelayEngine
         $job->easy = null;
         $job->prepare = null;
         $job->onSuccess = null;
+        $job->onFailure = null;
 
         unset(self::$jobs[$job->id]);
 

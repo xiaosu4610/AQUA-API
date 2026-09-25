@@ -37,7 +37,7 @@ use Throwable;
 final class Schema
 {
     /** 当前期望的表结构版本。新增迁移时递增。 */
-    public const VERSION = 13;
+    public const VERSION = 14;
 
     /**
      * 确保表结构存在且为最新版本。
@@ -46,7 +46,18 @@ final class Schema
      */
     public static function ensure(): void
     {
-        $current = (int) (Settings::raw('schema_version') ?? 0);
+        // ⚠️ 这里必须 **raw() + json_decode**，不能直接 `(int) Settings::raw(...)`。
+        //
+        // 库里存的是一个 JSON 字符串（值是 `"14"`，带引号），
+        // 直接强转成 int 会得到 **0** —— 那样 `$current < self::VERSION` 永远成立，
+        // 于是**每个工作进程每次启动都会把全部迁移重跑一遍**。
+        // 症状不会表现为「功能坏了」，而是启动日志里一片
+        // 「Duplicate column name / Duplicate key name / Duplicate entry」告警
+        // （生产上真的出现过，当时被当成历史噪音放过去了）。
+        //
+        // 也不用 Settings::get()：它读的是进程内缓存，
+        // 而第一次迁移时 options 表可能刚建出来、缓存还是空的。
+        $current = (int) json_decode((string) Settings::raw('schema_version'), true);
 
         if ($current >= self::VERSION) {
             return;
@@ -104,6 +115,10 @@ final class Schema
 
         if ($current < 13) {
             self::createV13();
+        }
+
+        if ($current < 14) {
+            self::createV14();
         }
 
         Settings::put('schema_version', (string) self::VERSION);
@@ -560,6 +575,52 @@ final class Schema
     private static function createV11(): void
     {
         self::addColumnIfMissing('channel_model_probe_results', 'latency_ms', 'INTEGER NOT NULL DEFAULT 0');
+    }
+
+    /**
+     * v14：模型运行期健康度（`model_health`）
+     *
+     * ═══ 为什么需要它 ═══
+     *
+     * 生产上「大部分请求都在失败」，而失败高度集中在少数几个模型上 ——
+     * 实测某次：一个模型 20 次调用**全部**超时，每次要烧 50 秒；
+     * 另一个 7 次全失败，平均 61 秒。用户那边等了两三分钟，
+     * 最后拿到一句「上游超时」。这些模型是谁、失败多少次，
+     * 只能靠人去翻用量日志才知道，而请求已经被白白浪费掉了。
+     *
+     * 所以给每个模型记一份**运行期**健康度：连续失败到阈值就暂时摘掉它，
+     * 让请求**立刻**拿到「这个模型上游当前不可用，请换一个」，
+     * 而不是陪着它一起等超时。冷却期一到自动放行一次，上游恢复了能自动回来。
+     *
+     * 为什么不复用 channel_model_probe_results：
+     *   那是**探测任务**的结论（人工触发、一次性的），而这里是
+     *   **每一次真实调用**滚动出来的结论，两者的更新频率与生命周期完全不同。
+     *
+     * 字段说明（都不是「统计好看」用的，每一个都有明确用途）：
+     *   · consecutive_errors —— 判定可用性的**唯一依据**。用「连续」而不是
+     *     「失败率」：失败率会被大量成功稀释，而我们要抓的是「根本不工作」
+     *   · unavailable_until —— 冷却截止时间，到点自动放行（自愈的关键）
+     *   · last_error —— 前台要把它念给用户听（「为什么不可用」）
+     *   · avg_latency_ms —— 后台判断「慢得没法用」还是「直接报错」
+     */
+    private static function createV14(): void
+    {
+        Db::pdo()->exec(<<<SQL
+            CREATE TABLE IF NOT EXISTS model_health (
+                model              VARCHAR(191) NOT NULL,
+                consecutive_errors INTEGER      NOT NULL DEFAULT 0,
+                total_calls        INTEGER      NOT NULL DEFAULT 0,
+                total_errors       INTEGER      NOT NULL DEFAULT 0,
+                last_ok_at         INTEGER      NOT NULL DEFAULT 0,
+                last_error_at      INTEGER      NOT NULL DEFAULT 0,
+                last_status        INTEGER      NOT NULL DEFAULT 0,
+                last_error         VARCHAR(255) NULL,
+                avg_latency_ms     INTEGER      NOT NULL DEFAULT 0,
+                unavailable_until  INTEGER      NOT NULL DEFAULT 0,
+                updated_at         INTEGER      NOT NULL DEFAULT 0,
+                PRIMARY KEY (model)
+            )
+        SQL);
     }
 
     /**

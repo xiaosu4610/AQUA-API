@@ -55,6 +55,21 @@ final class RelayJob
      */
     public ?Closure $onSuccess = null;
 
+    /**
+     * 最终失败回调（由控制器提供，用于回写**模型级**健康度）。
+     *
+     * 与 onSuccess 对称，但有两点必须分清，否则会把健康度记错：
+     *
+     *   · 它只在「这次请求彻底失败」时触发一次 —— **不是**每次换渠道都触发。
+     *     一次调用可能换 3 条渠道、4 把 Key 才失败；若每次都记，
+     *    一个模型失败一次会被记 4 次，阈值 3 立刻凑满 ——
+     *     那不是「连续失败 3 次」，而是「失败 1 次」。
+     *   · 它记的是**模型**维度，而 prepare 回调里的 recordFailure 记的是
+     *     **渠道/密钥**维度。粒度不同，两者都要有：
+     *     渠道坏了影响「所有模型」，模型坏了只影响「这一个模型」。
+     */
+    public ?Closure $onFailure = null;
+
     /** 请求参数 */
     public bool $stream = false;
     public string $model = '';

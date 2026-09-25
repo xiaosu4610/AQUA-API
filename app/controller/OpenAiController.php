@@ -31,16 +31,20 @@ namespace app\controller;
 
 use app\common\Channel;
 use app\common\ChannelKey;
+use app\common\ModelHealth;
 use app\common\NullResponse;
 use app\common\Pricing;
 use app\common\RelayEngine;
 use app\common\RelayJob;
 use app\common\Settings;
 use app\common\Timeouts;
+use app\common\UsageLog;
 use app\common\User;
 use app\common\UserToken;
+use support\Log;
 use support\Request;
 use support\Response;
+use Throwable;
 
 class OpenAiController
 {
@@ -81,6 +85,14 @@ class OpenAiController
                     continue;
                 }
 
+                // 当前被判定为「不可用」的模型不列出来。
+                // 为什么值得在这里过滤：客户端的模型下拉框就是这个接口给的 ——
+                // 把它列出来，用户选中它、然后拿到一句「当前不可用」，
+                // 那是我们自己制造的一次失败体验。等它冷却到期恢复后会自动回到列表
+                if (ModelHealth::unavailable($model) !== null) {
+                    continue;
+                }
+
                 $models[$model] = true;
             }
         }
@@ -105,6 +117,57 @@ class OpenAiController
         return json([
             'object' => 'list',
             'data' => $list,
+        ]);
+    }
+
+    /**
+     * GET /user/balance —— 第三方客户端用来显示余额的兼容端点。
+     *
+     * ═══ 为什么要为它单独写一个端点 ═══
+     *
+     * 实测某客户端每 5 分钟轮询一次这个路径（想在自己的界面里显示余额），
+     * 而本站原来既没有这个路由、又对所有未知路径回那个 35KB 的 HTML 404 页 ——
+     * 客户端解析不了、我们这边也只是 nginx 日志里一行 404，
+     * 双方都不知道发生了什么。这类「客户端想读余额」的需求是普遍的，
+     * 与其让每个客户端各想办法（有的去翻账单页、有的干脆不显示），
+     * 不如给一个明确的接口。
+     *
+     * ⚠️ 字段是**按常见约定拼的**，不是某个官方标准。刻意同时给出：
+     *   · 顶层 balance / currency —— 最直观的读法
+     *   · data.balance / data.quota —— 兼容按 One API 那一套解析的客户端
+     *     （它的 quota 以「美元 × 500000」为单位，这里按同一比例折算，
+     *     所以那些客户端显示出来的数字量级是对的）
+     *
+     * 需要带令牌（与其它接口同一套鉴权），没带或无效就按鉴权失败处理。
+     */
+    public function balance(Request $request): Response
+    {
+        $auth = $this->authenticate($request);
+
+        if (!$auth['ok']) {
+            return $auth['response'];
+        }
+
+        /** @var array<string, mixed> $user */
+        $user = $auth['user'];
+        $balance = (float) $user['balance'];
+        $used = (float) ($user['total_spent'] ?? 0);
+        $currency = (string) Settings::get('billing.currency', 'CNY');
+
+        return json([
+            'success' => true,
+            'balance' => $balance,
+            'currency' => $currency,
+            'used' => $used,
+            'username' => (string) ($user['email'] ?? ''),
+            // 余额够不够用：只有当站内还存在收费模型、且余额为 0 时才算「不可用」
+            'is_available' => $balance > 0 || !Settings::bool('billing.require_balance', true),
+            'data' => [
+                'balance' => $balance,
+                'quota' => (int) round($balance * 500000),
+                'used_quota' => (int) round($used * 500000),
+                'currency' => $currency,
+            ],
         ]);
     }
 
@@ -144,6 +207,16 @@ class OpenAiController
         }
 
         if (!UserToken::allowsModel($token, $model)) {
+            $this->recordRejection(
+                $request,
+                403,
+                'model_not_allowed',
+                "令牌「{$token['name']}」无权使用模型 {$model}",
+                $this->bearerToken($request),
+                $user,
+                $token
+            );
+
             return $this->error(
                 403,
                 "令牌「{$token['name']}」无权使用模型 {$model}",
@@ -167,6 +240,33 @@ class OpenAiController
             );
         }
 
+        // ── 3.05 模型健康度闸门（已经坏了的模型，别再让用户陪它等）──
+        //
+        // 生产实测：少数几个模型「20 次调用全部失败、每次要烧 50 秒」，
+        // 把整站成功率压到三成。用户为这几个模型等两三分钟，
+        // 最后拿到一句「上游超时」—— 在他看来就是「这个站大部分请求都是坏的」。
+        //
+        // 所以放在**余额检查之前**：模型都不可用了，先让他知道要换模型，
+        // 比告诉他「去充值」有用得多（充了也调不通）。
+        // 冷却期一到自动放行一次试探，上游恢复后无需人工干预。
+        $health = ModelHealth::unavailable($model);
+
+        if ($health !== null) {
+            $alternatives = ModelHealth::alternatives($model);
+            $hint = $alternatives === []
+                ? ''
+                : '。当前可以改用：' . implode('、', $alternatives);
+
+            return $this->error(
+                503,
+                "模型 {$model} 上游当前不可用（{$health['reason']}）。"
+                . "本站已暂停把请求发给它（约 {$health['retryInSeconds']} 秒后自动放行重试），"
+                . '这样你就不必白等几分钟' . $hint,
+                'server_error',
+                'model_temporarily_unavailable'
+            );
+        }
+
         // ── 3.1 余额门槛（只拦收费模型）──
         //
         // 为什么放在这里而不是鉴权里：这里才知道「这次调用收不收费」。
@@ -176,6 +276,16 @@ class OpenAiController
         if (Settings::bool('billing.require_balance', true)
             && Pricing::isChargeable($pricing, Settings::bool('billing.unpriced_is_free', true))
             && (float) $user['balance'] <= 0) {
+            $this->recordRejection(
+                $request,
+                402,
+                'insufficient_balance',
+                '余额不足（余额 ' . User::money((float) $user['balance']) . "），模型 {$model} 是收费的",
+                $this->bearerToken($request),
+                $user,
+                $token
+            );
+
             return $this->error(
                 402,
                 '余额不足：当前余额 ' . User::money((float) $user['balance'])
@@ -243,6 +353,15 @@ class OpenAiController
             if ($job->poolKey !== null && isset($job->poolKey['key_id'])) {
                 ChannelKey::markSuccess((int) $job->poolKey['key_id']);
             }
+
+            // 模型级健康度：成功一次就把连击清零并解除不可用 —— 这是「自愈」的落点
+            ModelHealth::markSuccess($job->model, $job->latencyMs);
+        };
+
+        // 彻底失败时回写模型健康度。注意这里是**模型**维度，
+        // 与上面 recordFailure 里的渠道/密钥维度是两码事（见 RelayJob::onFailure 的说明）
+        $job->onFailure = static function (RelayJob $job, string $error): void {
+            ModelHealth::markFailure($job->model, $job->httpStatus, $error, $job->latencyMs);
         };
 
         // ── 6. 交给引擎；本方法随即返回 ──
@@ -424,6 +543,8 @@ class OpenAiController
         $plain = $this->bearerToken($request);
 
         if ($plain === '') {
+            $this->recordRejection($request, 401, 'missing_api_key', '请求头里没有带上令牌');
+
             return [
                 'ok' => false,
                 'response' => $this->error(
@@ -440,6 +561,14 @@ class OpenAiController
         $result = UserToken::authorize($plain);
 
         if (!$result['ok']) {
+            $this->recordRejection(
+                $request,
+                (int) ($result['status'] ?? 401),
+                (string) ($result['code'] ?? 'invalid_api_key'),
+                $result['reason'],
+                $plain
+            );
+
             return [
                 'ok' => false,
                 'response' => $this->error(
@@ -454,6 +583,62 @@ class OpenAiController
         }
 
         return ['ok' => true, 'response' => null, 'token' => $result['token'], 'user' => $result['user']];
+    }
+
+    /**
+     * 把「被本站拒绝、根本没发往上游」的调用也留一条痕。
+     *
+     * ═══ 为什么必须留 ═══
+     *
+     * 生产上出现过这样一幕：站长看到调用大量失败，怀疑本站或上游有问题，
+     * 查了很久 —— 真相是几个客户端拿着**早就删掉的令牌**在反复重试，
+     * 几百次请求全在鉴权阶段就被拒了，一次都没到上游。
+     *
+     * 而原来这些请求**不留任何痕迹**：用量日志里没有（它只记发往上游的调用）、
+     * 后台报表里没有、应用日志里也没有。唯一的线索是 nginx 访问日志里的
+     * 一串「401」和响应字节数 —— 靠这个去反推原因，等于考古。
+     *
+     * 所以这里记一条 status=rejected 的用量日志：
+     *   · 它**不算**上游失败（不打进成功率，不污染上游原因排行）；
+     *   · 但后台一眼能看到「有 N 次被拒，提交的令牌是 sk-aqua-1a2b…9f3a」，
+     *     站长拿这个掩码和自己库里的令牌一对照，就能判断出
+     *     「这是个老用户在用他删掉的那把令牌，通知他重新复制一下」。
+     *
+     * 记的是**掩码**，不是完整令牌 —— 日志只给站长看，不需要、也不应该存全量。
+     *
+     * @param array<string, mixed>|null $user  已经认出用户时传进来（余额门槛、模型白名单那两处），
+     *        这样后台能直接看到「是谁在被拒」，而不只是一堆无主的 401
+     * @param array<string, mixed>|null $token
+     */
+    private function recordRejection(
+        Request $request,
+        int $status,
+        string $code,
+        string $reason,
+        string $presented = '',
+        ?array $user = null,
+        ?array $token = null
+    ): void {
+        $body = json_decode((string) $request->rawBody(), true);
+        $model = is_array($body) ? trim((string) ($body['model'] ?? '')) : '';
+
+        try {
+            UsageLog::record([
+                'model' => $model === '' ? '（未指定模型）' : $model,
+                'user_id' => $user === null ? null : (int) $user['id'],
+                'token_id' => $token === null ? null : (int) $token['id'],
+                'prompt_tokens' => 0,
+                'completion_tokens' => 0,
+                'upstream_cost' => 0.0,
+                'downstream_cost' => 0.0,
+                'status' => UsageLog::STATUS_REJECTED,
+                'error' => "调用被本站拒绝（{$status} {$code}）：{$reason}"
+                    . '；提交的令牌：' . UserToken::presentedMask($presented),
+            ]);
+        } catch (Throwable $e) {
+            // 留痕失败绝不能影响给用户的响应
+            Log::warning('被拒调用的留痕写入失败：' . $e->getMessage());
+        }
     }
 
     /**

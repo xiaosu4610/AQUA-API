@@ -140,10 +140,17 @@ check('错误码是 missing_api_key', ($json['error']['code'] ?? '') === 'missin
 [$status, $json] = $chat('sk-aqua-' . bin2hex(random_bytes(24)));
 check('不存在的令牌 → 401', $status === 401, (string) $status);
 check('错误码是 invalid_api_key', ($json['error']['code'] ?? '') === 'invalid_api_key', (string) ($json['error']['code'] ?? '无'));
-check('提示里说清了「要以 sk-aqua- 开头」', str_contains((string) ($json['error']['message'] ?? ''), 'sk-aqua-'), (string) ($json['error']['message'] ?? ''));
+check('提示里点明了「库里没有这把令牌」', str_contains((string) ($json['error']['message'] ?? ''), '库里没有这把令牌'), (string) ($json['error']['message'] ?? ''));
+
+// 用户最高频的一次性错误：把控制台里显示的「掩码」当成令牌复制走。
+// 这种输入以 sk-aqua- 开头，笼统地说「请确认以 sk-aqua- 开头」对他毫无帮助
+[$status, $json] = $chat('sk-aqua-1a2b3c4d5e6f…9f3a');
+check('把掩码当令牌 → 401', $status === 401, (string) $status);
+check('提示里说清了「那是掩码、不是令牌」', str_contains((string) ($json['error']['message'] ?? ''), '掩码'), (string) ($json['error']['message'] ?? ''));
 
 [$status, $json] = $chat('完全不是本站令牌');
 check('格式不对的 Key → 401', $status === 401, (string) $status);
+check('提示里说清了「本站令牌以 sk-aqua- 开头」', str_contains((string) ($json['error']['message'] ?? ''), 'sk-aqua-'), (string) ($json['error']['message'] ?? ''));
 
 [$status, $json] = $chat($disabledToken);
 check('已停用的令牌 → 401', $status === 401, (string) $status);

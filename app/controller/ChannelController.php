@@ -29,6 +29,7 @@ use app\common\Channel;
 use app\common\ChannelKey;
 use app\common\Crypto;
 use app\common\Csrf;
+use app\common\ModelHealth;
 use app\common\ModelProbe;
 use app\common\ModelProbeTask;
 use app\common\Settings;
@@ -85,7 +86,43 @@ class ChannelController
             'notice' => (string) session()->pull(self::FLASH_NOTICE, ''),
             'noticeType' => (string) session()->pull(self::FLASH_TYPE, 'info'),
             'keyConfigured' => Crypto::isConfigured(),
+            // 模型运行期健康度：哪些模型「连续失败到被暂时摘掉」。
+            // 放这一页是因为「模型能不能用」与「渠道通不通」是同一类问题 ——
+            // 站长排查「为什么成功率低」时会先来这里
+            'modelHealth' => ModelHealth::troubleList(),
+            'modelHealthEnabled' => ModelHealth::enabled(),
+            'modelHealthThreshold' => ModelHealth::threshold(),
+            'modelHealthCooldown' => ModelHealth::cooldownSeconds(),
         ], '');
+    }
+
+    /**
+     * POST /admin/channels/health/release —— 让被摘掉的模型立刻恢复参与路由
+     *
+     * 什么时候需要它：站长确认某个模型已经好了（比如上游恢复了、
+     * 或者自己换了 Key），但冷却时间还没到。也可以不点 —— 冷却到点会自愈。
+     *
+     * 传 model 只放行这一个；不传则全部放行。
+     */
+    public function releaseModelHealth(Request $request): Response
+    {
+        if (!Csrf::check($request->post('_csrf'))) {
+            return $this->back('页面已过期，请重新提交', 'err');
+        }
+
+        $model = trim((string) $request->post('model', ''));
+        $affected = ModelHealth::release($model);
+
+        if ($affected === 0) {
+            return $this->back($model === '' ? '没有被暂停的模型' : "「{$model}」当前不在暂停名单里", 'info');
+        }
+
+        return $this->back(
+            $model === ''
+                ? "已恢复 {$affected} 个模型的正常路由（下次调用会重新发给上游试探）"
+                : "已恢复「{$model}」的正常路由（下次调用会重新发给上游试探）",
+            'ok'
+        );
     }
 
     /**

@@ -322,7 +322,13 @@ $link = static function (array $override) use ($range, $model, $page): string {
                 <ul class="probe-list">
                     <?php foreach ($topErrors as $row): ?>
                         <li>
-                            <div class="err-msg mono"><?= htmlspecialchars(mb_substr((string) $row['message'], 0, 160), ENT_QUOTES, 'UTF-8') ?></div>
+                            <div class="err-msg mono">
+                                <?php if (!empty($row['rejected'])): ?>
+                                    <?php /* 被本站拒绝的调用不是上游故障 —— 标出来，避免站长去查上游 */ ?>
+                                    <span class="pill warn" style="margin-right:6px">未发往上游</span>
+                                <?php endif; ?>
+                                <?= htmlspecialchars(mb_substr((string) $row['message'], 0, 160), ENT_QUOTES, 'UTF-8') ?>
+                            </div>
                             <div class="src">
                                 <span class="bar-mini danger" style="width:<?= max(6, min(160, (int) $row['count'] * 6)) ?>px"></span>
                                 <?= (int) $row['count'] ?> 次
@@ -330,9 +336,22 @@ $link = static function (array $override) use ($range, $model, $page): string {
                         </li>
                     <?php endforeach; ?>
                 </ul>
+
+                <?php if (($rejected['count'] ?? 0) > 0): ?>
+                    <p class="note">
+                        其中 <b><?= (int) $rejected['count'] ?></b> 次是<b>被本站拒绝、一次都没发往上游</b>的调用
+                        （401 令牌无效 / 402 余额不足 / 403 权限不足）。
+                        这类请求大量出现时，通常不是上游出问题，而是<b>有客户端在用错的令牌反复重试</b>
+                        —— 上面「未发往上游」那几条里带着提交上来的令牌掩码，
+                        拿它对一下<a href="/admin/users">用户</a>手里的令牌就能确认，
+                        通知那位用户到控制台重新复制一把即可。
+                    </p>
+                <?php endif; ?>
+
                 <p class="note">
                     按上游返回的原文分组。看到某一条突然变多，通常意味着某条上游出了问题
-                    —— 去<a href="/admin/channels">渠道管理</a>看它的失败次数与最近错误。
+                    —— 去<a href="/admin/channels">渠道管理</a>看它的失败次数、最近错误，
+                    以及「模型可用性」里是否有模型被自动暂停了路由。
                 </p>
             <?php endif; ?>
         </section>

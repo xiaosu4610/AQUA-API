@@ -128,6 +128,8 @@ Route::group('/admin', function () {
     Route::get('/channels/probe', [ChannelController::class, 'probePage']);
     Route::get('/channels/probe/status', [ChannelController::class, 'probeStatus']);
     Route::post('/channels/probe/apply', [ChannelController::class, 'probeApply']);
+    // 让被判定「当前不可用」的模型立刻恢复参与路由（也可以等冷却自动恢复）
+    Route::post('/channels/health/release', [ChannelController::class, 'releaseModelHealth']);
 
     // 渠道密钥池（一个渠道下可挂多把 Key，轮换使用）
     Route::get('/channels/keys', [ChannelController::class, 'keys']);
@@ -166,7 +168,18 @@ Route::group('/admin', function () {
 // 调用方是程序而不是浏览器，没有会话与 CSRF 令牌。
 // 未安装时会被 InstallGuard 拦到安装向导，这是正确的
 Route::get('/v1/models', [OpenAiController::class, 'models']);
+// 有些客户端用 POST 探测模型清单（实测某 Android 客户端就是这样）。
+// 只认 GET 时它拿到 404，于是判定「这个站没有模型列表」。
+// 多认一个方法的成本极低，换来的是这类客户端能正常工作
+Route::post('/v1/models', [OpenAiController::class, 'models']);
 Route::post('/v1/chat/completions', [OpenAiController::class, 'chatCompletions']);
+
+// ── 客户端习惯探测的余额端点（兼容性适配）─────────────────
+// 第三方客户端（实测有每隔 5 分钟轮询一次的）会去读「我的余额」用来展示。
+// 本站原来对这些路径回 404，客户端只能显示「余额获取失败」。
+// 说明：这个端点的字段是**按常见约定拼的**，不是哪个标准；
+// 若某个客户端要的字段不一样，按它的要求加即可
+Route::get('/user/balance', [OpenAiController::class, 'balance']);
 
 // 关闭控制器自动路由。必须放在所有路由注册之后。
 Route::disableDefaultRoute();

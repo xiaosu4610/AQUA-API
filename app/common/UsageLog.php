@@ -34,6 +34,37 @@ final class UsageLog
     public const STATUS_ERROR = 'error';
 
     /**
+     * 被本站**拒绝**、根本没发往上游的请求（401/402/403）。
+     *
+     * ═══ 为什么单独一个状态，而不是并入 error ═══
+     *
+     * 生产上发生过这样一件事：站长看到大量调用失败，怀疑是上游或本站的服务有问题，
+     * 查了半天 —— 真相是几个客户端拿着**早就删掉的令牌**在反复重试。
+     * 那几百次请求全都在鉴权阶段就被拒了，一次都没到上游。
+     *
+     * 如果把它们记成 error，两个数字都会失真：
+     *   · 「请求数 / 成功率」被这些脏流量污染（用户会以为服务不稳）；
+     *   · 「上游失败原因排行」被它们占满，真正需要盯的上游问题反而不显眼。
+     *
+     * 所以单独一个状态：它既能在后台被看见（「有 N 次调用被拒，用的令牌是 xxx」），
+     * 又不会算进「上游失败」的账里。两个问题各自清楚。
+     */
+    public const STATUS_REJECTED = 'rejected';
+
+    /**
+     * 后台报表的口径：**只算真正发往上游的调用**。
+     *
+     * 被本站拒绝的调用（status=rejected：令牌无效、余额不足、模型无权限）
+     * 一次都没到上游。把它们算进「请求数 / 成交额」会让报表失真 ——
+     * 站长会以为服务不稳，而真相往往是有人拿着错的令牌在反复重试。
+     * 它们由「被拒调用」单列一块（见 rejectedStats），两边互不干扰。
+     *
+     * ⚠️ 用户自己的控制台**不排除**它们（那里显示的是「我发起过的调用」，
+     *    用户需要看到自己被拒的那几次），所以下面的排除只加在后台汇总方法上。
+     */
+    private const EXCLUDE_REJECTED = "status <> 'rejected'";
+
+    /**
      * 写入一条用量记录。
      *
      * @param array{
@@ -97,7 +128,7 @@ final class UsageLog
         $limit = max(1, min(200, $limit));
         $offset = max(0, $offset);
 
-        $sql = 'SELECT * FROM usage_logs WHERE created_at >= ? AND created_at < ?';
+        $sql = 'SELECT * FROM usage_logs WHERE created_at >= ? AND created_at < ? AND ' . self::EXCLUDE_REJECTED;
         $bindings = [$fromTs, $toTs];
 
         if ($model !== '') {
@@ -111,7 +142,7 @@ final class UsageLog
     /** 指定时间窗内的记录条数（分页用） */
     public static function countInRange(int $fromTs, int $toTs, string $model = ''): int
     {
-        $sql = 'SELECT COUNT(*) AS c FROM usage_logs WHERE created_at >= ? AND created_at < ?';
+        $sql = 'SELECT COUNT(*) AS c FROM usage_logs WHERE created_at >= ? AND created_at < ? AND ' . self::EXCLUDE_REJECTED;
         $bindings = [$fromTs, $toTs];
 
         if ($model !== '') {
@@ -228,7 +259,7 @@ final class UsageLog
                     SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS errors,
                     SUM(usage_estimated) AS estimated
                  FROM usage_logs
-                 WHERE created_at >= ?',
+                 WHERE created_at >= ? AND ' . self::EXCLUDE_REJECTED,
                 [self::STATUS_ERROR, $sinceTs]
             );
         } catch (Throwable) {
@@ -285,7 +316,7 @@ final class UsageLog
                     SUM(is_stream) AS streams,
                     AVG(latency_ms) AS avg_latency
                 FROM usage_logs
-                WHERE created_at >= ? AND created_at < ?';
+                WHERE created_at >= ? AND created_at < ? AND ' . self::EXCLUDE_REJECTED;
 
         $bindings = [self::STATUS_ERROR, $fromTs, $toTs];
         if ($model !== '') {
@@ -383,7 +414,7 @@ final class UsageLog
                     SUM(usage_estimated) AS estimated,
                     AVG(latency_ms) AS avg_latency
              FROM usage_logs
-             WHERE created_at >= ? AND created_at < ?' . $filter . '
+             WHERE created_at >= ? AND created_at < ?' . $filter . ' AND ' . self::EXCLUDE_REJECTED . '
              GROUP BY model
              ORDER BY requests DESC LIMIT ' . max(1, min(200, $limit)),
             $bindings
@@ -417,11 +448,22 @@ final class UsageLog
      * 为什么按 error_message 分组而不是按状态码：上游把状态码藏在
      * 各种包装里，真正能指向问题的是那句原文（例如 「monthly quota exceeded」）。
      *
+     * @param bool $includeRejected 是否把「被本站拒绝、没发往上游」的请求也算进来。
+     *        默认不算 —— 它们不是上游故障；但排查「为什么用户都说用不了」时
+     *        必须一起看，否则会漏掉「一大批人在用错的令牌」这个最常见的真相
      * @return array<int, array{message:string, count:int}>
      */
-    public static function topErrors(int $fromTs, int $toTs, int $limit = 10, string $model = ''): array
+    public static function topErrors(int $fromTs, int $toTs, int $limit = 10, string $model = '', bool $includeRejected = false): array
     {
-        $bindings = [self::STATUS_ERROR, $fromTs, $toTs];
+        $statuses = $includeRejected
+            ? [self::STATUS_ERROR, self::STATUS_REJECTED]
+            : [self::STATUS_ERROR];
+        $placeholders = implode(', ', array_fill(0, count($statuses), '?'));
+
+        $bindings = $statuses;
+        $bindings[] = $fromTs;
+        $bindings[] = $toTs;
+
         $filter = '';
         if ($model !== '') {
             $filter = ' AND model LIKE ?';
@@ -429,18 +471,45 @@ final class UsageLog
         }
 
         $rows = Db::select(
-            'SELECT error_message AS message, COUNT(*) AS c
+            'SELECT error_message AS message, COUNT(*) AS c, MAX(status) AS st
              FROM usage_logs
-             WHERE status = ? AND created_at >= ? AND created_at < ? AND error_message IS NOT NULL
+             WHERE status IN (' . $placeholders . ') AND created_at >= ? AND created_at < ? AND error_message IS NOT NULL
                    AND error_message <> \'\'' . $filter . '
              GROUP BY error_message ORDER BY c DESC LIMIT ' . max(1, min(50, $limit)),
             $bindings
         );
 
         return array_map(
-            static fn (array $row): array => ['message' => (string) $row['message'], 'count' => (int) $row['c']],
+            static fn (array $row): array => [
+                'message' => (string) $row['message'],
+                'count' => (int) $row['c'],
+                'rejected' => ($row['st'] ?? '') === self::STATUS_REJECTED,
+            ],
             $rows
         );
+    }
+
+    /**
+     * 指定时间窗内「被本站拒绝」的调用条数与原因分布（报表用）。
+     *
+     * 这是回答「为什么用户说调不通」的第一手材料：
+     * 数字一旦上去，就说明有客户端在用过期的 / 错的令牌反复重试。
+     *
+     * @return array{count:int, reasons:array<int, array{message:string, count:int}>}
+     */
+    public static function rejectedStats(int $fromTs, int $toTs, int $limit = 5): array
+    {
+        try {
+            $row = Db::selectOne(
+                'SELECT COUNT(*) AS c FROM usage_logs WHERE status = ? AND created_at >= ? AND created_at < ?',
+                [self::STATUS_REJECTED, $fromTs, $toTs]
+            );
+            $count = (int) ($row['c'] ?? 0);
+        } catch (Throwable) {
+            return ['count' => 0, 'reasons' => []];
+        }
+
+        return ['count' => $count, 'reasons' => self::topErrors($fromTs, $toTs, $limit, '', true)];
     }
 
     /**
@@ -465,7 +534,7 @@ final class UsageLog
                     SUM(upstream_cost) AS upstream_cost, SUM(downstream_cost) AS downstream_cost,
                     SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS errors
              FROM usage_logs
-             WHERE created_at >= ? AND created_at < ?' . $filter . '
+             WHERE created_at >= ? AND created_at < ?' . $filter . ' AND ' . self::EXCLUDE_REJECTED . '
              GROUP BY user_id ORDER BY requests DESC LIMIT ' . max(1, min(100, $limit)),
             $bindings
         );

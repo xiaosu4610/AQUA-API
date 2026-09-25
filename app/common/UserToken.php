@@ -123,6 +123,74 @@ final class UserToken
     }
 
     /**
+     * 描述「用户提交上来的这串东西」是什么形态（**不含完整令牌**）。
+     *
+     * ═══ 为什么值得单独写一段 ═══
+     *
+     * 生产上出现过大量 401，几十次、上百次地重复来自同一个客户端 ——
+     * 而原来的提示是「请确认用的是本站令牌（以 sk-aqua- 开头）」。
+     * 用户看到这句的反应是：「我用的就是 sk-aqua- 开头的啊」，
+     * 然后继续用同一把错的东西重试。问题不在用户笨，在这句话没有回答
+     * 他真正需要知道的事：**你给的那串到底是什么**。
+     *
+     * 于是这里按「实际能判断出来的形态」分四种说清，
+     * 每一种都直接对应一个可执行的动作：
+     *   · 掩码（带省略号）→ 去点控制台里的「复制」按钮
+     *   · 不是本站格式    → 确认一下是不是复制了别家的 Key
+     *   · 格式差一点      → 重新完整复制一次（少字符/多空格）
+     *   · 格式完全正确    → 这把在库里不存在（已删除或重建过）
+     */
+    public static function describePresented(string $plain): string
+    {
+        $plain = trim($plain);
+
+        if ($plain === '') {
+            return '请求头里没有带上令牌';
+        }
+
+        // 控制台列表显示的是「掩码」：头 12 位 + 省略号 + 末 4 位。
+        // 把那一串当令牌复制走是最高频的一次性错误，必须单独点出来
+        if (str_contains($plain, '…') || str_contains($plain, '...')) {
+            return '你填的看起来是控制台列表里那个「掩码」（中间带省略号），不是令牌本身 —— '
+                . '请点令牌旁边的「复制」按钮，复制完整的那一串';
+        }
+
+        if (!str_starts_with($plain, self::PREFIX)) {
+            return '这不像是本站令牌（本站令牌以 ' . self::PREFIX . ' 开头）';
+        }
+
+        $hex = substr($plain, strlen(self::PREFIX));
+        if (strlen($hex) !== 48 || !ctype_xdigit($hex)) {
+            return '令牌格式差一点（本站令牌是 ' . self::PREFIX . ' 加 48 位十六进制字符）—— '
+                . '多半是复制时少了几个字符或带进了空格，请重新完整复制一次';
+        }
+
+        return '格式是对的，但库里没有这把令牌 —— 它可能已被删除或重建，或者本来就不是本站签发的';
+    }
+
+    /**
+     * 用于**日志**的令牌形态摘要（只给站长看，绝不含完整令牌）。
+     *
+     * 与 describePresented 的分工：那个是给用户的说明，这个是给站长查的证据 ——
+     * 站长看到「提交的令牌：sk-aqua-1a2b…9f3a」就能拿它和自己库里的记录对照，
+     * 一眼判断出「这个用户在用一个早就删掉的令牌」。
+     */
+    public static function presentedMask(string $plain): string
+    {
+        $plain = trim($plain);
+
+        if ($plain === '') {
+            return '（没带令牌）';
+        }
+
+        if (mb_strlen($plain) <= 18) {
+            return '（过短的串，长度 ' . mb_strlen($plain) . '）';
+        }
+
+        return self::mask($plain);
+    }
+
+    /**
      * 掩码：`sk-aqua-1a2b…9f3a`。
      *
      * 没有可回显副本时列表页显示它（有副本则显示完整令牌 + 复制按钮）。
@@ -276,7 +344,11 @@ final class UserToken
         $token = self::findByPlain($plain);
 
         if ($token === null) {
-            return $fail('令牌无效：请确认用的是本站令牌（以 sk-aqua- 开头），且复制时没有多余空格或换行');
+            // 这里必须**分情况说清**「你给的这串是什么形态」——
+            // 一句笼统的「令牌无效」会让用户反复检查同一个错误：
+            // 最常见的一次性错误就是把控制台列表里的「掩码」当成令牌复制走了，
+            // 而那串东西确实以 sk-aqua- 开头，用户完全看不出哪里不对
+            return $fail('令牌无效：' . self::describePresented($plain) . '。请到控制台重新复制一把');
         }
 
         $usable = self::usable($token);

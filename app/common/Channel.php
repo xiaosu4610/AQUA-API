@@ -217,6 +217,14 @@ final class Channel
             'default' => [],
             'hint' => '逗号分隔。有些上游收到无法识别的参数会直接报错，这里把它们去掉',
         ],
+        'keep_body' => [
+            'label' => '保留请求体字段',
+            'type' => 'csv',
+            'default' => [],
+            'hint' => '逗号分隔。本站默认会把上游不认识的客户端私有字段剥掉'
+                . '（例如某些客户端会带 dsh_plugin_packages，NIM 收到就整条请求 400）。'
+                . '如果这家上游其实支持某个非标准字段，把它的名字填在这里',
+        ],
         'model_map' => [
             'label' => '模型名映射（对外名=上游名）',
             'type' => 'pairs',
@@ -1302,6 +1310,156 @@ final class Channel
     }
 
     /**
+     * OpenAI 兼容请求体的**标准字段**（白名单）。
+     *
+     * 为什么要有这份清单：网关对请求体的处理一直是「原样搬过去」，
+     * 而各家客户端都会往里塞自己的东西。实测踩到的例子：
+     * 某客户端带 `dsh_plugin_packages`，NIM 收到直接 400
+     * （`Validation: Unsupported parameter(s)`）—— 整条请求失败，
+     * 而用户完全不知道原因，只会觉得「这个站调不通」。
+     *
+     * 这份清单只列**公认**的字段：OpenAI 官方接口 + 各家常见的兼容字段。
+     * 各家自己的私有字段留给「渠道高级配置 → 保留请求体字段」声明 ——
+     * 因为「这家上游支持什么」是渠道级知识，不该写死在一张全局表里。
+     *
+     * ⚠️ 漏掉一个字段的后果是「它被静默剥掉」，所以剥离时会记一条日志（去重后），
+     *    站长能在日志里看到究竟是哪些字段被剥了。
+     */
+    private const STANDARD_BODY_FIELDS = [
+        // 必需
+        'model' => true, 'messages' => true,
+        // 兼容：老式补全接口 / embeddings / 多模态输入
+        'prompt' => true, 'input' => true, 'suffix' => true,
+        // 采样与长度
+        'temperature' => true, 'top_p' => true, 'top_k' => true, 'n' => true,
+        'max_tokens' => true, 'max_completion_tokens' => true, 'max_output_tokens' => true,
+        'stop' => true, 'seed' => true, 'best_of' => true, 'echo' => true,
+        'presence_penalty' => true, 'frequency_penalty' => true, 'repetition_penalty' => true,
+        'logit_bias' => true, 'logprobs' => true, 'top_logprobs' => true,
+        // 流式
+        'stream' => true, 'stream_options' => true,
+        // 工具调用
+        'tools' => true, 'tool_choice' => true, 'parallel_tool_calls' => true,
+        'functions' => true, 'function_call' => true,
+        // 输出形态
+        'response_format' => true, 'modalities' => true, 'audio' => true, 'prediction' => true,
+        // 其它官方字段
+        'user' => true, 'metadata' => true, 'store' => true, 'service_tier' => true,
+        'reasoning_effort' => true, 'verbosity' => true, 'prompt_cache_key' => true,
+        // 各家常见的兼容字段（推理开关、向量维度等）
+        'thinking' => true, 'enable_thinking' => true, 'reasoning' => true,
+        'dimensions' => true, 'encoding_format' => true,
+    ];
+
+    /** 已经记过日志的「被剥离字段」，避免每次请求刷一条 */
+    private static array $reportedStrippedFields = [];
+
+    /**
+     * 把**上游不认识**的客户端私有字段剥掉。
+     *
+     * 保留的是：标准字段（白名单）+ 全局「额外保留」+ 本渠道「保留请求体字段」。
+     * 写完新字段名会记一条（去重）日志，方便发现「原来有客户端在用这个字段」。
+     *
+     * @param array<string, mixed> $body
+     * @return array<string, mixed>
+     */
+    public static function sanitizeBody(array $channel, array $body): array
+    {
+        if (!Settings::bool('gateway.strip_unknown_params', true)) {
+            return $body;
+        }
+
+        $keep = [];
+        foreach (self::keepBodyFields($channel) as $field) {
+            $keep[$field] = true;
+        }
+
+        $stripped = [];
+        foreach (array_keys($body) as $name) {
+            $field = (string) $name;
+            if (isset(self::STANDARD_BODY_FIELDS[$field]) || isset($keep[$field])) {
+                continue;
+            }
+
+            unset($body[$field]);
+            $stripped[] = $field;
+        }
+
+        if ($stripped !== []) {
+            self::reportStrippedFields((string) ($channel['name'] ?? ''), $stripped);
+        }
+
+        return $body;
+    }
+
+    /**
+     * 本渠道允许保留的非标准字段：全局配置 + 渠道配置一起算。
+     *
+     * 两级都要有，因为它们的用途不同：
+     *   · 全局那级是「我们所有上游都认这个字段」（比如站内统一用 reasoning_effort）
+     *   · 渠道那级是「只有这家认」（比如某家私有的 chat_template_kwargs）
+     *
+     * @return array<int, string>
+     */
+    public static function keepBodyFields(array $channel): array
+    {
+        $adv = self::advConfig($channel);
+        $fields = [];
+
+        // ⚠️ 两种形态都要处理，这不是洁癖：
+        //   · 渠道级 `keep_body` 在保存时已被解析成**数组**（见 parseAdvForm）
+        //   · 全局配置是一串**逗号分隔的文本**
+        // 曾经只按文本处理，于是对数组做了一次 (string) 转换 ——
+        // 那会抛 Array to string conversion，而引擎的 prepare() 会把异常
+        // 兜成「当前没有可用的上游渠道」，结果是**整站所有转发都 503**，
+        // 而错误信息完全指不到真正的原因（这个坑已经踩过一次）。
+        foreach ([
+            Settings::get('gateway.keep_body_params', ''),
+            $adv['keep_body'] ?? [],
+        ] as $source) {
+            $list = is_array($source)
+                ? $source
+                : (preg_split('/[\s,]+/', (string) $source) ?: []);
+
+            foreach ($list as $field) {
+                $field = trim((string) $field);
+                if ($field !== '') {
+                    $fields[$field] = true;
+                }
+            }
+        }
+
+        return array_keys($fields);
+    }
+
+    /**
+     * 记一条「剥掉了哪些字段」的日志（同一字段只记一次）。
+     *
+     * 为什么要去重：这个动作发生在**每一个转发请求**上，
+     * 不去重的话一个客户端就能把日志刷满，真正的问题反而被淹没。
+     */
+    private static function reportStrippedFields(string $channelName, array $fields): void
+    {
+        $fresh = [];
+        foreach ($fields as $field) {
+            if (isset(self::$reportedStrippedFields[$field])) {
+                continue;
+            }
+
+            self::$reportedStrippedFields[$field] = true;
+            $fresh[] = $field;
+        }
+
+        if ($fresh === []) {
+            return;
+        }
+
+        Log::info('已剥掉上游不认识的请求字段（渠道「' . $channelName . '」）：' . implode('、', $fresh)
+            . '。若这家上游其实支持其中某个字段，请把它写进渠道高级配置的「保留请求体字段」；'
+            . '若所有上游都支持，写进「配置管理 → 网关 → 额外保留的请求字段名」');
+    }
+
+    /**
      * 构造一次上游请求的完整规格（URL / 请求头 / 请求体 / curl 选项）。
      *
      * 抽成独立方法的理由：**流式转发与测活必须用同一套构造逻辑**。
@@ -1381,10 +1539,15 @@ final class Channel
         $encodedBody = null;
 
         if ($body !== null) {
-            // 0) 剔除上游不接受的字段
+            // 0) 剔除上游不接受的字段（站长手工声明的）
             foreach ((array) ($adv['strip_body'] ?? []) as $strip) {
                 unset($body[$strip]);
             }
+
+            // 0.1) 剥掉**上游不认识的客户端私有字段**（自动，默认开）。
+            //      必须在合并 extra_body **之前**做：
+            //      extra_body 是站长自己写进这家上游的字段，属于「已知支持」，不能被剥掉
+            $body = self::sanitizeBody($channel, $body);
 
             // 1) 合并附加参数。顺序很关键：先铺附加参数，再写业务参数 ——
             //    这样业务参数（model/messages/stream）永远压过附加配置，

@@ -74,10 +74,25 @@ class Handler extends \support\exception\Handler
             return true;
         }
 
-        // /v1/* 是给程序调用的（OpenAI 兼容接口）。
-        // 这些客户端通常不带 Accept: application/json，也不带 X-Requested-With，
-        // 所以 expectJson() 判断不出来，必须按路径显式兜住
-        return str_starts_with((string) $request->path(), '/v1/');
+        // 哪些路径一律回 JSON。
+        //
+        // /v1/* 是给程序调用的（OpenAI 兼容接口）：这些客户端通常不带
+        // Accept: application/json，也不带 X-Requested-With，expectJson() 判断不出来。
+        //
+        // /api/* 与 /user/* 同样要算进来 —— 它们是**第三方客户端习惯探测的路径**。
+        // 实测：某个客户端每 5 分钟轮询一次 /user/balance 想显示余额，
+        // 而它拿到的是我们那个 35KB 的 HTML 404 页面 ——
+        // 客户端解析不了、日志里也看不出所以然，双方都不知道发生了什么。
+        // 对这类路径回一个**小而清晰的 JSON**，才是 API 服务该有的样子
+        $path = (string) $request->path();
+
+        foreach (['/v1/', '/api/', '/user/', '/dashboard/'] as $prefix) {
+            if (str_starts_with($path, $prefix)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

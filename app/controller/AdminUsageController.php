@@ -99,7 +99,13 @@ class AdminUsageController
             'peak' => max(1, $peak),
             'byModel' => UsageLog::byModel($fromTs, $toTs, 30, $model),
             'byUser' => UsageLog::topUsers($fromTs, $toTs, 15, $model),
-            'topErrors' => UsageLog::topErrors($fromTs, $toTs, 8, $model),
+            // 失败原因里**一并**把「被本站拒绝的调用」列出来。
+            // 为什么必须一起看：生产上被骗过一次 —— 站长看到大量失败，
+            // 以为是上游或本站出了问题，查了很久，真相是几个客户端
+            // 拿着早就删掉的令牌在反复重试（那些请求一次都没到上游）。
+            // 分开看永远查不出来，一起看就一目了然
+            'topErrors' => UsageLog::topErrors($fromTs, $toTs, 8, $model, true),
+            'rejected' => UsageLog::rejectedStats($fromTs, $toTs),
             'rows' => $this->detailRows($fromTs, $toTs, $model, $page),
             'page' => $page,
             'pages' => $pages,
