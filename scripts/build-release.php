@@ -79,11 +79,6 @@ const DENY_PATH_PATTERNS = [
     '/.idea/',
     '/.vscode/',
     '/node_modules/',
-    // 开发/回归测试与预览工具：只在开发机上用，不进发行版。
-    // 它们会建临时库、改 .env、伪造上游，跑到生产上只会添乱（甚至顶掉 .env）
-    '/scripts/test-model-probe-',
-    '/scripts/_probe-test-harness.php',
-    '/scripts/probe-preview.php',
 ];
 
 /** 文件名命中即中止（.env.example 是唯一例外） */
