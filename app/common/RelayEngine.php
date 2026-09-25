@@ -870,6 +870,11 @@ final class RelayEngine
                         $downstream
                     ));
                 }
+            } elseif ($job->token !== null) {
+                // 金额为 0（模型未定价 / 免费 / 公益站）时不会走到上面的扣费分支，
+                // 但「最后使用时间」仍要更新 —— 否则控制台里所有令牌都显示
+                // 「从未使用」，站长根本看不出谁在用、哪些令牌是死的
+                UserToken::touch((int) $job->token['id']);
             }
         } catch (Throwable $e) {
             // 记账问题绝不能影响已经完成的转发
