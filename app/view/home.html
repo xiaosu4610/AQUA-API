@@ -1,182 +1,390 @@
 <?php
 /**
- * 站点首页模板
+ * 站点首页
  *
- * 面向访客的门面页，明亮色调，与后台同一套视觉语言。
- * 不引 _style.html：首页不是后台页面，没有导航与表格，单独写更清爽。
- * 图标复用 _icons.html，保证与后台一致的观感。
+ * 定位：这是**门面**，不是后台的一部分。
  *
- * @var string $siteName  站点名称（可在后台修改）
- * @var string $modeLabel 站点模式的中文名：商业站 / 公益站
- * @var bool   $isWelfare 是否公益站模式
- * @var string $description  站点简介（后台可配，留空用内置文案）
- * @var string $announcement 站点公告（后台可配，留空不显示）
- * @var string $icp          备案号（后台可配，留空不显示）
- * @var string $footer       页脚署名（后台可配，留空用内置文案）
- * @var bool   $loggedIn     当前访客是否已登录用户账号
- * @var bool   $registerOpen 是否开放自助注册
- * @var bool   $rechargeEnabled 在线充值是否可用
+ * 之前这里只放了一张「服务运行中」的占位卡片 —— 那对访客毫无信息量：
+ * 他不知道这个站是干什么的、能用哪些模型、怎么调用、怎么注册。
+ * 一个 API 站的首页应该在一屏之内把这四件事说清楚。
+ *
+ * 三条内容原则：
+ *   1. **只展示真实信息**。可用模型是从渠道清单实时读出来的，
+ *      不是写死的宣传语；没有配置上游时如实说「尚未配置」，
+ *      而不是挂着「服务已就绪」骗人。
+ *   2. **不泄露内部结构**。只公开模型名（用户必须知道能用什么），
+ *      不出现渠道名、上游地址、密钥池规模这些运维信息。
+ *   3. **不编造数据**。没有真实统计就不写「99.9% 可用率」这类话 ——
+ *      宁可少写一块，也不要写假数字。
+ *
+ * @var string $csrf
+ * @var string $siteName
+ * @var string $modeLabel
+ * @var bool   $isWelfare
+ * @var string $description
+ * @var string $announcement
+ * @var string $icp
+ * @var string $footer
+ * @var bool   $loggedIn
+ * @var bool   $registerOpen
+ * @var bool   $rechargeEnabled
+ * @var array<int, string> $models     公开可见的模型名（已截断）
+ * @var int    $modelTotal             模型总数
+ * @var bool   $showModels             是否允许公开展示模型清单
+ * @var string $apiBase                用于示例代码的接口基址
+ * @var bool   $relayReady             是否已有可用上游（决定首页那句状态文案）
  */
 require_once __DIR__ . '/admin/_icons.html';
+
+$apiBase = rtrim((string) $apiBase, '/');
 ?>
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title><?= htmlspecialchars((string) $siteName, ENT_QUOTES, 'UTF-8') ?></title>
+    <title><?= htmlspecialchars((string) $siteName, ENT_QUOTES, 'UTF-8') ?> · OpenAI 兼容的 LLM API 网关</title>
+    <meta name="description" content="<?= htmlspecialchars(
+        trim((string) $description) !== ''
+            ? mb_substr((string) $description, 0, 120)
+            : 'OpenAI 兼容的 LLM API 网关：统一接口、流式输出、多上游密钥池与用量计费。',
+        ENT_QUOTES,
+        'UTF-8'
+    ) ?>">
     <link rel="icon" href="/favicon.ico" sizes="any">
     <style>
+        /* 首页独立样式：复用后台的配色语言，但不引入后台的表格/表单等无关样式 */
+        :root {
+            --bg: #f5f7fa; --surface: #fff; --text: #1b2733; --muted: #6b7d8f;
+            --faint: #93a4b3; --border: #e3e8ef; --border-strong: #cdd5df;
+            --accent: #0d9dbf; --accent-dark: #0a7f9c; --accent-soft: #e6f6fa;
+            --ok: #12a150; --ok-soft: #e8f7ee;
+        }
         * { box-sizing: border-box; }
+        html { scroll-behavior: smooth; }
         body {
-            margin: 0; min-height: 100vh;
-            display: flex; align-items: center; justify-content: center;
-            background: #f5f7fa;
-            background-image: radial-gradient(circle at 16% 10%, #e0f3f9 0, transparent 45%),
-                              radial-gradient(circle at 86% 90%, #e8f7ee 0, transparent 45%);
+            margin: 0; background: var(--bg); color: var(--text);
             font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
-            color: #1b2733;
-            -webkit-font-smoothing: antialiased;
+            line-height: 1.6; -webkit-font-smoothing: antialiased;
         }
         .ico { vertical-align: -3px; flex: none; }
+        .shell { max-width: 1060px; margin: 0 auto; padding: 0 22px; }
+        a { color: var(--accent-dark); }
 
-        .card {
-            width: 100%; max-width: 560px; margin: 24px; padding: 40px 36px;
-            background: #fff;
-            border: 1px solid #e3e8ef;
-            border-radius: 18px;
-            box-shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 16px 40px -16px rgba(16, 24, 40, .18);
+        /* ── 顶部导航 ───────────────────────────────────── */
+        .nav {
+            position: sticky; top: 0; z-index: 10;
+            background: rgba(255, 255, 255, .88);
+            backdrop-filter: saturate(180%) blur(12px);
+            border-bottom: 1px solid var(--border);
         }
-        .brand {
-            width: 46px; height: 46px; margin-bottom: 18px;
-            display: flex; align-items: center; justify-content: center;
-            background: #e6f6fa; color: #0a7f9c;
-            border: 1px solid #cceaf2; border-radius: 13px;
-        }
-        /* 品牌 logo：站长的 ICO，浏览器会自动挑最合适的那一档尺寸 */
-        .brand img { display: block; width: 32px; height: 32px; border-radius: 9px; }
-        h1 {
-            margin: 0; font-size: 25px; font-weight: 680;
-            letter-spacing: -.2px;
-            display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-        }
-        .badge {
-            padding: 2px 11px; font-size: 12px; font-weight: 500; border-radius: 999px;
+        .nav .inner { display: flex; align-items: center; justify-content: space-between; gap: 16px; height: 62px; }
+        .brand { display: flex; align-items: center; gap: 10px; font-weight: 650; font-size: 15.5px; }
+        .brand img { width: 28px; height: 28px; border-radius: 7px; display: block; }
+        .brand .mode {
+            padding: 1px 9px; font-size: 11.5px; font-weight: 500; border-radius: 999px;
             background: <?= $isWelfare ? '#e8f7ee' : '#e6f6fa' ?>;
             color: <?= $isWelfare ? '#0b7c3e' : '#0a7f9c' ?>;
             border: 1px solid <?= $isWelfare ? '#c8ecd6' : '#cceaf2' ?>;
         }
-        .status {
-            display: flex; align-items: center; gap: 9px;
-            margin: 20px 0 10px; font-size: 13.5px; color: #12a150; font-weight: 500;
+        .nav .links { display: flex; align-items: center; gap: 20px; font-size: 13.5px; }
+        .nav .links a { color: var(--muted); text-decoration: none; }
+        .nav .links a:hover { color: var(--text); }
+        .nav .links a.cta {
+            padding: 7px 15px; border-radius: 8px; font-weight: 600;
+            background: var(--accent); color: #fff;
         }
-        .dot {
-            width: 8px; height: 8px; border-radius: 50%; background: #12a150;
-            box-shadow: 0 0 0 0 rgba(18, 161, 80, .55);
-            animation: pulse 2s infinite;
-        }
-        @keyframes pulse {
-            0%   { box-shadow: 0 0 0 0 rgba(18, 161, 80, .5); }
-            70%  { box-shadow: 0 0 0 9px rgba(18, 161, 80, 0); }
-            100% { box-shadow: 0 0 0 0 rgba(18, 161, 80, 0); }
-        }
-        p.desc { margin: 0 0 28px; font-size: 14px; line-height: 1.85; color: #6b7d8f; white-space: pre-line; }
-        p.desc b { color: #1b2733; font-weight: 600; }
+        .nav .links a.cta:hover { background: var(--accent-dark); color: #fff; }
+        @media (max-width: 640px) { .nav .links a:not(.cta) { display: none; } }
 
-        /* 公告条：用于维护通知、限流说明等临时信息 */
+        /* ── Hero ───────────────────────────────────────── */
+        .hero { padding: 74px 0 54px; }
+        .hero h1 {
+            margin: 0 0 16px; font-size: clamp(28px, 4.6vw, 43px); font-weight: 700;
+            letter-spacing: -.8px; line-height: 1.22;
+        }
+        .hero h1 em { font-style: normal; color: var(--accent-dark); }
+        .hero .lead {
+            margin: 0 0 30px; max-width: 640px;
+            font-size: 16px; color: var(--muted); white-space: pre-line;
+        }
+        .actions { display: flex; flex-wrap: wrap; gap: 11px; margin-bottom: 40px; }
+        .btn {
+            display: inline-flex; align-items: center; gap: 8px;
+            padding: 12px 22px; border-radius: 9px; text-decoration: none;
+            font-size: 14.5px; font-weight: 600;
+            background: var(--accent); color: #fff; border: 1px solid var(--accent);
+        }
+        .btn:hover { background: var(--accent-dark); border-color: var(--accent-dark); color: #fff; }
+        .btn.ghost { background: var(--surface); color: var(--muted); border-color: var(--border-strong); }
+        .btn.ghost:hover { color: var(--text); border-color: var(--accent); background: var(--accent-soft); }
+
+        .facts { display: flex; flex-wrap: wrap; gap: 34px; }
+        .fact .n { font-size: 22px; font-weight: 700; letter-spacing: -.3px; }
+        .fact .l { font-size: 12.5px; color: var(--faint); }
+
+        /* ── 通用区块 ───────────────────────────────────── */
+        section.block { padding: 52px 0; border-top: 1px solid var(--border); }
+        h2.title {
+            margin: 0 0 8px; font-size: 21px; font-weight: 680; letter-spacing: -.3px;
+            display: flex; align-items: center; gap: 9px;
+        }
+        h2.title .ico { color: var(--accent); }
+        p.sub { margin: 0 0 28px; font-size: 14px; color: var(--muted); }
+
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(258px, 1fr)); gap: 16px; }
+        .card {
+            padding: 22px 20px; background: var(--surface);
+            border: 1px solid var(--border); border-radius: 13px;
+        }
+        .card .ic {
+            width: 36px; height: 36px; margin-bottom: 13px;
+            display: flex; align-items: center; justify-content: center;
+            background: var(--accent-soft); color: var(--accent-dark); border-radius: 10px;
+        }
+        .card h3 { margin: 0 0 6px; font-size: 15px; font-weight: 650; }
+        .card p { margin: 0; font-size: 13.5px; color: var(--muted); }
+
+        /* ── 模型标签 ───────────────────────────────────── */
+        .tags { display: flex; flex-wrap: wrap; gap: 8px; }
+        .tag {
+            padding: 5px 12px; font-size: 12.5px; border-radius: 999px;
+            font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+            background: var(--surface); border: 1px solid var(--border); color: var(--muted);
+        }
+        .tag.more { background: var(--accent-soft); border-color: #cceaf2; color: var(--accent-dark); font-weight: 600; }
+
+        /* ── 代码块 ─────────────────────────────────────── */
+        pre {
+            margin: 0; padding: 18px 20px; overflow-x: auto;
+            background: #fbfdff; border: 1px solid var(--border); border-radius: 12px;
+            font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+            font-size: 12.5px; line-height: 1.85; color: #2b3a48;
+        }
+        pre .c { color: #8b9aa8; }
+        pre .k { color: var(--accent-dark); }
+
+        /* ── 公告 ───────────────────────────────────────── */
         .notice {
-            display: flex; gap: 9px; align-items: flex-start;
-            margin: 0 0 20px; padding: 11px 14px;
-            background: #fdf4e3; border: 1px solid #f0dcb4;
-            border-radius: 10px; font-size: 13.5px; color: #a05f04;
-            white-space: pre-line;
+            display: flex; gap: 10px; align-items: flex-start;
+            margin: 26px 0 -14px; padding: 13px 16px;
+            background: #fdf4e3; border: 1px solid #f0dcb4; border-radius: 11px;
+            font-size: 13.5px; color: #a05f04; white-space: pre-line;
         }
         .notice .ico { margin-top: 2px; }
 
-        .actions { display: flex; flex-wrap: wrap; gap: 10px; }
-        a.btn {
-            display: inline-flex; align-items: center; gap: 8px;
-            padding: 11px 20px; border-radius: 9px;
-            font-size: 14px; font-weight: 600; text-decoration: none;
-            background: #0d9dbf; color: #fff; border: 1px solid #0d9dbf;
-        }
-        a.btn:hover { background: #0a7f9c; border-color: #0a7f9c; }
-        a.btn.ghost {
-            background: #fff; color: #6b7d8f;
-            border: 1px solid #cdd5df;
-        }
-        a.btn.ghost:hover { color: #1b2733; border-color: #0d9dbf; background: #e6f6fa; }
-
+        /* ── 页脚 ───────────────────────────────────────── */
         footer {
-            margin-top: 32px; padding-top: 18px;
-            border-top: 1px solid #e3e8ef;
-            font-size: 12.5px; color: #93a4b3;
+            padding: 34px 0 44px; border-top: 1px solid var(--border);
+            font-size: 12.5px; color: var(--faint);
+            display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center;
         }
-        footer a { color: #0a7f9c; }
+        footer a { color: var(--muted); }
+        .dot {
+            width: 7px; height: 7px; border-radius: 50%; display: inline-block;
+            background: var(--ok); margin-right: 6px;
+        }
     </style>
 </head>
 <body>
-<main class="card">
-    <div class="brand"><img src="/favicon.ico" alt="" width="32" height="32"></div>
 
-    <h1>
-        <?= htmlspecialchars((string) $siteName, ENT_QUOTES, 'UTF-8') ?>
-        <span class="badge"><?= htmlspecialchars((string) $modeLabel, ENT_QUOTES, 'UTF-8') ?></span>
-    </h1>
-
-    <div class="status">
-        <span class="dot"></span>
-        <span>服务运行中</span>
-    </div>
-
-    <?php if (($announcement ?? '') !== ''): ?>
-        <div class="notice">
-            <?= icon('alert', 16) ?>
-            <span><?= htmlspecialchars((string) $announcement, ENT_QUOTES, 'UTF-8') ?></span>
+<header class="nav">
+    <div class="shell inner">
+        <div class="brand">
+            <img src="/favicon.ico" alt="" width="28" height="28">
+            <?= htmlspecialchars((string) $siteName, ENT_QUOTES, 'UTF-8') ?>
+            <span class="mode"><?= htmlspecialchars((string) $modeLabel, ENT_QUOTES, 'UTF-8') ?></span>
         </div>
+        <nav class="links">
+            <?php if (!empty($showModels)): ?><a href="#models">可用模型</a><?php endif; ?>
+            <a href="#start">快速开始</a>
+            <a href="/healthz">服务状态</a>
+            <a href="/admin">管理后台</a>
+            <?php if (!empty($loggedIn)): ?>
+                <a class="cta" href="/console"><?= icon('dashboard', 15) ?>控制台</a>
+            <?php else: ?>
+                <a class="cta" href="/login"><?= icon('lock', 15) ?>登录</a>
+            <?php endif; ?>
+        </nav>
+    </div>
+</header>
+
+<main class="shell">
+
+    <section class="hero">
+        <h1>统一的 <em>LLM API</em> 网关<br>一个地址，接入多家上游</h1>
+
+        <p class="lead">
+            <?php if (trim((string) $description) !== ''): ?>
+                <?= htmlspecialchars((string) $description, ENT_QUOTES, 'UTF-8') ?>
+            <?php else: ?>
+                对外提供 <b>OpenAI 兼容</b>接口，现有代码改一个 base_url 就能用；<br>
+                对内统一管理多家上游的密钥池、路由、用量与计费。
+            <?php endif; ?>
+        </p>
+
+        <?php if (trim((string) $announcement) !== ''): ?>
+            <div class="notice">
+                <?= icon('alert', 16) ?>
+                <span><?= htmlspecialchars((string) $announcement, ENT_QUOTES, 'UTF-8') ?></span>
+            </div>
+        <?php endif; ?>
+
+        <div class="actions">
+            <?php if (!empty($loggedIn)): ?>
+                <a class="btn" href="/console"><?= icon('dashboard', 16) ?>进入控制台</a>
+            <?php elseif (!empty($registerOpen)): ?>
+                <a class="btn" href="/register"><?= icon('user', 16) ?>注册账号</a>
+                <a class="btn ghost" href="/login"><?= icon('lock', 16) ?>已有账号，登录</a>
+            <?php else: ?>
+                <a class="btn" href="/login"><?= icon('lock', 16) ?>登录</a>
+            <?php endif; ?>
+            <a class="btn ghost" href="#start"><?= icon('bolt', 16) ?>看调用示例</a>
+        </div>
+
+        <div class="facts">
+            <div class="fact">
+                <div class="n">
+                    <?php if ($relayReady): ?>
+                        <span class="dot"></span>服务已就绪
+                    <?php else: ?>
+                        待配置
+                    <?php endif; ?>
+                </div>
+                <div class="l"><?= $relayReady ? '转发通道正常' : '站长尚未接入上游渠道' ?></div>
+            </div>
+            <div class="fact">
+                <div class="n"><?= (int) $modelTotal ?></div>
+                <div class="l">可用模型</div>
+            </div>
+            <div class="fact">
+                <div class="n">OpenAI</div>
+                <div class="l">接口协议兼容</div>
+            </div>
+            <div class="fact">
+                <div class="n">SSE</div>
+                <div class="l">原生流式输出</div>
+            </div>
+        </div>
+    </section>
+
+    <section class="block">
+        <h2 class="title"><?= icon('shield', 19) ?>这个网关做了什么</h2>
+        <p class="sub">把「对接多家上游」这件事从你的应用里挪出来，统一在一层解决。</p>
+
+        <div class="grid">
+            <div class="card">
+                <div class="ic"><?= icon('bolt', 19) ?></div>
+                <h3>接口兼容，改一行就能用</h3>
+                <p>遵循 OpenAI 的 <code>/v1/chat/completions</code> 与 <code>/v1/models</code>，
+                    现有的 SDK、客户端、脚本只需换掉 base_url 与 Key。</p>
+            </div>
+            <div class="card">
+                <div class="ic"><?= icon('pulse', 19) ?></div>
+                <h3>原生流式，不缓冲</h3>
+                <p>基于事件循环的转发引擎，逐块透传上游数据。上游返回 401 / 429 / 5xx 时
+                    你收到的是真实状态码，而不是伪装成 200 的错误流。</p>
+            </div>
+            <div class="card">
+                <div class="ic"><?= icon('keys-pool', 19) ?></div>
+                <h3>多上游与密钥池</h3>
+                <p>一个模型可挂多家上游，按优先级与权重分流；单个上游可挂上百把密钥轮换，
+                    单把限流、失败自动冷却、失效自动停用。</p>
+            </div>
+            <div class="card">
+                <div class="ic"><?= icon('refresh', 19) ?></div>
+                <h3>故障自动切换</h3>
+                <p>上游超时、限流、报错时自动换一条线路重试；某条线路连续失败会被短期熔断，
+                    不会让每个请求都去撞一次墙。</p>
+            </div>
+            <div class="card">
+                <div class="ic"><?= icon('coin', 19) ?></div>
+                <h3>用量与计费</h3>
+                <p>按 Token / 按次 / 订阅 / 免费四种口径计费，上游成本与下游售价分开记录，
+                    每一笔调用都能回溯到具体模型与线路。</p>
+            </div>
+            <div class="card">
+                <div class="ic"><?= icon('chart', 19) ?></div>
+                <h3>可观测</h3>
+                <p>每次请求的 token、耗时、状态、成败都有记录；控制台可看余额与调用明细，
+                    接口出问题时能直接定位到是哪一段。</p>
+            </div>
+        </div>
+    </section>
+
+    <?php if (!empty($showModels) && $models !== []): ?>
+        <section class="block" id="models">
+            <h2 class="title"><?= icon('channels', 19) ?>可用模型</h2>
+            <p class="sub">
+                当前网关可转发的模型共 <b><?= (int) $modelTotal ?></b> 个
+                <?php if ($modelTotal > count($models)): ?>
+                    ，以下展示前 <?= count($models) ?> 个
+                <?php endif; ?>
+                。实际可用范围以你的账号权限为准。
+            </p>
+            <div class="tags">
+                <?php foreach ($models as $model): ?>
+                    <span class="tag"><?= htmlspecialchars((string) $model, ENT_QUOTES, 'UTF-8') ?></span>
+                <?php endforeach; ?>
+                <?php if ($modelTotal > count($models)): ?>
+                    <span class="tag more">还有 <?= (int) ($modelTotal - count($models)) ?> 个…</span>
+                <?php endif; ?>
+            </div>
+        </section>
     <?php endif; ?>
 
-    <p class="desc">
-        <?php if (($description ?? '') !== ''): ?>
-            <?= htmlspecialchars((string) $description, ENT_QUOTES, 'UTF-8') ?>
-        <?php else: ?>
-            面向 LLM 上游的 <b>API 网关</b>，对外提供 OpenAI 兼容接口，<br>
-            对内管理多上游<b>密钥池</b>、路由、用量与配额。
-            <br><br>
-            接口正在开发中，尚未对外开放调用。
-        <?php endif; ?>
-    </p>
-
-    <div class="actions">
-        <?php if (!empty($loggedIn)): ?>
-            <a class="btn" href="/console"><?= icon('dashboard', 16) ?>进入控制台</a>
-            <?php if (!empty($rechargeEnabled)): ?>
-                <a class="btn ghost" href="/recharge"><?= icon('card', 16) ?>充值</a>
+    <section class="block" id="start">
+        <h2 class="title"><?= icon('bolt', 19) ?>快速开始</h2>
+        <p class="sub">
+            <?php if (!empty($loggedIn)): ?>
+                在控制台创建令牌后，把下面的 Key 换成你自己的即可。
+            <?php else: ?>
+                登录后在控制台创建令牌，再按下面的方式调用。
             <?php endif; ?>
-        <?php else: ?>
-            <a class="btn" href="/login"><?= icon('lock', 16) ?>登录</a>
-            <?php if (!empty($registerOpen)): ?>
-                <a class="btn ghost" href="/register"><?= icon('user', 16) ?>注册</a>
-            <?php endif; ?>
-        <?php endif; ?>
+        </p>
 
-        <a class="btn ghost" href="/admin"><?= icon('settings', 16) ?>管理后台</a>
-        <?php if ($isWelfare): ?>
-            <a class="btn ghost" href="/healthz"><?= icon('pulse', 16) ?>服务状态</a>
-        <?php endif; ?>
-    </div>
+        <pre><span class="c"># 1) 查看可用模型</span>
+curl <?= htmlspecialchars($apiBase, ENT_QUOTES, 'UTF-8') ?>/v1/models \
+  -H <span class="k">"Authorization: Bearer $AQUA_KEY"</span>
 
-    <footer>
-        <?php if (($footer ?? '') !== ''): ?>
+<span class="c"># 2) 发起一次对话（流式）</span>
+curl <?= htmlspecialchars($apiBase, ENT_QUOTES, 'UTF-8') ?>/v1/chat/completions \
+  -H <span class="k">"Authorization: Bearer $AQUA_KEY"</span> \
+  -H <span class="k">"Content-Type: application/json"</span> \
+  -d '{
+        "model": "<?= htmlspecialchars($models[0] ?? 'your-model', ENT_QUOTES, 'UTF-8') ?>",
+        "stream": true,
+        "messages": [{"role": "user", "content": "你好"}]
+      }'
+
+<span class="c"># 3) 用官方 SDK 也行（Python）：只改 base_url</span>
+<span class="c"># client = OpenAI(base_url="<?= htmlspecialchars($apiBase, ENT_QUOTES, 'UTF-8') ?>/v1", api_key="...")</span></pre>
+
+        <p class="sub" style="margin:16px 0 0">
+            认证方式与 OpenAI 一致（<code>Authorization: Bearer &lt;令牌&gt;</code>），
+            也接受 <code>x-api-key</code> 头。
+        </p>
+    </section>
+
+</main>
+
+<footer class="shell">
+    <span><span class="dot"></span>服务运行中</span>
+    <?php if (!empty($rechargeEnabled)): ?>
+        <span>支持在线充值</span>
+    <?php endif; ?>
+    <span>
+        <?php if (trim((string) $footer) !== ''): ?>
             <?= htmlspecialchars((string) $footer, ENT_QUOTES, 'UTF-8') ?>
         <?php else: ?>
-            由开源项目 <a href="https://gitee.com/xiaosu4610/aqua-api-php" target="_blank" rel="noopener">aqua-api-php</a> 提供
-            · MIT 许可
+            由开源项目 <a href="https://gitee.com/xiaosu4610/aqua-api-php" target="_blank" rel="noopener">aqua-api-php</a> 驱动 · MIT 许可
         <?php endif; ?>
-        <?php if (($icp ?? '') !== ''): ?>
-            <br><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener"><?= htmlspecialchars((string) $icp, ENT_QUOTES, 'UTF-8') ?></a>
-        <?php endif; ?>
-    </footer>
-</main>
+    </span>
+    <?php if (trim((string) $icp) !== ''): ?>
+        <span><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener"><?= htmlspecialchars((string) $icp, ENT_QUOTES, 'UTF-8') ?></a></span>
+    <?php endif; ?>
+    <span style="margin-left:auto"><a href="/healthz">状态</a> · <a href="/admin">管理后台</a></span>
+</footer>
+
 </body>
 </html>

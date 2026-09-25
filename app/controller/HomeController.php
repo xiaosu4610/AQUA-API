@@ -2,51 +2,81 @@
 /**
  * 站点首页
  *
- * 这是一个**公开**页面（不需要登录），定位是「站点门户 + 运行状态」：
- *   · 让访客/站长一眼确认服务是活的；
- *   · 给出进入管理后台的入口；
- *   · 将来这里会承载公益站的「用量公示」（可用模型、今日调用量等），
- *     这是公开透明的落点，所以从一开始就做成公开页面而不是重定向到后台。
+ * 这一层只负责**取真实数据**，不做任何文案编造：
+ *   · 「可用模型」是从已启用渠道的模型清单实时汇总的，不是写死的宣传；
+ *   · 「服务已就绪」取决于是否真的存在已启用的渠道 —— 没配上游就如实显示
+ *     「待配置」，而不是挂一个漂亮的状态骗访客。
  *
- * 安全取舍：**不展示 PHP 版本、框架版本等内部信息**。
- * 首页是任何人可访问的，暴露精确版本号等于替攻击者完成 CVE 匹配的第一步。
- * 需要看版本信息请登录后台（后台仪表盘有）。
+ * 只暴露模型名这一层信息。渠道名、上游地址、密钥池规模都属于运维细节，
+ * 放上首页等于白送情报给扫描者。
  */
 
 declare(strict_types=1);
 
 namespace app\controller;
 
+use app\common\Channel;
 use app\common\Epay;
 use app\common\Settings;
+use app\common\Url;
 use support\Request;
 use support\Response;
 
 class HomeController
 {
+    /** 首页最多展示多少个模型名。再多就变成一堵墙，反而没人看 */
+    private const MAX_MODELS_ON_HOME = 24;
+
     /**
      * GET / —— 站点首页
      */
     public function index(Request $request): Response
     {
         $mode = (string) Settings::get('site.mode', 'commercial');
+        $showModels = Settings::bool('site.show_models', true);
+
+        // 汇总模型清单：只统计**已启用**的渠道 —— 被停用的渠道所支持的模型
+        // 对外并不存在，列出来只会误导访客
+        $all = [];
+        $hasUsableChannel = false;
+
+        foreach (Channel::all() as $channel) {
+            if ((int) $channel['status'] !== Channel::STATUS_ENABLED) {
+                continue;
+            }
+
+            $hasUsableChannel = true;
+
+            foreach (Channel::modelsOf($channel) as $model) {
+                $model = trim((string) $model);
+                if ($model !== '') {
+                    $all[$model] = true;
+                }
+            }
+        }
+
+        $models = array_keys($all);
+        sort($models, SORT_NATURAL | SORT_FLAG_CASE);
 
         return view('home', [
             'siteName' => (string) Settings::get('site.name', 'aqua-api-php'),
-            // 站点模式用中文展示，便于访客理解这个站点是商业站还是公益站
             'modeLabel' => $mode === 'public_welfare' ? '公益站' : '商业站',
             'isWelfare' => $mode === 'public_welfare',
-            // 以下四项都可在后台配置。简介留空时由模板回落到内置文案，
-            // 而不是在这里拼一段默认值 —— 默认文案属于展示层
             'description' => trim((string) Settings::get('site.description', '')),
             'announcement' => trim((string) Settings::get('site.announcement', '')),
             'icp' => trim((string) Settings::get('site.icp', '')),
             'footer' => trim((string) Settings::get('site.footer', '')),
-            // 用户侧入口：已登录直接给「控制台」，否则给「登录 / 注册」。
-            // 注册开关由站长控制，没开就不显示注册入口
-            'loggedIn' => \app\controller\AuthController::currentUserId() > 0,
+            'loggedIn' => AuthController::currentUserId() > 0,
             'registerOpen' => Settings::bool('register.open', false),
             'rechargeEnabled' => Epay::enabled(),
+            'showModels' => $showModels,
+            'models' => $showModels ? array_slice($models, 0, self::MAX_MODELS_ON_HOME) : [],
+            'modelTotal' => count($models),
+            // 有已启用渠道就认为转发通道可用。这里不做真实探测 ——
+            // 首页每次访问都去连一次上游是不可接受的
+            'relayReady' => $hasUsableChannel,
+            // 示例代码里的接口基址：优先用配置的域名，回落到当前访问的 Host
+            'apiBase' => Url::base($request),
         ], '');
     }
 }
