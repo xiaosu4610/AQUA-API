@@ -13,5 +13,8 @@
  */
 
 return [
-    '' => support\exception\Handler::class,
+    // 换成项目自己的处理器：把未预期的异常渲染成统一错误页，
+    // 并保留正确的 HTTP 状态码、对 /v1/* 回 JSON。
+    // 详情见 app/exception/Handler.php
+    '' => app\exception\Handler::class,
 ];

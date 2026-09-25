@@ -1,0 +1,189 @@
+<?php
+/**
+ * 错误页（所有 4xx / 5xx 共用这一份）
+ *
+ * 两条刻意的设计：
+ *
+ * 1）**只按状态码渲染，不回显异常消息。**
+ *    异常消息里可能带着文件路径、SQL 片段、上游响应甚至堆栈 ——
+ *    生产环境把它显示给访客，等于白送情报。而且框架自己也会传 message 进来
+ *    且已经做过一次转义，与我们的调用方口径不一致，混用迟早出现
+ *    「有的页转义了、有的没转义」。索性：内容只由 $code 决定。
+ *    只有 APP_DEBUG 打开时，才把异常详情放进默认折叠的区块里，且由我们转义。
+ *
+ * 2）**绝不出现管理后台的入口。**
+ *    错误页是扫描者最容易看到的一批页面，上面挂一个「去后台」链接
+ *    等于主动公告入口（见 docs/06 安全规范第一条铁律）。
+ *
+ * 三个状态必须齐全（docs/13 / docs/08 §4）：
+ *    说清「发生了什么」+「可能是什么原因」+「下一步能做什么」。
+ *
+ * 用法（两种调用方式都走这里）：
+ *   · 404：框架的 PageNotFoundException 会主动找 app/view/404.html
+ *   · 其它状态码：app/exception/Handler.php 直接渲染本文件
+ *
+ * @var int    $code           HTTP 状态码
+ * @var string $debugDetail    仅调试模式下传入的异常详情（生产为空）
+ */
+
+require_once __DIR__ . '/admin/_icons.html';
+
+$code = (int) ($code ?? 500);
+
+// 状态码 → 文案。找不到的码回落成一条通用说明，不硬凑
+$known = [
+    400 => ['title' => '请求有问题', 'text' => '服务器无法理解这个请求，可能是参数格式不对。'],
+    401 => ['title' => '需要先登录', 'text' => '你需要登录之后才能访问这个页面。'],
+    403 => ['title' => '没有访问权限', 'text' => '当前账号没有访问这个页面的权限。'],
+    404 => ['title' => '页面不存在', 'text' => '你要找的页面不存在，或者已经被移走了。'],
+    405 => ['title' => '请求方式不支持', 'text' => '这个地址不接受当前的请求方式。'],
+    409 => ['title' => '操作与当前状态冲突', 'text' => '请刷新页面后重试。'],
+    429 => ['title' => '请求太频繁', 'text' => '短时间内发来的请求太多了，请稍等片刻再试。'],
+    500 => ['title' => '服务器出错了', 'text' => '服务器在处理这个请求时遇到了意外。'],
+    502 => ['title' => '上游没有正常响应', 'text' => '我们依赖的上游服务没有返回正常结果，稍后重试通常就好了。'],
+    503 => ['title' => '服务暂时不可用', 'text' => '服务正在维护或负载过高，请稍后再试。'],
+];
+
+$page = $known[$code] ?? ['title' => '请求未能完成', 'text' => '服务器没能完成这个请求。'];
+
+// 「可能的原因」：只在真能给出有用的猜测时才显示。
+// 泛泛地罗列一堆原因是噪音，反而让人不知道该看哪条
+$reasons = [
+    404 => [
+        '地址拼写有误，或链接已经过期',
+        '相关内容已被删除或移动',
+        '这个地址需要带正确参数才能打开',
+    ],
+    403 => [
+        '当前登录的账号不是该资源的所有者',
+        '该功能只对管理员开放',
+        '登录状态已失效，可以试着重新登录一次',
+    ],
+    429 => [
+        '短时间内触发了限流',
+        '同一个账号有多个程序在同时请求',
+    ],
+    500 => [
+        '服务端出现了未预期的异常（详情已写入服务端日志）',
+        '配置有误，例如数据库连不上',
+    ],
+    502 => [
+        '上游服务临时故障或被限流',
+        '上游地址配置有误',
+    ],
+    503 => [
+        '服务正在重启或升级',
+        '当前负载过高，触发了自我保护',
+    ],
+];
+
+// 下一步动作。顺序即主次：主按钮放前面
+$actions = [
+    401 => [['href' => '/login', 'label' => '去登录', 'icon' => 'user', 'primary' => true],
+            ['href' => '/', 'label' => '返回首页', 'icon' => 'home', 'primary' => false]],
+    429 => [['reload' => true, 'label' => '重新加载', 'icon' => 'refresh', 'primary' => true],
+            ['href' => '/', 'label' => '返回首页', 'icon' => 'home', 'primary' => false]],
+];
+
+$defaultActions = [
+    ['href' => '/', 'label' => '返回首页', 'icon' => 'home', 'primary' => true],
+    ['back' => true, 'label' => '返回上一页', 'icon' => 'back', 'primary' => false],
+];
+
+// 5xx 一律先给「重新加载」——绝大多数 5xx 重试一次就好了
+if ($code >= 500) {
+    $defaultActions = [
+        ['reload' => true, 'label' => '重新加载', 'icon' => 'refresh', 'primary' => true],
+        ['href' => '/', 'label' => '返回首页', 'icon' => 'home', 'primary' => false],
+    ];
+}
+
+$buttons = $actions[$code] ?? $defaultActions;
+
+// 站点名：错误页也要有品牌感，否则看起来像「跳到了别人家」
+$siteName = '';
+try {
+    $siteName = trim((string) \app\common\Settings::get('site.name', ''));
+} catch (\Throwable $e) {
+    $siteName = '';
+}
+?>
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <!-- 错误页没有任何被收录的价值，而且会污染搜索结果 -->
+    <meta name="robots" content="noindex, nofollow">
+    <title><?= $code ?><?= $siteName !== '' ? ' · ' . htmlspecialchars($siteName, ENT_QUOTES, 'UTF-8') : '' ?></title>
+    <?php include __DIR__ . '/admin/_style.html'; ?>
+</head>
+<body>
+<div class="wrap">
+    <div class="err-page">
+        <div class="err-box">
+            <div class="err-code"><?= $code ?></div>
+            <h1><?= icon($code === 404 ? 'alert' : 'alert', 20) ?><?= htmlspecialchars($page['title'], ENT_QUOTES, 'UTF-8') ?></h1>
+            <p class="err-text"><?= htmlspecialchars($page['text'], ENT_QUOTES, 'UTF-8') ?></p>
+
+            <?php if (!empty($reasons[$code])): ?>
+                <div class="err-reasons">
+                    <b><?= icon('info', 15) ?>可能是这些原因</b>
+                    <ul>
+                        <?php foreach ($reasons[$code] as $reason): ?>
+                            <li><?= htmlspecialchars($reason, ENT_QUOTES, 'UTF-8') ?></li>
+                        <?php endforeach; ?>
+                    </ul>
+                </div>
+            <?php endif; ?>
+
+            <div class="err-actions">
+                <?php foreach ($buttons as $btn): ?>
+                    <?php if (!empty($btn['reload'])): ?>
+                        <button type="button" class="<?= !empty($btn['primary']) ? 'primary' : 'ghost' ?>" data-reload>
+                            <?= icon($btn['icon'], 15) ?><?= htmlspecialchars($btn['label'], ENT_QUOTES, 'UTF-8') ?>
+                        </button>
+                    <?php elseif (!empty($btn['back'])): ?>
+                        <button type="button" class="ghost" data-back>
+                            <?= icon($btn['icon'], 15) ?><?= htmlspecialchars($btn['label'], ENT_QUOTES, 'UTF-8') ?>
+                        </button>
+                    <?php else: ?>
+                        <a class="<?= !empty($btn['primary']) ? 'primary' : 'ghost' ?>"
+                           href="<?= htmlspecialchars($btn['href'], ENT_QUOTES, 'UTF-8') ?>">
+                            <?= icon($btn['icon'], 15) ?><?= htmlspecialchars($btn['label'], ENT_QUOTES, 'UTF-8') ?>
+                        </a>
+                    <?php endif; ?>
+                <?php endforeach; ?>
+            </div>
+
+            <?php if (!empty($debugDetail)): ?>
+                <details class="adv" style="margin-top:var(--sp-5);text-align:left">
+                    <summary><?= icon('alert', 16) ?>调试详情（仅调试模式下显示）</summary>
+                    <div class="adv-body">
+                        <pre class="mono" style="white-space:pre-wrap;margin:0"><?= htmlspecialchars((string) $debugDetail, ENT_QUOTES, 'UTF-8') ?></pre>
+                    </div>
+                </details>
+            <?php endif; ?>
+
+            <?php if ($code >= 500): ?>
+                <p class="err-meta">
+                    <?= htmlspecialchars(gmdate('Y-m-d H:i:s'), ENT_QUOTES, 'UTF-8') ?> UTC
+                    · 若反复出现，请把这一行与状态码发给站长，便于对照服务端日志
+                </p>
+            <?php endif; ?>
+        </div>
+    </div>
+</div>
+
+<script>
+    // 「返回上一页」与「重新加载」用脚本绑定，而不是写 javascript: 伪协议 ——
+    // 伪协议看起来像可疑链接，也会被某些安全策略拦掉
+    document.querySelectorAll('[data-back]').forEach(function (el) {
+        el.addEventListener('click', function () { history.back(); });
+    });
+    document.querySelectorAll('[data-reload]').forEach(function (el) {
+        el.addEventListener('click', function () { location.reload(); });
+    });
+</script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+<?php
+/**
+ * 404 页
+ *
+ * 这个文件名是**框架约定**：support\exception\PageNotFoundException 在渲染
+ * 未匹配到路由的请求时，会主动去找 app/view/404.html，找到就用它。
+ * 于是「路由不存在」这个最常见的 404 不需要我们写任何中间件或路由兜底。
+ *
+ * 内容全部由共享模板 _error.html 决定（只按状态码渲染），
+ * 所以这里只做一件事：声明状态码。
+ *
+ * @var string $message 框架传入的原始消息（本模板刻意不使用 —— 见 _error.html 顶部说明）
+ */
+
+$code = 404;
+include __DIR__ . '/_error.html';
