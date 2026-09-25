@@ -74,7 +74,7 @@ final class RelayJob
     public float $firstByteAt = 0.0;
     public float $lastActivityAt = 0.0;
     public float $lastHeartbeatAt = 0.0;
-    public int $ttftTimeout = 30;
+    public int $ttftTimeout = 300;
     public int $idleTimeout = 60;
     public int $heartbeatInterval = 15;
 

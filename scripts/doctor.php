@@ -195,6 +195,9 @@ if ($tokenTotal === 0) {
 // ═══════════════════════════════════════════════════════════
 echo "\n【四】关键开关\n";
 
+// ⚠️ 下面这些默认值必须与 app/common/Timeouts.php 的 DEFAULTS 一致：
+// 本脚本刻意不加载框架（见文件头说明），所以只能重复一份。
+// 改超时默认值时，Timeouts.php 与这里要一起改。
 $switches = [
     'site.mode' => ['站点是否收费', 'commercial'],
     'register.open' => ['开放注册', false],
@@ -203,8 +206,9 @@ $switches = [
     'billing.require_balance' => ['余额为 0 时拒绝调用', true],
     'billing.unpriced_is_free' => ['未定价模型按免费处理', true],
     'mail.enabled' => ['邮件服务已启用', false],
-    'gateway.ttft_timeout' => ['首字节超时（秒）', 30],
-    'gateway.total_timeout' => ['单请求总时长上限（秒）', 600],
+    'gateway.ttft_timeout' => ['首字节超时（秒）', 300],
+    'gateway.idle_timeout' => ['卡住超时（秒）', 60],
+    'gateway.total_timeout' => ['单请求总时长上限（秒）', 300],
     'probe.free_only' => ['只上架能真正调用的模型', true],
     'users.auto_compact_ids' => ['自动补齐用户编号', true],
 ];

@@ -111,6 +111,8 @@ Route::group('/admin', function () {
     // 配置管理
     Route::get('/settings', [SettingController::class, 'index']);
     Route::post('/settings', [SettingController::class, 'save']);
+    // 超时专项保存：与整页保存分开，只认超时这几个键（见 saveTimeouts 的说明）
+    Route::post('/settings/timeouts', [SettingController::class, 'saveTimeouts']);
     Route::post('/settings/reset', [SettingController::class, 'reset']);
 
     // 渠道与密钥池管理

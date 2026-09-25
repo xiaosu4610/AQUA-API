@@ -31,6 +31,8 @@ use app\common\Crypto;
 use app\common\Csrf;
 use app\common\Mailer;
 use app\common\Settings;
+use app\common\Timeouts;
+use support\Log;
 use support\Request;
 use support\Response;
 
@@ -132,9 +134,9 @@ class SettingController
         // ── 网关 ──
         'gateway.connect_timeout' => ['连接上游的超时（秒）', '只管「连上」这一步（TCP/TLS 握手）。连不上就换 Key/渠道，通常 5-10 秒足够'],
         'gateway.probe_timeout' => ['测活/拉清单的超时（秒）', '后台「测活」和「检测模型」单个请求的最长等待。调大能少误判慢模型，代价是测一遍更久'],
-        'gateway.ttft_timeout' => ['首字节超时（秒）', '上游多久还不吐第一个字就算「没响应」，会触发换 Key 重试。模型思考慢就调大（30-120）'],
+        'gateway.ttft_timeout' => ['首字节超时（秒）', '上游多久还不吐第一个字就算「没响应」，会触发换 Key 重试。免费上游冷启动慢，默认 300 秒；调小会让慢模型被误判成不可用'],
         'gateway.idle_timeout' => ['卡住超时（秒）', '两个数据块之间最长允许停多久。长回答不会因为总时长被掐，只会因为「卡住不动」被掐'],
-        'gateway.total_timeout' => ['单请求总时长上限（秒）', '兜底值，防止一条连接被永久占住。设为 0 关闭兜底（不推荐）'],
+        'gateway.total_timeout' => ['单请求总时长上限（秒）', '兜底值，防止一条连接被永久占住。默认 300 秒；填 0 表示不设上限（不推荐）'],
         'gateway.max_retries' => ['失败最多重试几次', '每次重试都会换一条渠道或换一把 Key，不是把同样的请求再发一遍。设 0 表示不重试'],
         'gateway.retry_status' => ['哪些错误码该换渠道重试', '逗号分隔。默认含 401/403（那把 Key 坏了，换一把常常立刻就好）与 429/5xx（上游抖了）'],
         'gateway.heartbeat_interval' => ['SSE 心跳间隔（秒）', '每隔这么久发一个心跳，防止 Nginx 等中间设备把长时间没数据的连接掐断'],
@@ -272,10 +274,136 @@ class SettingController
             // 这类问题最难自己发现（比如「要求邮箱验证」+「没配邮件服务」
             // 会让所有新用户注册后卡在门外）
             'warnings'   => $this->configWarnings(),
+            // 超时专项卡片：这几个数字是站长最常调的（免费上游慢就要放宽），
+            // 单独放一张卡片、配好范围和推荐值，比让他在几十项配置里翻要省事得多
+            'timeouts'   => $this->timeoutCard(),
             // pull 会读取并删除，保证提示只显示一次
             'notice'     => (string) session()->pull(self::FLASH_NOTICE, ''),
             'noticeType' => (string) session()->pull(self::FLASH_TYPE, 'info'),
         ], '');
+    }
+
+    /**
+     * 超时卡片的渲染数据（键、中文名、说明、当前值、允许范围、推荐值）。
+     *
+     * @return array<int, array{key:string, label:string, hint:string, value:int, min:int, max:int, recommended:int}>
+     */
+    private function timeoutCard(): array
+    {
+        $rows = [];
+        $current = Timeouts::all();
+        $fields = array_flip(Timeouts::FORM_NAMES);   // 配置键 => 表单短名
+
+        foreach (Timeouts::DEFAULTS as $key => $default) {
+            [$min, $max] = Timeouts::RANGE[$key] ?? [1, 3600];
+            $rows[] = [
+                'key' => $key,
+                'field' => (string) ($fields[$key] ?? $key),
+                'label' => self::labelOf($key),
+                'hint' => self::hintOf($key),
+                'value' => $current[$key] ?? $default,
+                'min' => $min,
+                'max' => $max,
+                'recommended' => Timeouts::RECOMMENDED[$key] ?? $default,
+            ];
+        }
+
+        return $rows;
+    }
+
+    /**
+     * POST /admin/settings/timeouts —— 只保存超时这几项
+     *
+     * ═══ 为什么要单独一个接口，而不是复用 /admin/settings ═══
+     *
+     * 主配置表单是「整页一起提交」的，而它把「布尔项没出现在表单里」解释成
+     * 「用户把它关掉了」（未勾选的复选框不会出现在请求里）——
+     * 所以拿一个只含超时字段的表单去提交主接口，会**顺手关掉一堆开关**。
+     * 这个坑很隐蔽：站长只想改个超时，结果邮件、注册、支付开关全被关掉。
+     *
+     * 因此这里是独立接口，只认这几个键、只写这几个键，别的一律不碰。
+     *
+     * ⚠️ 字段名用短名（`t[ttft]`），不用配置键本身（`t[gateway.ttft_timeout]`）：
+     * 配置键带点号，而 PHP 会改写变量名里的点号，这类字段名很容易在某次
+     * 调整里悄悄失效，症状是「点保存没反应」。见 Timeouts::FORM_NAMES。
+     */
+    public function saveTimeouts(Request $request): Response
+    {
+        if (!Csrf::check($request->post('_csrf'))) {
+            return $this->back('页面已过期，请重新提交', 'err');
+        }
+
+        $submitted = (array) $request->post('t', []);
+        $errors = [];
+        $values = [];
+
+        foreach (Timeouts::FORM_NAMES as $field => $key) {
+            if (!array_key_exists($field, $submitted)) {
+                // 没提交这一项：跳过（不做「缺失即清零」这种危险推断）
+                continue;
+            }
+
+            $raw = trim((string) $submitted[$field]);
+            if ($raw === '' || !preg_match('/^-?\d+$/', $raw)) {
+                $errors[] = '「' . self::labelOf($key) . '」要填整数秒';
+                continue;
+            }
+
+            $value = (int) $raw;
+            [$min, $max] = Timeouts::RANGE[$key] ?? [1, 3600];
+
+            if ($value < $min || $value > $max) {
+                $errors[] = '「' . self::labelOf($key) . "」要在 {$min}-{$max} 秒之间";
+                continue;
+            }
+
+            $values[$key] = $value;
+        }
+
+        // ⚠️ 顺序很重要：必须先报错、再判空。
+        // 反过来的话，任何一项校验失败都会走进「没有要保存的超时项」，
+        // 站长看到的是「我明明填了值，它说没有」—— 报错信息被自己吞掉了
+        if ($errors !== []) {
+            return $this->back(implode('；', $errors), 'err');
+        }
+
+        if ($values === []) {
+            return $this->back('没有要保存的超时项', 'info');
+        }
+
+        // ── 组合校验：这几个值之间有包含关系，单个合法、组合起来荒谬的情况必须挡住 ──
+        // total = 0 表示「不设总时长上限」，此时「谁比总时长大」无从谈起，跳过比较
+        $total = $values['gateway.total_timeout'] ?? Timeouts::total();
+
+        if ($total > 0) {
+            foreach (['gateway.connect_timeout', 'gateway.ttft_timeout', 'gateway.idle_timeout'] as $key) {
+                if (isset($values[$key]) && $values[$key] > $total) {
+                    $errors[] = '「' . self::labelOf($key) . '」不能大于「' . self::labelOf('gateway.total_timeout')
+                        . "」（{$values[$key]} > {$total}）：总时长一到就结束了，比它还长的等待永远不会生效";
+                }
+            }
+        }
+
+        if ($errors !== []) {
+            return $this->back(implode('；', $errors), 'err');
+        }
+
+        $saved = 0;
+        foreach ($values as $key => $value) {
+            if (Settings::get($key) === $value) {
+                continue;   // 没变就不写库，避免把 .env 的值「物化」进数据库
+            }
+            Settings::put($key, $value);
+            $saved++;
+        }
+
+        if ($saved === 0) {
+            return $this->back('超时没有任何改动', 'info');
+        }
+
+        Log::info('管理员调整了请求超时：' . json_encode($values, JSON_UNESCAPED_UNICODE));
+
+        return $this->back("已保存 {$saved} 项超时设置，将在此后数秒内于所有进程生效", 'ok');
     }
 
     /**

@@ -36,6 +36,7 @@ use app\common\Pricing;
 use app\common\RelayEngine;
 use app\common\RelayJob;
 use app\common\Settings;
+use app\common\Timeouts;
 use app\common\User;
 use app\common\UserToken;
 use support\Request;
@@ -208,8 +209,10 @@ class OpenAiController
         $job->estimateRatio = Settings::float('billing.estimate_ratio', 1.0);
         $job->candidates = $candidates;
         $job->maxRetries = max(0, Settings::int('gateway.max_retries', 2));
-        $job->ttftTimeout = max(1, Settings::int('gateway.ttft_timeout', 30));
-        $job->idleTimeout = max(1, Settings::int('gateway.idle_timeout', 60));
+        // 超时统一从 Timeouts 取：那边的值已经过范围兜底，
+        // 不会因为数据库里被写进 0 而变成「立刻超时」
+        $job->ttftTimeout = Timeouts::ttft();
+        $job->idleTimeout = Timeouts::idle();
         $job->heartbeatInterval = max(1, Settings::int('gateway.heartbeat_interval', 15));
 
         $retryStatuses = array_filter(array_map(
@@ -276,7 +279,7 @@ class OpenAiController
         }
 
         $defaultRpm = Settings::int('key_pool.default_rpm', 40);
-        $totalTimeout = max(1, Settings::int('gateway.total_timeout', 600));
+        $totalTimeout = Timeouts::total();
 
         while ($job->candidates !== []) {
             $channel = array_shift($job->candidates);

@@ -19,6 +19,7 @@ namespace app\controller;
 
 use app\common\Channel;
 use app\common\Settings;
+use app\common\Timeouts;
 use app\common\Url;
 use support\Request;
 use support\Response;
@@ -35,8 +36,8 @@ class DocsController
             'currency' => (string) Settings::get('billing.currency', 'CNY'),
             'loggedIn' => AuthController::currentUserId() > 0,
             // 慢模型要提醒用户把客户端超时调大 —— 这是实际支持里最高频的一类问题
-            'ttftTimeout' => Settings::int('gateway.ttft_timeout', 30),
-            'totalTimeout' => Settings::int('gateway.total_timeout', 600),
+            'ttftTimeout' => Timeouts::ttft(),
+            'totalTimeout' => Timeouts::total(),
         ], '');
     }
 
