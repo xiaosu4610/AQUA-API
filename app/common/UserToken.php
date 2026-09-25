@@ -211,6 +211,7 @@ final class UserToken
      * @param float       $quotaLimit 额度上限，0 表示不限
      * @param string|null $models     逗号分隔的模型白名单；null/空 表示不限
      * @param int|null    $expiresAt  过期时间戳；null 表示不过期
+     * @param string|null $groups     逗号分隔的线路分组代号；null 表示用站长的默认值
      * @return array{id:int, plain:string}
      */
     public static function create(
@@ -218,7 +219,8 @@ final class UserToken
         string $name,
         float $quotaLimit = 0.0,
         ?string $models = null,
-        ?int $expiresAt = null
+        ?int $expiresAt = null,
+        ?string $groups = null
     ): array {
         $plain = self::generate();
         $now = time();
@@ -229,10 +231,22 @@ final class UserToken
             $keyEnc = Crypto::encrypt($plain);
         }
 
+        // 不指定分组时用站长设的「默认开放线路」。
+        // 这一步不能省：留空在 Group 里虽然会回落到默认值，
+        // 但令牌列表上就显示不出「这把能用哪几条线路」，用户只能靠猜
+        $groupsValue = $groups === null ? '' : self::normalizeGroups($groups);
+
+        // 勾选的结果正好等于「默认开放」那一组时，存空串 = 跟着默认走。
+        // 不这么做的话，默认值会被写死进每一把令牌，站长以后新开一条线路，
+        // 库里所有老令牌都要手工改一遍才用得上（而那正是这套设计想避免的事）
+        if ($groupsValue !== '' && self::sameSet($groupsValue, implode(',', Group::defaultVisibleCodes()))) {
+            $groupsValue = '';
+        }
+
         Db::execute(
             'INSERT INTO tokens
-                (user_id, name, key_hash, key_mask, key_enc, quota_limit, quota_used, models, expires_at, status, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)',
+                (user_id, name, key_hash, key_mask, key_enc, quota_limit, quota_used, models, groups, expires_at, status, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)',
             [
                 $userId,
                 mb_substr(trim($name) === '' ? '默认令牌' : trim($name), 0, 64),
@@ -241,6 +255,7 @@ final class UserToken
                 $keyEnc,
                 self::dec(max(0.0, $quotaLimit)),
                 $models === null || trim($models) === '' ? null : mb_substr(trim($models), 0, 1024),
+                $groupsValue,
                 $expiresAt,
                 self::STATUS_ENABLED,
                 $now,
@@ -249,6 +264,53 @@ final class UserToken
         );
 
         return ['id' => (int) Db::pdo()->lastInsertId(), 'plain' => $plain];
+    }
+
+    /**
+     * 规范化分组代号列表：去空、去重、去掉**不存在**的代号。
+     *
+     * 不存在的代号宁可丢掉也不保留 —— 留一个永远匹配不上的代号，
+     * 令牌会表现成「莫名其妙没有任何线路可用」，而列表上却写着有，
+     * 那种问题排查起来最费时间。
+     */
+    public static function normalizeGroups(string $groups): string
+    {
+        $codes = [];
+
+        foreach (preg_split('/[\s,]+/', $groups) ?: [] as $item) {
+            $item = trim($item);
+            if ($item === '' || isset($codes[$item]) || Group::findByCode($item) === null) {
+                continue;
+            }
+            $codes[$item] = true;
+        }
+
+        return implode(',', array_keys($codes));
+    }
+
+    /** 改某把令牌可用的线路分组 */
+    public static function setGroups(int $id, string $groups): void
+    {
+        Db::execute(
+            'UPDATE tokens SET groups = ?, updated_at = ? WHERE id = ?',
+            [self::normalizeGroups($groups), time(), $id]
+        );
+    }
+
+    /** 两个逗号分隔的代号列表是不是同一个集合（与顺序无关） */
+    private static function sameSet(string $a, string $b): bool
+    {
+        $toList = static function (string $s): array {
+            $list = array_filter(
+                array_map('trim', explode(',', $s)),
+                static fn (string $v): bool => $v !== ''
+            );
+            sort($list);
+
+            return $list;
+        };
+
+        return $toList($a) === $toList($b);
     }
 
     /**

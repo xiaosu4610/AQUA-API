@@ -122,6 +122,20 @@ final class RelayJob
     public int $completionTokens = 0;
     public bool $usageEstimated = false;
 
+    /** 输入里命中缓存的部分（token 数），按独立单价计价 */
+    public int $cachedTokens = 0;
+
+    /** 输入里未命中缓存的部分（上游没给时留 0，计价侧用 输入−命中 兜底） */
+    public int $cacheMissTokens = 0;
+
+    /**
+     * 这个模型的所属分组对用户免费（售价按 0 计，成本照记）。
+     *
+     * 由控制器在选好模型后按分组口径填 —— 放在这里而不是引擎里去查分组，
+     * 是为了让引擎保持「只搬字节、不算业务」；同时计费口径在一处决定，好核对。
+     */
+    public bool $freeToUser = false;
+
     /** 最后一次尝试的耗时（毫秒），写入用量日志 */
     public int $latencyMs = 0;
 

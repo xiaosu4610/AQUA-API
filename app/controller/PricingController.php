@@ -22,6 +22,7 @@ declare(strict_types=1);
 namespace app\controller;
 
 use app\common\Csrf;
+use app\common\Group;
 use app\common\Pricing;
 use app\common\Settings;
 use app\common\UsageLog;
@@ -109,16 +110,33 @@ class PricingController
 
         $id = (int) $request->post('id', 0);
 
+        // 时段价是手写的多行文本，先解析；有错就带着行号说清楚，
+        // 绝不「猜一个意思」存进去 —— 价格猜错会直接体现在账上
+        $upWindows = $this->parseWindows((string) $request->post('upstream_price_windows', ''));
+        if (!$upWindows['ok']) {
+            return $this->back('上游时段价：' . $upWindows['message'], 'err');
+        }
+
+        $downWindows = $this->parseWindows((string) $request->post('downstream_price_windows', ''));
+        if (!$downWindows['ok']) {
+            return $this->back('售价时段价：' . $downWindows['message'], 'err');
+        }
+
         $data = [
             'model' => trim((string) $request->post('model', '')),
             'billing_mode' => (string) $request->post('billing_mode', Pricing::MODE_TOKEN),
             'upstream_kind' => (string) $request->post('upstream_kind', 'official'),
+            'group_id' => (int) $request->post('group_id', 0),
             'upstream_input_price' => (float) $request->post('upstream_input_price', 0),
             'upstream_output_price' => (float) $request->post('upstream_output_price', 0),
             'upstream_call_price' => (float) $request->post('upstream_call_price', 0),
+            'upstream_cache_hit_price' => (float) $request->post('upstream_cache_hit_price', 0),
             'downstream_input_price' => (float) $request->post('downstream_input_price', 0),
             'downstream_output_price' => (float) $request->post('downstream_output_price', 0),
             'downstream_call_price' => (float) $request->post('downstream_call_price', 0),
+            'downstream_cache_hit_price' => (float) $request->post('downstream_cache_hit_price', 0),
+            'upstream_price_windows' => Pricing::encodeWindows($upWindows['windows']),
+            'downstream_price_windows' => Pricing::encodeWindows($downWindows['windows']),
             'price_unit' => (int) $request->post('price_unit', Pricing::DEFAULT_UNIT),
             'note' => trim((string) $request->post('note', '')),
             'status' => (int) $request->post('status', Pricing::STATUS_ENABLED),
@@ -262,6 +280,124 @@ class PricingController
     // ═══════════════════════════════════════════════════════════
 
     /**
+     * 解析「时段价」文本框。
+     *
+     * 格式刻意做得极简，一行一个时段：
+     *
+     *     02:00-08:00  1.5   4.5   0.15
+     *     起-止         输入   输出   缓存命中价（可省）
+     *
+     * 分隔用空格、制表符或逗号都行，空行忽略。
+     * 为什么不用一个带增删按钮的行编辑器：那要写一堆 DOM 代码，
+     * 而站长一个月也改不了几次时段价 —— 用文本框 + 出错时指到行号，
+     * 是「实现最简单、出错最容易看懂」的那个选择。
+     *
+     * @return array{ok:bool, windows:array<int, array<string, mixed>>, message:string}
+     */
+    private function parseWindows(string $text): array
+    {
+        $text = trim($text);
+        if ($text === '') {
+            return ['ok' => true, 'windows' => [], 'message' => ''];
+        }
+
+        $windows = [];
+        $lineNo = 0;
+
+        foreach (preg_split('/\r\n|\r|\n/', $text) ?: [] as $line) {
+            $lineNo++;
+            $line = trim($line);
+            if ($line === '') {
+                continue;
+            }
+
+            $parts = preg_split('/[\s,]+/', $line) ?: [];
+
+            if (count($parts) < 3) {
+                return [
+                    'ok' => false, 'windows' => [],
+                    'message' => "第 {$lineNo} 行看不懂。每行要写「起-止 输入价 输出价 [缓存命中价]」，"
+                        . '例如 02:00-08:00 1.5 4.5 0.15',
+                ];
+            }
+
+            $range = explode('-', $parts[0]);
+            if (count($range) !== 2) {
+                return [
+                    'ok' => false, 'windows' => [],
+                    'message' => "第 {$lineNo} 行的时段「{$parts[0]}」格式不对，应写成 02:00-08:00",
+                ];
+            }
+
+            $from = trim($range[0]);
+            $to = trim($range[1]);
+
+            foreach ([$from, $to] as $t) {
+                if (!$this->isClock($t)) {
+                    return [
+                        'ok' => false, 'windows' => [],
+                        'message' => "第 {$lineNo} 行的时间「{$t}」不对，应写成 HH:MM（24 小时制），"
+                            . '例如 02:00、24:00',
+                    ];
+                }
+            }
+
+            foreach ([$parts[1], $parts[2]] as $price) {
+                if (!is_numeric($price) || (float) $price < 0) {
+                    return [
+                        'ok' => false, 'windows' => [],
+                        'message' => "第 {$lineNo} 行的价格「{$price}」不是有效的非负数字",
+                    ];
+                }
+            }
+
+            if (isset($parts[3]) && (!is_numeric($parts[3]) || (float) $parts[3] < 0)) {
+                return [
+                    'ok' => false, 'windows' => [],
+                    'message' => "第 {$lineNo} 行的缓存命中价「{$parts[3]}」不是有效的非负数字",
+                ];
+            }
+
+            $windows[] = [
+                'from' => $from,
+                'to' => $to,
+                'input' => (float) $parts[1],
+                'output' => (float) $parts[2],
+                'cache_hit' => isset($parts[3]) ? (float) $parts[3] : 0.0,
+            ];
+        }
+
+        return ['ok' => true, 'windows' => $windows, 'message' => ''];
+    }
+
+    /** 是不是一个合法的时刻（HH:MM，允许 24:00 表示一天结束） */
+    private function isClock(string $t): bool
+    {
+        if (preg_match('/^(\d{1,2}):(\d{2})$/', $t, $m) !== 1) {
+            return false;
+        }
+
+        return (int) $m[1] <= 24 && (int) $m[2] <= 59;
+    }
+
+    /**
+     * 把存库的时段价 JSON 还原成文本框里的样子（编辑时回填）。
+     */
+    private static function windowsText(mixed $raw): string
+    {
+        $lines = [];
+
+        foreach (Pricing::windowsFrom($raw) as $w) {
+            $lines[] = $w['from'] . '-' . $w['to']
+                . ' ' . self::price($w['input'] ?? 0)
+                . ' ' . self::price($w['output'] ?? 0)
+                . ' ' . self::price($w['cache_hit'] ?? 0);
+        }
+
+        return implode("\n", $lines);
+    }
+
+    /**
      * 渲染新增/编辑表单。
      *
      * @param array<string, mixed>|null $row
@@ -279,12 +415,18 @@ class PricingController
             'model' => $isEdit ? (string) $row['model'] : '',
             'billingMode' => $isEdit ? (string) $row['billing_mode'] : Pricing::MODE_TOKEN,
             'upstreamKind' => $isEdit ? (string) $row['upstream_kind'] : 'official',
+            'groupId' => $isEdit ? (int) ($row['group_id'] ?? 0) : 0,
+            'groups' => Group::overview(),
             'upstreamInput' => $isEdit ? self::price($row['upstream_input_price']) : '0',
             'upstreamOutput' => $isEdit ? self::price($row['upstream_output_price']) : '0',
             'upstreamCall' => $isEdit ? self::price($row['upstream_call_price']) : '0',
+            'upstreamCacheHit' => $isEdit ? self::price($row['upstream_cache_hit_price'] ?? 0) : '0',
             'downstreamInput' => $isEdit ? self::price($row['downstream_input_price']) : '0',
             'downstreamOutput' => $isEdit ? self::price($row['downstream_output_price']) : '0',
             'downstreamCall' => $isEdit ? self::price($row['downstream_call_price']) : '0',
+            'downstreamCacheHit' => $isEdit ? self::price($row['downstream_cache_hit_price'] ?? 0) : '0',
+            'upstreamWindows' => $isEdit ? self::windowsText($row['upstream_price_windows'] ?? null) : '',
+            'downstreamWindows' => $isEdit ? self::windowsText($row['downstream_price_windows'] ?? null) : '',
             'priceUnit' => $isEdit ? (int) $row['price_unit'] : Pricing::DEFAULT_UNIT,
             'note' => $isEdit ? (string) ($row['note'] ?? '') : '',
             'enabled' => $isEdit ? (int) $row['status'] === Pricing::STATUS_ENABLED : true,
@@ -322,6 +464,8 @@ class PricingController
             'modeLabel' => Pricing::MODES[$row['billing_mode']]['label'] ?? (string) $row['billing_mode'],
             'kind' => (string) $row['upstream_kind'],
             'kindLabel' => Pricing::UPSTREAM_KINDS[$row['upstream_kind']]['label'] ?? (string) $row['upstream_kind'],
+            // 所属线路（未分组时为空串，页面据此不显示这一行）
+            'groupLabel' => Group::labelOfId((int) ($row['group_id'] ?? 0)),
             'unit' => $unit,
             'upstreamInput' => self::price($row['upstream_input_price']),
             'upstreamOutput' => self::price($row['upstream_output_price']),

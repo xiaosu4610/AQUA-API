@@ -29,6 +29,7 @@ namespace app\controller;
 
 use app\common\Channel;
 use app\common\Db;
+use app\common\Group;
 use app\common\Pricing;
 use app\common\Settings;
 use support\exception\PageNotFoundException;
@@ -67,7 +68,7 @@ class MarketController
         // ── 汇总可用模型 ──
         // 只统计**已启用**渠道。被停用的渠道所支持的模型对外并不存在
         $rows = [];
-        foreach ($this->availableModels() as $model) {
+        foreach ($this->availableModels() as $model => $groupId) {
             $pricing = Pricing::findByModel($model);
 
             // 未定价 且 站长不允许未定价放行 —— 调用会被拒，所以不列
@@ -75,15 +76,79 @@ class MarketController
                 continue;
             }
 
-            $rows[] = $this->describe($model, $pricing, $multiplier, $states[$model] ?? null);
+            $rows[] = $this->describe($model, $pricing, $multiplier, $states[$model] ?? null, (int) $groupId);
         }
 
         usort($rows, static fn (array $a, array $b): int => strnatcasecmp($a['model'], $b['model']));
 
+        $filters = $this->readFilters($request);
+
+        // ── 按分组分板块 ──
+        //
+        // 什么时候分板块、什么时候给平铺列表：
+        //   · 没在筛选/搜索 → **分板块**（默认视图：让访客先看清「本站有哪几条线路」）
+        //   · 在搜索或筛选某个分组 → 平铺列表（他已经在找具体东西了，
+        //     这时候再套一层板块标题只会让人多滚一屏）
+        //
+        // 每个板块只展示前 N 个（与分页同量级），避免「免费分组有 98 个模型」
+        // 把页面拉成一条长河；板块标题右侧给出「查看全部」链接（带上分组筛选）。
+        $sections = [];
+        $sectioned = $filters['group'] === '' && $filters['q'] === '' && $filters['vendor'] === '' && $filters['mode'] === '';
+
+        if ($sectioned) {
+            $byGroup = [];
+            foreach ($rows as $row) {
+                $byGroup[(int) $row['groupId']][] = $row;
+            }
+
+            foreach (Group::visible() as $group) {
+                $gid = (int) $group['id'];
+                if (!isset($byGroup[$gid])) {
+                    continue;
+                }
+
+                $all = $byGroup[$gid];
+                unset($byGroup[$gid]);
+
+                $sections[] = [
+                    'code' => (string) $group['code'],
+                    'label' => (string) $group['label'],
+                    'description' => (string) ($group['description'] ?? ''),
+                    'costMode' => (string) $group['cost_mode'],
+                    'priceMode' => (string) $group['price_mode'],
+                    'total' => count($all),
+                    'rows' => array_slice($all, 0, self::PER_PAGE),
+                    'truncated' => count($all) > self::PER_PAGE,
+                ];
+            }
+
+            // 剩下的就是「没归到任何可见线路」的模型（渠道还没分组，
+            // 或分组被站长关掉了展示）。它们仍然可以调用，所以**必须**列出来 ——
+            // 从公开页面上悄悄消失，会让人以为这些模型不存在
+            $leftover = [];
+            foreach ($byGroup as $list) {
+                foreach ($list as $row) {
+                    $leftover[] = $row;
+                }
+            }
+
+            if ($leftover !== []) {
+                $sections[] = [
+                    'code' => '',
+                    'label' => '其他可用模型',
+                    'description' => '这些模型暂时没有归入具体线路，但同样可以调用。',
+                    'costMode' => '',
+                    'priceMode' => '',
+                    'total' => count($leftover),
+                    'rows' => array_slice($leftover, 0, self::PER_PAGE),
+                    'truncated' => count($leftover) > self::PER_PAGE,
+                ];
+            }
+        }
+
         // ── 筛选与排序（在 PHP 里做）──
         // 模型总数是「几十到几千」这个量级，一次全取回来再筛，
         // 比拼接动态 SQL 简单得多，也不会因为条件组合写出慢查询
-        $filters = $this->readFilters($request);
         $filtered = $this->applyFilters($rows, $filters);
         $filtered = $this->applySort($filtered, $filters['sort']);
 
@@ -110,6 +175,11 @@ class MarketController
             'perPage' => self::PER_PAGE,
             'total' => $total,
             'allTotal' => count($rows),
+
+            // 默认视图：按线路分组分板块展示；一旦开始搜索/筛选就切回平铺列表
+            'sections' => $sections,
+            'sectioned' => $sectioned,
+            'groupOptions' => $this->groupOptions($rows),
 
             'filters' => $filters,
             'vendors' => $this->vendors($rows),
@@ -172,9 +242,18 @@ class MarketController
     // ═══════════════════════════════════════════════════════════
 
     /**
-     * 已启用渠道所支持的模型名清单。
+     * 已启用渠道所支持的模型名清单（模型名 → 所属分组 id）。
      *
-     * @return array<int, string>
+     * 为什么要带上分组：模型广场现在**按分组分板块展示**，
+     * 同一个模型名在整个站点里只归一个分组（定价表对 model 有唯一约束），
+     * 所以这里取「最先声明它的那条渠道」的分组即可。
+     *
+     * 两条过滤都在这里做：
+     *   · 分组必须有 `visible`（站长不想在广场展示的线路，不出现）
+     *   · 分组必须 `isLive`（停用的、或额度用完已下线的线路，不出现）——
+     *     后者就是「余额用完自动下架」的落点
+     *
+     * @return array<string, int>
      */
     private function availableModels(): array
     {
@@ -185,10 +264,22 @@ class MarketController
                 continue;
             }
 
+            $groupId = (int) ($channel['group_id'] ?? 0);
+
+            if (!Group::isLive($groupId)) {
+                continue;
+            }
+
+            $group = $groupId > 0 ? Group::find($groupId) : null;
+
+            if ($group !== null && (int) $group['visible'] !== 1) {
+                continue;
+            }
+
             foreach (Channel::modelsOf($channel) as $model) {
                 $model = trim((string) $model);
-                if ($model !== '') {
-                    $seen[$model] = true;
+                if ($model !== '' && !isset($seen[$model])) {
+                    $seen[$model] = $groupId;
                 }
             }
 
@@ -197,7 +288,7 @@ class MarketController
             }
         }
 
-        return array_keys($seen);
+        return $seen;
     }
 
     /**
@@ -213,7 +304,7 @@ class MarketController
      * @param array{classification:string,latency_ms:int,at:int}|null $state 最近一次实测结论
      * @return array<string, mixed>
      */
-    private function describe(string $model, ?array $pricing, float $multiplier, ?array $state = null): array
+    private function describe(string $model, ?array $pricing, float $multiplier, ?array $state = null, int $groupId = 0): array
     {
         // 厂商取模型名的前缀（`openai/gpt-oss-20b` → openai）。
         // 没有前缀的归入「其他」—— 不猜，猜错了会把模型归到别的厂商名下
@@ -223,10 +314,19 @@ class MarketController
             $vendor = substr($model, 0, $slash);
         }
 
+        // 这条线路对用户是否免费（临时免费专线）。
+        // 免费与否属于**线路**的属性，不是单个模型的属性 ——
+        // 同一份定价行换到付费线路上就该正常收费，所以判定必须在这里做，
+        // 并把结论交给 Pricing::quote() 统一计算，绝不在模板里把价格写成 0
+        $freeToUser = $groupId > 0 && Group::isFreeToUser($groupId);
+
         $row = [
             'model' => $model,
             'vendor' => $vendor,
             'vendorLabel' => $vendor !== '' ? $vendor : '其他',
+            'groupId' => $groupId,
+            'groupLabel' => $groupId > 0 ? Group::labelOfId($groupId) : '',
+            'freeToUser' => $freeToUser,
             'mode' => '',
             'modeLabel' => '',
             'inPrice' => null,
@@ -235,6 +335,7 @@ class MarketController
             'unit' => Pricing::DEFAULT_UNIT,
             'sortPrice' => 0.0,
             'isFree' => false,
+            'hasWindows' => false,
             'note' => '',
             // 实测状态与耗时：没有实测数据时 status 为空串，页面据此显示「未检测」
             'status' => '',
@@ -285,7 +386,7 @@ class MarketController
         }
 
         if ($mode === Pricing::MODE_CALL) {
-            $call = Pricing::quote($pricing, $unit, 0, $multiplier);
+            $call = Pricing::quote($pricing, $unit, 0, $multiplier, 0, null, $freeToUser);
             $row['callPrice'] = (float) $call['downstream_cost'];
             $row['sortPrice'] = $row['callPrice'];
 
@@ -298,12 +399,18 @@ class MarketController
             return $row;
         }
 
-        // 按 Token 与订阅制：都按「输入 / 输出」两个单价展示
-        $in = Pricing::quote($pricing, $unit, 0, $multiplier);
-        $out = Pricing::quote($pricing, 0, $unit, $multiplier);
+        // 按 Token 与订阅制：都按「输入 / 输出」两个单价展示。
+        //
+        // atTime 传 null 表示「按基础价展示」。分时段计价的模型（硅基流动的
+        // 夜间折扣等）在页面上只用一句话说明「价格随时段浮动」，
+        // 不在这里按当前钟点算一个会变的数字 —— 访客看到的页面价格应该是稳定的。
+        $in = Pricing::quote($pricing, $unit, 0, $multiplier, 0, null, $freeToUser);
+        $out = Pricing::quote($pricing, 0, $unit, $multiplier, 0, null, $freeToUser);
         $row['inPrice'] = (float) $in['downstream_cost'];
         $row['outPrice'] = (float) $out['downstream_cost'];
         $row['sortPrice'] = $row['inPrice'] + $row['outPrice'];
+        $row['hasWindows'] = trim((string) ($pricing['downstream_price_windows'] ?? '')) !== ''
+            && trim((string) ($pricing['downstream_price_windows'] ?? '')) !== '[]';
 
         if ($row['inPrice'] <= 0 && $row['outPrice'] <= 0) {
             $row['isFree'] = true;
@@ -317,7 +424,7 @@ class MarketController
     // ═══════════════════════════════════════════════════════════
 
     /**
-     * @return array{q:string, vendor:string, mode:string, sort:string, page:int, view:string}
+     * @return array{q:string, vendor:string, mode:string, group:string, sort:string, page:int, view:string}
      */
     private function readFilters(Request $request): array
     {
@@ -331,6 +438,9 @@ class MarketController
             'q' => mb_substr(trim((string) $request->get('q', '')), 0, 80),
             'vendor' => mb_substr(trim((string) $request->get('vendor', '')), 0, 60),
             'mode' => trim((string) $request->get('mode', '')),
+            // 按线路分组筛选时用的是**代号**而不是 id ——
+            // 地址栏里 `?group=siliconflow` 比 `?group=3` 可读，也能被分享
+            'group' => mb_substr(trim((string) $request->get('group', '')), 0, 40),
             'sort' => in_array($sort, $allowSort, true) ? $sort : 'name',
             'page' => max(1, (int) $request->get('page', 1)),
             // 卡片是默认视图：模型广场的主要用途是「快速浏览有哪些模型、快不快」
@@ -361,7 +471,45 @@ class MarketController
             $rows = array_filter($rows, static fn (array $r): bool => $r['mode'] === $filters['mode']);
         }
 
+        if ($filters['group'] !== '') {
+            // 代号不存在 → 一条都不给。不悄悄退回「全部」——
+            // 那会让人以为筛选生效了，实际上看到的是别的东西
+            $gid = Group::idOfCode($filters['group']);
+            $rows = array_filter($rows, static fn (array $r): bool => (int) $r['groupId'] === $gid);
+        }
+
         return array_values($rows);
+    }
+
+    /**
+     * 可供筛选的线路分组（只列当前真的有模型的那些）。
+     *
+     * @param array<int, array<string, mixed>> $rows
+     * @return array<int, array{code:string,label:string,count:int}>
+     */
+    private function groupOptions(array $rows): array
+    {
+        $counts = [];
+        foreach ($rows as $row) {
+            $gid = (int) $row['groupId'];
+            $counts[$gid] = ($counts[$gid] ?? 0) + 1;
+        }
+
+        $options = [];
+        foreach (Group::visible() as $group) {
+            $gid = (int) $group['id'];
+            if (!isset($counts[$gid])) {
+                continue;
+            }
+
+            $options[] = [
+                'code' => (string) $group['code'],
+                'label' => (string) $group['label'],
+                'count' => $counts[$gid],
+            ];
+        }
+
+        return $options;
     }
 
     /**

@@ -39,6 +39,8 @@ declare(strict_types=1);
 namespace app\common;
 
 use RuntimeException;
+use Throwable;
+use support\Log;
 
 final class ChannelKey
 {
@@ -412,6 +414,285 @@ final class ChannelKey
             'UPDATE channel_keys SET window_start = 0, used_requests = 0, updated_at = ? WHERE channel_id = ?',
             [time(), $channelId]
         );
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 额度账本（上游给的余额 + 本地记账）
+    // ═══════════════════════════════════════════════════════════
+
+    /** 剩余额度低于总额的这个比例就标黄提醒（0.2 = 剩两成） */
+    public const BUDGET_WARN_RATIO = 0.2;
+
+    /**
+     * 额度耗尽后自动停用的原因标记（写进 last_error，后台据此显示原因）。
+     *
+     * 为什么要把原因写进 last_error 而不是新加一列：后台密钥列表本来就要显示
+     * 「上一行错误」，把原因放在那里，站长在一屏里就能同时看到
+     * 「这把为什么停了」与「什么时候停的」。
+     */
+    public const BUDGET_EXHAUSTED_NOTE = '额度已用完（本地记账），已自动停用；补录额度后会自动恢复';
+
+    /**
+     * 记一笔上游成本到某把密钥的账上，额度用完就自动停用。
+     *
+     * ═══ 为什么必须本地记账 ═══
+     *
+     * 两家上游（硅基流动 / TierFlow）都**没有**「按 API Key 读余额」的接口，
+     * 所以「还剩多少钱」只能靠：人工录入初始额度 + 每次调用按真实 usage 累加。
+     * 这不是一个漂亮的方案，但它是唯一能提前预警的方案 ——
+     * 否则只能等上游开始拒绝请求（41x）才知道钱花完了。
+     *
+     * ═══ 停用而不是删除 ═══
+     *
+     * 停用只是让它不参与密钥池消费，**密钥本身、历史用量、账目全都保留**。
+     * 站长的原话是「只是单纯让密钥不进入密钥池消费」——
+     * 所以补录额度后应当能原样恢复，而不是要重新导入一把新 Key。
+     */
+    public static function addCost(int $id, float $cost): void
+    {
+        if ($id <= 0 || $cost <= 0) {
+            return;
+        }
+
+        try {
+            Db::execute(
+                'UPDATE channel_keys SET budget_used = budget_used + ?, updated_at = ? WHERE id = ?',
+                [number_format($cost, 10, '.', ''), time(), $id]
+            );
+        } catch (Throwable $e) {
+            Log::error('密钥额度累加失败：key_id=' . $id . ' —— ' . $e->getMessage());
+
+            return;
+        }
+
+        $row = self::find($id);
+
+        if ($row === null || !self::exhausted($row) || (int) $row['status'] !== self::STATUS_ENABLED) {
+            return;
+        }
+
+        // 停用（disabled_until 置空 = 永久停用，不会被冷却恢复逻辑自动放出来）
+        Db::execute(
+            'UPDATE channel_keys SET status = ?, budget_disabled = 1, disabled_until = NULL, last_error = ?, updated_at = ?
+             WHERE id = ?',
+            [self::STATUS_DISABLED, self::BUDGET_EXHAUSTED_NOTE, time(), $id]
+        );
+
+        Log::warning(sprintf(
+            '密钥池 #%d 额度已用完（已用 %s / 总额 %s），已自动停用并退出密钥池（数据保留）',
+            $id,
+            $row['budget_used'] ?? '?',
+            $row['budget_total'] ?? '?'
+        ));
+    }
+
+    /**
+     * 这把密钥的额度是否已经用完。
+     *
+     * 总额为 0 表示「没设额度」= 不限额、永不算耗尽 ——
+     * 现有那些不限额度的密钥（NIM 免费线路）不能因为这一功能被停掉。
+     *
+     * @param array<string, mixed> $row
+     */
+    public static function exhausted(array $row): bool
+    {
+        $total = (float) ($row['budget_total'] ?? 0);
+
+        if ($total <= 0) {
+            return false;
+        }
+
+        return (float) ($row['budget_used'] ?? 0) >= $total;
+    }
+
+    /**
+     * 录入 / 追加额度。
+     *
+     * 「追加」的语义（而不是「覆盖」）：上游给的是新的一笔钱，
+     * 把 budget_total 加上去，已用部分不变 —— 这样账目连续，也和真实一致。
+     * 录完如果额度已经够用，且这把密钥是「因耗尽被自动停用」的，就自动恢复启用。
+     *
+     * @return array{ok:bool, message:string}
+     */
+    public static function addBudget(int $id, float $amount, string $note = ''): array
+    {
+        $row = self::find($id);
+
+        if ($row === null) {
+            return ['ok' => false, 'message' => '密钥不存在'];
+        }
+
+        if ($amount <= 0) {
+            return ['ok' => false, 'message' => '追加的额度必须大于 0'];
+        }
+
+        $total = (float) $row['budget_total'] + $amount;
+        $used = (float) $row['budget_used'];
+        $note = mb_substr(trim($note), 0, 255);
+
+        $prefix = trim((string) ($row['budget_note'] ?? ''));
+        $merged = $prefix === ''
+            ? $note
+            : ($note === '' ? $prefix : $prefix . ' / ' . $note);
+
+        Db::execute(
+            'UPDATE channel_keys SET budget_total = ?, budget_note = ?, updated_at = ? WHERE id = ?',
+            [number_format($total, 10, '.', ''), $merged, time(), $id]
+        );
+
+        // 因耗尽被停用、而现在额度又够了 → 自动恢复
+        if ((int) ($row['budget_disabled'] ?? 0) === 1 && $used < $total) {
+            Db::execute(
+                'UPDATE channel_keys SET status = ?, budget_disabled = 0, last_error = NULL, updated_at = ? WHERE id = ?',
+                [self::STATUS_ENABLED, time(), $id]
+            );
+
+            return [
+                'ok' => true,
+                'message' => sprintf(
+                    '已追加 %s 元额度（现有总额 %s 元，已用 %s 元），这把密钥已自动恢复启用',
+                    $amount,
+                    $total,
+                    $used
+                ),
+            ];
+        }
+
+        return [
+            'ok' => true,
+            'message' => sprintf(
+                '已追加 %s 元额度（现有总额 %s 元，已用 %s 元，剩余 %s 元）',
+                $amount,
+                $total,
+                $used,
+                max(0, $total - $used)
+            ),
+        ];
+    }
+
+    /**
+     * 记下上游口径的读数（TierFlow 的 /v1/dashboard/billing/usage）。
+     *
+     * 这个数字**不是余额**，而是「上游自己记的累计用量」—— 它的价值在于**对账**：
+     * 和我们本地记账的数字并排放着，一眼能看出计价口径有没有错。
+     * 上游没这个接口的（硅基流动）就一直是 0，页面据此不显示这一列。
+     */
+    public static function setReported(int $id, float $reported): void
+    {
+        Db::execute(
+            'UPDATE channel_keys SET budget_reported = ?, budget_reported_at = ?, updated_at = ? WHERE id = ?',
+            [number_format($reported, 10, '.', ''), time(), time(), $id]
+        );
+    }
+
+    /**
+     * 额度看板：所有设了额度的密钥，带剩余、消耗速率与预计可用天数。
+     *
+     * 消耗速率按**最近 7 天**的实际成本折算成「元/天」。为什么不按全部历史：
+     * 全历史会把「刚上线时没人用」的时段算进去，速率被严重拉低，
+     * 于是「还能用 30 天」这句话在用户突然变多时会变成谎话。
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public static function budgetRows(): array
+    {
+        try {
+            // 注意：这里必须取 api_key_enc（掩码是从它算出来的）。
+            // 早先误写成一个不存在的 key_mask 列，结果整个查询报错、
+            // 被下面的 catch 吞掉 —— 页面上表现为「额度看板是空的」，
+            // 看起来像「还没设过额度」，排查起来极费时间。测试已覆盖这一点。
+            $rows = Db::select(
+                'SELECT k.id, k.channel_id, k.budget_total, k.budget_used, k.budget_note,
+                        k.budget_disabled, k.budget_reported, k.budget_reported_at,
+                        k.status, k.api_key_enc, k.last_used_at,
+                        c.name AS channel_name, c.group_id AS group_id
+                 FROM channel_keys k
+                 LEFT JOIN channels c ON c.id = k.channel_id
+                 WHERE k.budget_total > 0
+                 ORDER BY k.budget_used DESC'
+            );
+        } catch (Throwable) {
+            return [];
+        }
+
+        $from = time() - 7 * 86400;
+        $out = [];
+
+        foreach ($rows as $row) {
+            $id = (int) $row['id'];
+            $total = (float) $row['budget_total'];
+            $used = (float) $row['budget_used'];
+            $remain = max(0.0, $total - $used);
+
+            $weekCost = UsageLog::costByKey($id, $from, time());
+            $perDay = $weekCost / 7;
+
+            $days = null;
+            if ($perDay > 0) {
+                $days = $remain / $perDay;
+            }
+
+            $out[] = [
+                'id' => $id,
+                'channelId' => (int) $row['channel_id'],
+                'channelName' => (string) ($row['channel_name'] ?? ''),
+                'groupId' => (int) ($row['group_id'] ?? 0),
+                'groupLabel' => Group::labelOfId((int) ($row['group_id'] ?? 0)),
+                'mask' => self::masked($row),
+                'total' => $total,
+                'used' => $used,
+                'remain' => $remain,
+                'ratio' => $total > 0 ? min(1.0, $used / $total) : 0.0,
+                'perDay' => $perDay,
+                'days' => $days,
+                'reported' => (float) $row['budget_reported'],
+                'reportedAt' => (int) $row['budget_reported_at'],
+                // 本地记账 vs 上游读数：差异超过 1% 就值得看一眼，
+                // 所以这里直接把差额算好，不让站长自己做减法
+                'diff' => (float) $row['budget_reported'] > 0
+                    ? (float) $row['budget_reported'] - $used
+                    : null,
+                'note' => (string) ($row['budget_note'] ?? ''),
+                'enabled' => (int) $row['status'] === self::STATUS_ENABLED,
+                'autoDisabled' => (int) $row['budget_disabled'] === 1,
+                'exhausted' => self::exhausted($row),
+                'warn' => $total > 0 && ($remain / $total) <= self::BUDGET_WARN_RATIO,
+                'lastUsedAt' => (int) ($row['last_used_at'] ?? 0),
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
+     * 清空某个渠道的限流窗口计数之外的额度重算：按用量日志重算已用额度。
+     *
+     * 用在两种场景：① 换过计价口径后想让账目归零重算；
+     * ② 上游账单与本地记账有明显差距、站长手工对账后要一个干净起点。
+     *
+     * @return float 重算出来的已用额度
+     */
+    public static function recalcUsed(int $id): float
+    {
+        $row = self::find($id);
+
+        if ($row === null) {
+            return 0.0;
+        }
+
+        $sum = Db::selectOne(
+            'SELECT COALESCE(SUM(upstream_cost), 0) AS c FROM usage_logs WHERE channel_key_id = ?',
+            [$id]
+        );
+
+        $used = (float) ($sum['c'] ?? 0);
+
+        Db::execute(
+            'UPDATE channel_keys SET budget_used = ?, updated_at = ? WHERE id = ?',
+            [number_format($used, 10, '.', ''), time(), $id]
+        );
+
+        return $used;
     }
 
     /**

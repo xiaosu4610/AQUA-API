@@ -18,12 +18,18 @@
  * @var string $model
  * @var string $billingMode
  * @var string $upstreamKind
+ * @var int    $groupId   所属线路分组（0 = 未分组）
+ * @var array<int, array<string, mixed>> $groups 可选线路（Group::overview()）
  * @var string $upstreamInput
  * @var string $upstreamOutput
  * @var string $upstreamCall
+ * @var string $upstreamCacheHit
  * @var string $downstreamInput
  * @var string $downstreamOutput
  * @var string $downstreamCall
+ * @var string $downstreamCacheHit
+ * @var string $upstreamWindows   上游时段价（多行文本，见 parseWindows）
+ * @var string $downstreamWindows 售价时段价
  * @var int    $priceUnit
  * @var string $note
  * @var bool   $enabled
@@ -96,6 +102,23 @@
                 </div>
 
                 <div class="field">
+                    <div class="lbl">所属线路分组</div>
+                    <select name="group_id">
+                        <option value="0" <?= $groupId === 0 ? 'selected' : '' ?>>未分组</option>
+                        <?php foreach ($groups as $g): ?>
+                            <option value="<?= (int) $g['id'] ?>" <?= $groupId === (int) $g['id'] ? 'selected' : '' ?>>
+                                <?= htmlspecialchars((string) $g['label'], ENT_QUOTES, 'UTF-8') ?>
+                                （<?= htmlspecialchars((string) $g['code'], ENT_QUOTES, 'UTF-8') ?>）
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <div class="tip">
+                        这个价格属于哪条线路。<a href="/admin/groups">线路分组</a>里可以把整条线
+                        设为「对用户免费」（成本照记），适合同一条上游临时免费放量
+                    </div>
+                </div>
+
+                <div class="field">
                     <div class="lbl">计价单位（每多少 token 计一次价）</div>
                     <input type="number" name="price_unit" id="unit-input" min="1"
                            value="<?= (int) $priceUnit ?>">
@@ -120,6 +143,34 @@
                     <div class="lbl">输出单价</div>
                     <input type="text" name="upstream_output_price" class="price-input" data-role="up-out"
                            value="<?= htmlspecialchars($upstreamOutput, ENT_QUOTES, 'UTF-8') ?>">
+                </div>
+            </div>
+
+            <div class="field" data-group="upstream-token" style="max-width:320px">
+                <div class="lbl">缓存命中单价（可选）</div>
+                <input type="text" name="upstream_cache_hit_price" class="price-input" data-role="up-hit"
+                       value="<?= htmlspecialchars($upstreamCacheHit, ENT_QUOTES, 'UTF-8') ?>">
+                <div class="tip">
+                    上游对「命中缓存的输入」单独计价时填这里。留 0 表示按输入单价算 ——
+                    宁可算高（余额早报警），也不要按 0 算把额度跑穿
+                </div>
+            </div>
+
+            <div class="field" data-group="upstream-token" style="max-width:520px">
+                <div class="lbl">
+                    分时段价格（可选）
+                    <button type="button" class="ghost sm" id="fill-sf" style="margin-left:8px">
+                        填入硅基流动的时段价
+                    </button>
+                </div>
+                <textarea name="upstream_price_windows" id="up-windows" rows="5"
+                          placeholder="02:00-08:00 1.5 4.5 0.15&#10;00:00-24:00 3 9 0.3"
+                ><?= htmlspecialchars($upstreamWindows, ENT_QUOTES, 'UTF-8') ?></textarea>
+                <div class="tip">
+                    一行一个时段：<code>起-止 输入价 输出价 [缓存命中价]</code>，
+                    例如 <code>02:00-08:00 1.5 4.5 0.15</code>。<b>从上往下第一个命中的生效</b>，
+                    所以把特殊时段写在前面、用 <code>00:00-24:00</code> 那段兜底。
+                    留空表示全天都用上面的平价
                 </div>
             </div>
 
@@ -162,6 +213,24 @@
                 <div class="lbl">每次请求售价</div>
                 <input type="text" name="downstream_call_price" class="price-input" data-role="down-call"
                        value="<?= htmlspecialchars($downstreamCall, ENT_QUOTES, 'UTF-8') ?>">
+            </div>
+
+            <div class="field" data-group="downstream-token" style="max-width:320px">
+                <div class="lbl">缓存命中售价（可选）</div>
+                <input type="text" name="downstream_cache_hit_price" class="price-input" data-role="down-hit"
+                       value="<?= htmlspecialchars($downstreamCacheHit, ENT_QUOTES, 'UTF-8') ?>">
+                <div class="tip">留 0 表示命中缓存的部分也按输入售价收</div>
+            </div>
+
+            <div class="field" data-group="downstream-token" style="max-width:520px">
+                <div class="lbl">分时段售价（可选）</div>
+                <textarea name="downstream_price_windows" id="down-windows" rows="4"
+                          placeholder="02:00-08:00 1.5 4.5 0.15"
+                ><?= htmlspecialchars($downstreamWindows, ENT_QUOTES, 'UTF-8') ?></textarea>
+                <div class="tip">
+                    格式与上面的上游时段价相同。留空即全天一个价 ——
+                    多数站点只配上游时段价就够，售价保持稳定对用户更友好
+                </div>
             </div>
 
             <div class="alert info" data-group="preview" style="margin-top:6px">
@@ -291,6 +360,24 @@
             }
 
             preview.textContent = text;
+        }
+
+        /**
+         * 「填入硅基流动的时段价」。
+         *
+         * 这是站长给过的原文价目表：02:00–08:00 打折，其余时段是原价的 2 倍。
+         * 手敲这四行数字很容易错一位，而价格错一位就是账目错 ——
+         * 所以给一个按钮把原文写进去，**填完仍然可以改**，不是黑盒。
+         * 只填「上游时段价」：是否对用户也分时段收费，由站长自己决定。
+         */
+        var fillSf = document.getElementById('fill-sf');
+        if (fillSf) {
+            fillSf.addEventListener('click', function () {
+                var up = document.getElementById('up-windows');
+                if (!up) { return; }
+                up.value = '02:00-08:00 1.5 4.5 0.15\n00:00-24:00 3 9 0.3';
+                up.focus();
+            });
         }
 
         mode.addEventListener('change', applyVisibility);

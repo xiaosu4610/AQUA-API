@@ -26,6 +26,7 @@ namespace app\controller;
 
 use app\common\BackgroundProcess;
 use app\common\Channel;
+use app\common\Group;
 use app\common\ChannelKey;
 use app\common\Crypto;
 use app\common\Csrf;
@@ -63,6 +64,9 @@ class ChannelController
                 'keyMasked' => Channel::maskedKey($row),
                 'modelCount' => count(Channel::modelsOf($row)),
                 'models' => Channel::modelsOf($row),
+                // 所属线路分组（未分组时为空串）。列表上必须看得到 ——
+                // 「这条渠道在烧哪条线的钱」是站长每天要确认的事
+                'groupLabel' => Group::labelOfId((int) ($row['group_id'] ?? 0)),
                 'priority' => (int) $row['priority'],
                 'weight' => (int) $row['weight'],
                 'enabled' => (int) $row['status'] === Channel::STATUS_ENABLED,
@@ -188,6 +192,7 @@ class ChannelController
             'api_key' => trim((string) $request->post('api_key', '')),
             'models' => (string) $request->post('models', ''),
             'config' => $adv['config'],
+            'group_id' => (int) $request->post('group_id', 0),
             'priority' => (int) $request->post('priority', 0),
             'weight' => (int) $request->post('weight', 1),
             'status' => (int) $request->post('status', Channel::STATUS_ENABLED),
@@ -609,6 +614,8 @@ class ChannelController
                 ? (string) $channel['base_url']
                 : (string) (Channel::providers()['nim']['base_url'] ?? ''),
             'modelsText' => $isEdit ? implode("\n", Channel::modelsOf($channel)) : '',
+            'groupId' => $isEdit ? (int) ($channel['group_id'] ?? 0) : 0,
+            'groups' => Group::overview(),
             'priority' => $isEdit ? (int) $channel['priority'] : 0,
             'weight' => $isEdit ? (int) $channel['weight'] : 1,
             'rpmLimit' => $isEdit ? (int) $channel['rpm_limit'] : 0,

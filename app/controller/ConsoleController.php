@@ -25,6 +25,7 @@ namespace app\controller;
 
 use app\common\Csrf;
 use app\common\Crypto;
+use app\common\Group;
 use app\common\Settings;
 use app\common\UsageLog;
 use app\common\User;
@@ -70,6 +71,10 @@ class ConsoleController
                 'quotaUsed' => (float) $row['quota_used'],
                 'quotaLimit' => (float) $row['quota_limit'],
                 'models' => trim((string) ($row['models'] ?? '')),
+                // 这把令牌能用哪几条线路。留空的老令牌按「默认开放」那一组算，
+                // 与 Group::codesOfToken 的口径完全一致 —— 页面显示的和实际生效的
+                // 必须是同一件事，否则用户会照着一个假的清单去排查 403
+                'groupCodes' => Group::codesOfToken($row),
                 'expiresAt' => $this->formatTime($row['expires_at'] ?? null),
                 'lastUsedAt' => $this->formatTime($row['last_used_at'] ?? null),
             ];
@@ -104,11 +109,42 @@ class ConsoleController
             // 站长是否开启了「随时复制令牌」，页面据此决定展示完整令牌还是掩码
             'revealEnabled' => UserToken::revealEnabled(),
             'revealConfigured' => Crypto::isConfigured(),
+            // 建令牌时可勾选的上游线路（默认勾中站长标记为「默认开放」的那些）
+            'groupChoices' => $this->groupChoices(),
+            'groupLabels' => Group::labelMap(),
             // 看不到完整令牌时必须说清「为什么」——只显示一句「看不到」等于让人去猜
             'revealOffReason' => !Crypto::isConfigured()
                 ? '本站没有配置 APP_KEY，无法保存可回显副本'
                 : (Settings::bool('security.token_reveal', true) ? '' : '站长关闭了「随时复制令牌」'),
         ]);
+    }
+
+    /**
+     * 建令牌表单上的「可用线路」勾选项。
+     *
+     * 默认勾中的是站长标记为「默认开放」的线路，与 UserToken::create
+     * 在未指定分组时采用的默认值完全一致 —— 用户直接点「创建令牌」
+     * 得到的结果，就是表单上预先勾好的这一份。
+     *
+     * @return array<int, array{code:string,label:string,free:bool,checked:bool}>
+     */
+    private function groupChoices(): array
+    {
+        $defaults = Group::defaultVisibleCodes();
+        $choices = [];
+
+        foreach (Group::visible() as $group) {
+            $code = (string) $group['code'];
+
+            $choices[] = [
+                'code' => $code,
+                'label' => (string) $group['label'],
+                'free' => (string) $group['price_mode'] === Group::PRICE_FREE,
+                'checked' => in_array($code, $defaults, true),
+            ];
+        }
+
+        return $choices;
     }
 
     /** 一段可直接抄走的调用示例（把真实地址塞进去，省得用户自己拼） */
@@ -143,11 +179,21 @@ class ConsoleController
             return $this->back('额度不能为负数', 'err');
         }
 
+        // 可用线路：一个都没勾就说明用户不想要任何线路 ——
+        // 那这把令牌什么都调不了，直接拦下并说清，比建一把废令牌友好
+        $groupCodes = $request->post('groups', []);
+        $groupCodes = is_array($groupCodes) ? array_map('strval', $groupCodes) : [];
+        $groups = UserToken::normalizeGroups(implode(',', $groupCodes));
+
+        if ($groups === '' && Group::visible() !== []) {
+            return $this->back('请至少勾选一条可用线路，否则这把令牌调不通任何模型', 'err');
+        }
+
         // 有效期用「天数」而不是让用户填时间戳：
         // 让人算 Unix 时间戳是不合理的
         $expiresAt = $expiresDays > 0 ? time() + $expiresDays * 86400 : null;
 
-        $created = UserToken::create((int) $user['id'], $name, $quota, $models, $expiresAt);
+        $created = UserToken::create((int) $user['id'], $name, $quota, $models, $expiresAt, $groups);
 
         // 明文令牌在创建这一刻一定给用户看一次；之后还能不能再看到，
         // 取决于站长是否开着「随时复制」（见 UserToken::revealEnabled）

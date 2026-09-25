@@ -1,0 +1,423 @@
+<?php
+/**
+ * 后台 · 线路分组 + 额度看板
+ *
+ * ═══ 这一页要回答的两个问题 ═══
+ *
+ *   ① 我这几条上游线路分别是什么性质？（不花钱 / 在烧我的钱 / 对用户收不收费）
+ *   ② 烧钱的那几条还能撑多久？（剩余额度、消耗速率、预计可用天数）
+ *
+ * 两个问题必须在一屏里能同时看到 —— 分成两页会逼着人来回对照
+ * 「分组 id 对应哪条线」，而这里直接把分组名、渠道名、密钥掩码并排放好了。
+ *
+ * @var string $csrf
+ * @var string $siteName
+ * @var string $siteMode
+ * @var array<int, array<string, mixed>> $groups
+ * @var array<int, array<string, mixed>> $budgetRows
+ * @var array<string, mixed>|null $editing
+ * @var float $budgetWarnRatio
+ * @var string $currency
+ * @var string $notice
+ * @var string $noticeType
+ */
+$noticeType = $noticeType ?? 'info';
+$editing = $editing ?? null;
+
+/** 金额格式化：去掉无意义的小数尾巴 */
+$money = static function (mixed $value): string {
+    $float = (float) $value;
+    if ($float === 0.0) {
+        return '0';
+    }
+
+    return rtrim(rtrim(number_format($float, 6, '.', ''), '0'), '.');
+};
+
+/** 预计可用天数说成人话 */
+$daysText = static function (?float $days): string {
+    if ($days === null) {
+        return '暂无消耗数据';
+    }
+
+    if ($days >= 100) {
+        return '100 天以上';
+    }
+
+    if ($days >= 1) {
+        return round($days, 1) . ' 天';
+    }
+
+    return round($days * 24, 1) . ' 小时';
+};
+?>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title><?= htmlspecialchars((string) $siteName, ENT_QUOTES, 'UTF-8') ?> · 线路分组</title>
+    <?php include __DIR__ . '/_style.html'; ?>
+</head>
+<body>
+<div class="wrap">
+    <?php $active = 'groups'; include __DIR__ . '/_header.html'; ?>
+
+    <?php if (($notice ?? '') !== ''): ?>
+        <div class="alert <?= htmlspecialchars((string) $noticeType, ENT_QUOTES, 'UTF-8') ?>">
+            <?= icon($noticeType === 'err' ? 'alert' : ($noticeType === 'info' ? 'info' : 'check'), 17) ?>
+            <span><?= htmlspecialchars((string) $notice, ENT_QUOTES, 'UTF-8') ?></span>
+        </div>
+    <?php endif; ?>
+
+    <div class="page-head">
+        <div class="ph-main">
+            <h1>线路分组</h1>
+            <p class="ph-desc">
+                分组 = 「一条上游线路 + 它提供的模型 + 它的计价方式」。
+                分成不同的组，模型广场才会分板块展示，你也能分开盯每一条线的额度。
+            </p>
+        </div>
+        <div class="ph-actions">
+            <a class="ghost sm" href="/admin/channels"><?= icon('channels', 15) ?>去渠道管理挂线路</a>
+            <a class="ghost sm" href="/models" target="_blank" rel="noopener"><?= icon('external', 15) ?>看模型广场</a>
+        </div>
+    </div>
+
+    <!-- ═══ 一、分组列表 ═══ -->
+    <div class="card flush">
+        <div class="card-head">
+            <h2>分组一览</h2>
+            <span class="pill accent"><?= count($groups) ?> 个分组</span>
+        </div>
+
+        <?php if ($groups === []): ?>
+            <div class="empty">
+                <?= icon('info', 26) ?>
+                <div>还没有任何分组。先在下面新建一个，再去渠道管理里把线路挂进去。</div>
+            </div>
+        <?php else: ?>
+            <div class="table-scroll">
+                <table class="compact">
+                    <thead>
+                    <tr>
+                        <th>展示名</th>
+                        <th>代号</th>
+                        <th>性质</th>
+                        <th>模型广场</th>
+                        <th>默认开放</th>
+                        <th>渠道 / 模型 / 定价</th>
+                        <th>排序</th>
+                        <th>状态</th>
+                        <th style="text-align:right">操作</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($groups as $group): ?>
+                        <tr>
+                            <td>
+                                <b><?= htmlspecialchars((string) $group['label'], ENT_QUOTES, 'UTF-8') ?></b>
+                                <?php if (($group['description'] ?? '') !== ''): ?>
+                                    <div class="src"><?= htmlspecialchars((string) $group['description'], ENT_QUOTES, 'UTF-8') ?></div>
+                                <?php endif; ?>
+                            </td>
+                            <td class="mono"><?= htmlspecialchars((string) $group['code'], ENT_QUOTES, 'UTF-8') ?></td>
+                            <td>
+                                <?php if ($group['costMode'] === 'paid'): ?>
+                                    <span class="pill warn"><?= icon('alert', 12) ?> 花你的钱</span>
+                                <?php else: ?>
+                                    <span class="pill ok">上游免费</span>
+                                <?php endif; ?>
+                                <?php if ($group['priceMode'] === 'free'): ?>
+                                    <span class="pill accent">对用户免费</span>
+                                <?php else: ?>
+                                    <span class="pill">对用户按定价收费</span>
+                                <?php endif; ?>
+                            </td>
+                            <td><?= $group['visible'] ? '<span class="pill ok">展示</span>' : '<span class="pill">隐藏</span>' ?></td>
+                            <td><?= $group['defaultVisible'] ? '<span class="pill ok">是</span>' : '<span class="pill">否</span>' ?></td>
+                            <td class="src">
+                                <?= (int) $group['channelCount'] ?> 条渠道 ·
+                                <?= (int) $group['modelCount'] ?> 个模型 ·
+                                <?= (int) $group['priceCount'] ?> 条定价
+                            </td>
+                            <td class="src"><?= (int) $group['sort'] ?></td>
+                            <td><?= $group['enabled'] ? '<span class="pill ok">启用</span>' : '<span class="pill danger">停用</span>' ?></td>
+                            <td style="text-align:right">
+                                <div class="row-actions" style="justify-content:flex-end">
+                                    <a class="ghost sm" href="/admin/groups?edit=<?= (int) $group['id'] ?>">编辑</a>
+                                    <form method="post" action="/admin/groups/delete"
+                                          onsubmit="return confirm('确定删除分组「<?= htmlspecialchars((string) $group['label'], ENT_QUOTES, 'UTF-8') ?>」？\n\n只有空分组能删（没有渠道、没有定价挂在其下）。')"
+                                          style="margin:0">
+                                        <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
+                                        <input type="hidden" name="id" value="<?= (int) $group['id'] ?>">
+                                        <button class="ghost sm danger" type="submit">删除</button>
+                                    </form>
+                                </div>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        <?php endif; ?>
+    </div>
+
+    <!-- ═══ 二、新建 / 编辑 ═══ -->
+    <div class="card mt-0" style="margin-top:22px">
+        <div class="card-head">
+            <h2><?= $editing === null ? '新建分组' : '编辑分组：' . htmlspecialchars((string) $editing['label'], ENT_QUOTES, 'UTF-8') ?></h2>
+            <?php if ($editing !== null): ?>
+                <a class="ghost sm" href="/admin/groups">取消编辑</a>
+            <?php endif; ?>
+        </div>
+
+        <form method="post" action="/admin/groups/save">
+            <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
+            <input type="hidden" name="id" value="<?= $editing === null ? 0 : (int) $editing['id'] ?>">
+
+            <div class="two-col">
+                <div class="field">
+                    <label class="lbl" for="g-label">展示名（用户会在模型广场看到）</label>
+                    <input id="g-label" type="text" name="label" required maxlength="64"
+                           value="<?= htmlspecialchars((string) ($editing['label'] ?? ''), ENT_QUOTES, 'UTF-8') ?>"
+                           placeholder="例如：高速稳定专线 · 硅基流动">
+                </div>
+                <div class="field">
+                    <label class="lbl" for="g-code">代号（英文，令牌里记的就是它）</label>
+                    <?php if ($editing === null): ?>
+                        <input id="g-code" type="text" name="code" required pattern="[a-z][a-z0-9_]{1,31}"
+                               value="" placeholder="例如：siliconflow">
+                        <div class="tip">小写字母开头，可含数字与下划线。建好之后不能改 —— 令牌的分组权限记的就是它。</div>
+                    <?php else: ?>
+                        <input id="g-code" type="text" class="mono" value="<?= htmlspecialchars((string) $editing['code'], ENT_QUOTES, 'UTF-8') ?>" disabled>
+                        <div class="tip">代号建好后不可改（令牌里记的是它，改了等于把令牌的分组权限全弄丢）。</div>
+                    <?php endif; ?>
+                </div>
+            </div>
+
+            <div class="field">
+                <label class="lbl" for="g-desc">一句话说明（模型广场的板块副标题）</label>
+                <input id="g-desc" type="text" name="description" maxlength="255"
+                       value="<?= htmlspecialchars((string) ($editing['description'] ?? ''), ENT_QUOTES, 'UTF-8') ?>"
+                       placeholder="例如：硅基流动专线，临时免费体验，额度用尽后自动下线">
+            </div>
+
+            <div class="two-col">
+                <div class="field">
+                    <label class="lbl" for="g-cost">上游要不要花钱</label>
+                    <select id="g-cost" name="cost_mode">
+                        <option value="free" <?= (string) ($editing['cost_mode'] ?? 'free') === 'free' ? 'selected' : '' ?>>
+                            不花钱（上游免费额度）
+                        </option>
+                        <option value="paid" <?= (string) ($editing['cost_mode'] ?? '') === 'paid' ? 'selected' : '' ?>>
+                            花钱（要盯额度，例如 16 元 / 74 元的专线）
+                        </option>
+                    </select>
+                    <div class="tip">只影响后台的提醒口径：标成「花钱」的线路，额度快用完会标黄。</div>
+                </div>
+                <div class="field">
+                    <label class="lbl" for="g-price">对用户收不收费</label>
+                    <select id="g-price" name="price_mode">
+                        <option value="priced" <?= (string) ($editing['price_mode'] ?? 'priced') === 'priced' ? 'selected' : '' ?>>
+                            按定价表收费
+                        </option>
+                        <option value="free" <?= (string) ($editing['price_mode'] ?? '') === 'free' ? 'selected' : '' ?>>
+                            对用户免费（成本照记）
+                        </option>
+                    </select>
+                    <div class="tip">
+                        「临时免费」就选这一项：用户不花钱，但<strong>上游成本照记</strong> ——
+                        你才能看清这条线替你烧了多少。
+                    </div>
+                </div>
+            </div>
+
+            <div class="two-col">
+                <div class="field">
+                    <label class="lbl">模型广场是否展示这一板块</label>
+                    <label class="row" style="gap:8px">
+                        <input type="checkbox" name="visible" value="1"
+                            <?= (int) ($editing['visible'] ?? 0) === 1 ? 'checked' : '' ?>>
+                        <span>在 <a href="/models" target="_blank" rel="noopener">/models</a> 里展示成一个板块</span>
+                    </label>
+                    <div class="tip">关掉 = 这条线的模型不出现在模型广场（但已有权限的令牌仍能调用）。</div>
+                </div>
+                <div class="field">
+                    <label class="lbl">新建令牌时默认包含这一分组</label>
+                    <label class="row" style="gap:8px">
+                        <input type="checkbox" name="default_visible" value="1"
+                            <?= (int) ($editing['default_visible'] ?? 0) === 1 ? 'checked' : '' ?>>
+                        <span>令牌没单独填分组时，默认就能用它</span>
+                    </label>
+                    <div class="tip">
+                        用这个标志而不是给每把令牌写死一串分组名：以后新开线路只要打开它自己的开关，
+                        不用回头改几十把令牌。
+                    </div>
+                </div>
+            </div>
+
+            <div class="two-col">
+                <div class="field">
+                    <label class="lbl" for="g-sort">排序（小的在前）</label>
+                    <input id="g-sort" type="number" name="sort" min="0" max="9999"
+                           value="<?= (int) ($editing['sort'] ?? 10) ?>">
+                </div>
+                <div class="field">
+                    <label class="lbl" for="g-status">状态</label>
+                    <select id="g-status" name="status">
+                        <option value="1" <?= (int) ($editing['status'] ?? 1) === 1 ? 'selected' : '' ?>>启用</option>
+                        <option value="0" <?= (int) ($editing['status'] ?? 1) === 0 ? 'selected' : '' ?>>停用</option>
+                    </select>
+                    <div class="tip">停用后，这个分组的模型不再被任何令牌调用到。</div>
+                </div>
+            </div>
+
+            <div class="actions-bar">
+                <button class="primary" type="submit"><?= icon('check', 15) ?><?= $editing === null ? '创建分组' : '保存修改' ?></button>
+            </div>
+        </form>
+    </div>
+
+    <!-- ═══ 三、额度看板 ═══ -->
+    <div class="card mt-0" style="margin-top:22px">
+        <div class="card-head">
+            <h2>额度看板（按密钥）</h2>
+            <span class="pill accent">这是你出的钱</span>
+        </div>
+
+        <p class="tip" style="margin-top:0">
+            上游给的额度是<strong>按密钥</strong>给的（一把 16 元、另一把 74 元），所以这里一行一把。
+            余额用完后该密钥会<strong>自动停止参与调用</strong>（数据保留，补录额度即自动恢复）；
+            某条线路的密钥全部用完，它的模型会自动从模型广场下架。
+        </p>
+
+        <?php if ($budgetRows === []): ?>
+            <div class="empty">
+                <?= icon('info', 26) ?>
+                <div>
+                    还没有任何密钥设了额度。导入密钥后，在这里给它填上「上游给的额度」，
+                    就能看到剩余与消耗速率。
+                </div>
+            </div>
+        <?php else: ?>
+            <div class="table-scroll">
+                <table class="compact">
+                    <thead>
+                    <tr>
+                        <th>线路（分组）</th>
+                        <th>渠道</th>
+                        <th>密钥</th>
+                        <th style="min-width:190px">额度使用</th>
+                        <th>消耗速率</th>
+                        <th>预计可用</th>
+                        <th>上游读数（对账）</th>
+                        <th>状态</th>
+                        <th style="text-align:right">操作</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($budgetRows as $row): ?>
+                        <?php
+                        $barClass = $row['exhausted'] ? 'danger' : ($row['warn'] ? 'warn' : '');
+                        $pct = (int) round(((float) $row['ratio']) * 100);
+                        ?>
+                        <tr>
+                            <td>
+                                <b><?= htmlspecialchars((string) $row['groupLabel'], ENT_QUOTES, 'UTF-8') ?></b>
+                            </td>
+                            <td class="src"><?= htmlspecialchars((string) $row['channelName'], ENT_QUOTES, 'UTF-8') ?></td>
+                            <td class="mono"><?= htmlspecialchars((string) $row['mask'], ENT_QUOTES, 'UTF-8') ?></td>
+                            <td>
+                                <div class="progress-row">
+                                    <div class="progress <?= $barClass ?>" style="flex:1">
+                                        <i style="width:<?= max(2, $pct) ?>%"></i>
+                                    </div>
+                                    <span class="pv"><?= $pct ?>%</span>
+                                </div>
+                                <div class="src">
+                                    已用 <?= $money($row['used']) ?> / 共 <?= $money($row['total']) ?>
+                                    <?= htmlspecialchars((string) $currency, ENT_QUOTES, 'UTF-8') ?>
+                                    ，剩 <b><?= $money($row['remain']) ?></b>
+                                </div>
+                            </td>
+                            <td class="src">
+                                <?= (float) $row['perDay'] > 0 ? $money($row['perDay']) . ' / 天' : '—' ?>
+                            </td>
+                            <td>
+                                <?php if ($row['exhausted']): ?>
+                                    <span class="pill danger">已用完</span>
+                                <?php else: ?>
+                                    <span class="src"><?= $daysText($row['days'] ?? null) ?></span>
+                                <?php endif; ?>
+                            </td>
+                            <td class="src">
+                                <?php if ($row['reportedAt'] > 0): ?>
+                                    <?= $money($row['reported']) ?>
+                                    <?php if ($row['diff'] !== null && abs((float) $row['diff']) > 0.01): ?>
+                                        <span class="text-warn">（差 <?= $money($row['diff']) ?>）</span>
+                                    <?php else: ?>
+                                        <span class="text-ok">（一致）</span>
+                                    <?php endif; ?>
+                                <?php else: ?>
+                                    —
+                                <?php endif; ?>
+                            </td>
+                            <td>
+                                <?php if ($row['autoDisabled']): ?>
+                                    <span class="pill warn">额度用完已自动停用</span>
+                                <?php elseif ($row['enabled']): ?>
+                                    <span class="pill ok">启用</span>
+                                <?php else: ?>
+                                    <span class="pill danger">已停用</span>
+                                <?php endif; ?>
+                            </td>
+                            <td style="text-align:right">
+                                <div class="row-actions" style="justify-content:flex-end">
+                                    <form method="post" action="/admin/groups/reconcile" style="margin:0">
+                                        <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
+                                        <input type="hidden" name="key_id" value="<?= (int) $row['id'] ?>">
+                                        <button class="ghost sm" type="submit"
+                                                title="读上游自己记的累计用量，与我们的记账并排对照">对账</button>
+                                    </form>
+                                </div>
+                            </td>
+                        </tr>
+                        <tr>
+                            <td colspan="9" style="background:#fbfdff">
+                                <form method="post" action="/admin/groups/budget" class="row" style="margin:0">
+                                    <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
+                                    <input type="hidden" name="key_id" value="<?= (int) $row['id'] ?>">
+                                    <span class="src">给这把密钥追加额度：</span>
+                                    <input type="number" name="amount" step="0.01" min="0.01" required style="width:110px"
+                                           placeholder="例如 74">
+                                    <input type="text" name="note" maxlength="255" style="width:200px"
+                                           placeholder="备注（如：2026-09-25 充值）">
+                                    <button class="primary sm" type="submit">追加</button>
+                                    <?php if ($row['note'] !== ''): ?>
+                                        <span class="src">现有备注：<?= htmlspecialchars((string) $row['note'], ENT_QUOTES, 'UTF-8') ?></span>
+                                    <?php endif; ?>
+                                </form>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        <?php endif; ?>
+
+        <div class="note">
+            <b>为什么余额要自己记账？</b>
+            实测两家上游都没有「用 API Key 读余额」的接口（硅基流动的余额接口已下线、
+            TierFlow 的余额要控制台登录态），所以本站按每次调用的真实用量累加成本，
+            再用「你录入的额度 − 已用」算出剩余。顺带得到一个上游给不了的数字：<b>消耗速率</b>。
+            <br>
+            <b>对账</b>按钮会读上游自己记的累计用量（TierFlow 有、硅基流动没有）。
+            它<strong>不参与余额计算</strong>，只用来验证我们的计价口径对不对。
+            若差额较大，通常是两件事：单价/时段配错了，或上游用的是美元口径（需按汇率换算）。
+        </div>
+    </div>
+</div>
+</body>
+</html>

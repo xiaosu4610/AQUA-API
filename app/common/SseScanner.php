@@ -38,6 +38,24 @@ final class SseScanner
     public int $completionTokens = 0;
     public bool $usageFound = false;
 
+    /**
+     * 输入里**命中缓存**的部分（token 数）。
+     *
+     * 为什么必须单独采集：缓存命中是**独立计费维度**，上游对它的报价通常是
+     * 输入价的 1/10（例如硅基流动：命中 ¥0.15/M、未命中 ¥1.5/M，差 10 倍）。
+     * 不采集的话只能把命中的部分按全价算 —— 成本会虚高一截，
+     * 更糟的是「做了缓存优化反而账面更亏」这种看不懂的结论。
+     *
+     * 各家字段名不统一，这里按优先级认三种：
+     *   1. `prompt_cache_hit_tokens`           硅基流动直接给
+     *   2. `prompt_tokens_details.cached_tokens`  OpenAI / TierFlow 风格
+     *   3. `cache_read_input_tokens`          Anthropic 风格
+     */
+    public int $cachedTokens = 0;
+
+    /** 输入里**未命中缓存**的部分。上游没给时留 0，由计价侧用 输入−命中 兜底 */
+    public int $cacheMissTokens = 0;
+
     /** 输出内容的字符数（估算 token 用）。拆成中日韩与其它两类，
      *  因为两者的 token 密度差 4 倍 —— 只记一个总字符数会让中文回答被严重低估 */
     public int $contentCjk = 0;
@@ -186,7 +204,40 @@ final class SseScanner
             $this->completionTokens = (int) $completion;
         }
 
+        $this->absorbCacheUsage($usage);
+
         $this->usageFound = true;
+    }
+
+    /**
+     * 提取缓存命中的 token 数。
+     *
+     * 三家上游给的字段名完全不同（见 $cachedTokens 的说明），
+     * 而「命中」这个数字直接决定成本算得对不对，所以三种都认。
+     * 命中数会被夹在 [0, prompt] 之间：上游偶尔会给出大于输入总数的怪值，
+     * 那种数据进了计费会算出负数成本。
+     *
+     * @param array<string, mixed> $usage
+     */
+    private function absorbCacheUsage(array $usage): void
+    {
+        $hit = $usage['prompt_cache_hit_tokens']
+            ?? ($usage['prompt_tokens_details']['cached_tokens'] ?? null)
+            ?? ($usage['cache_read_input_tokens'] ?? null);
+
+        $miss = $usage['prompt_cache_miss_tokens'] ?? null;
+
+        if (is_numeric($hit)) {
+            $this->cachedTokens = max(0, (int) $hit);
+        }
+
+        if (is_numeric($miss)) {
+            $this->cacheMissTokens = max(0, (int) $miss);
+        }
+
+        if ($this->promptTokens > 0 && $this->cachedTokens > $this->promptTokens) {
+            $this->cachedTokens = $this->promptTokens;
+        }
     }
 
     /**

@@ -828,6 +828,8 @@ final class RelayEngine
         if ($scanner->usageFound) {
             $job->promptTokens = $scanner->promptTokens;
             $job->completionTokens = $scanner->completionTokens;
+            $job->cachedTokens = $scanner->cachedTokens;
+            $job->cacheMissTokens = $scanner->cacheMissTokens;
             $job->usageEstimated = false;
         } else {
             $job->promptTokens = $job->promptEstimate;
@@ -839,7 +841,19 @@ final class RelayEngine
             $job->usageEstimated = true;
         }
 
-        $quote = Pricing::quote($job->pricing, $job->promptTokens, $job->completionTokens, $job->multiplier);
+        // 计价口径三个来源：
+        //   · $job->cachedTokens —— 缓存命中按独立单价算（命中价常是输入价的 1/10）
+        //   · (int) $job->startedAt —— 按**本次请求发生时刻**落时段，用「谷时半价」那类价目
+        //   · $job->freeToUser —— 所属分组对用户免费（临时免费的专线）：售价记 0、成本照记
+        $quote = Pricing::quote(
+            $job->pricing,
+            $job->promptTokens,
+            $job->completionTokens,
+            $job->multiplier,
+            $job->cachedTokens,
+            (int) $job->startedAt,
+            $job->freeToUser
+        );
 
         // 失败或上游报错：记成本、不收费（用户没拿到服务）
         $downstream = $error === null ? $quote['downstream_cost'] : 0.0;
@@ -848,11 +862,13 @@ final class RelayEngine
             UsageLog::record([
                 'model' => $job->model,
                 'channel_id' => (int) ($job->channel['id'] ?? 0),
+                'channel_key_id' => (int) ($job->poolKey['key_id'] ?? 0),
                 'channel_name' => (string) ($job->channel['name'] ?? ''),
                 'user_id' => $job->user === null ? null : (int) $job->user['id'],
                 'token_id' => $job->token === null ? null : (int) $job->token['id'],
                 'prompt_tokens' => $job->promptTokens,
                 'completion_tokens' => $job->completionTokens,
+                'cached_tokens' => $job->cachedTokens,
                 'usage_estimated' => $job->usageEstimated,
                 'upstream_cost' => $quote['upstream_cost'],
                 'downstream_cost' => $downstream,
@@ -862,6 +878,14 @@ final class RelayEngine
                 'status' => $error === null ? UsageLog::STATUS_OK : UsageLog::STATUS_ERROR,
                 'error' => $error,
             ]);
+
+            // 把这次的上游成本记到「这次用的那把密钥」的额度账上。
+            // 必须按密钥而不是按渠道：额度是按密钥给的（一把 16 元、另一把 74 元），
+            // 混在一起就算不出「哪一把快要没了」。
+            // 失败的重试也算成本（上游确实处理了），所以不看 $error
+            if ($job->poolKey !== null && isset($job->poolKey['key_id']) && $quote['upstream_cost'] > 0) {
+                ChannelKey::addCost((int) $job->poolKey['key_id'], (float) $quote['upstream_cost']);
+            }
 
             // 扣费与扣额度。两者都失败也不影响已完成的响应，
             // 但必须写日志 —— 少收的钱要能对得出来

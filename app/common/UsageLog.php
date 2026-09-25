@@ -68,9 +68,9 @@ final class UsageLog
      * 写入一条用量记录。
      *
      * @param array{
-     *     model:string, channel_id?:int, channel_name?:string,
+     *     model:string, channel_id?:int, channel_name?:string, channel_key_id?:int,
      *     user_id?:int, token_id?:int,
-     *     prompt_tokens?:int, completion_tokens?:int, usage_estimated?:bool,
+     *     prompt_tokens?:int, completion_tokens?:int, cached_tokens?:int, usage_estimated?:bool,
      *     upstream_cost?:float, downstream_cost?:float,
      *     billing_mode?:string, is_stream?:bool,
      *     latency_ms?:int, status?:string, error?:string
@@ -84,21 +84,25 @@ final class UsageLog
         try {
             Db::execute(
                 'INSERT INTO usage_logs
-                    (created_at, user_id, token_id, channel_id, channel_name, model,
-                     billing_mode, is_stream, prompt_tokens, completion_tokens, total_tokens,
+                    (created_at, user_id, token_id, channel_id, channel_key_id, channel_name, model,
+                     billing_mode, is_stream, prompt_tokens, completion_tokens, cached_tokens, total_tokens,
                      usage_estimated, upstream_cost, downstream_cost, latency_ms, status, error_message)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                 [
                     time(),
                     $data['user_id'] ?? null,
                     $data['token_id'] ?? null,
                     $data['channel_id'] ?? null,
+                    isset($data['channel_key_id']) && (int) $data['channel_key_id'] > 0
+                        ? (int) $data['channel_key_id']
+                        : null,
                     isset($data['channel_name']) ? mb_substr((string) $data['channel_name'], 0, 128) : null,
                     mb_substr((string) ($data['model'] ?? ''), 0, 191),
                     (string) ($data['billing_mode'] ?? Pricing::MODE_TOKEN),
                     !empty($data['is_stream']) ? 1 : 0,
                     $prompt,
                     $completion,
+                    max(0, (int) ($data['cached_tokens'] ?? 0)),
                     $prompt + $completion,
                     !empty($data['usage_estimated']) ? 1 : 0,
                     number_format((float) ($data['upstream_cost'] ?? 0), 10, '.', ''),
@@ -112,6 +116,27 @@ final class UsageLog
             // 记账失败不能拖垮转发 —— 记一条框架日志即可
             Log::error('用量日志写入失败：' . $e->getMessage());
         }
+    }
+
+    /**
+     * 某把渠道密钥在时间窗内的成本合计（密钥余额看板算「消耗速率」用）。
+     *
+     * 为什么按密钥而不是按渠道：额度是**按密钥**给的（一把 16 元、另一把 74 元），
+     * 按渠道汇总会把两把的消耗混在一起，看不出「哪一把快见底了」。
+     */
+    public static function costByKey(int $keyId, int $fromTs, int $toTs): float
+    {
+        if ($keyId <= 0) {
+            return 0.0;
+        }
+
+        $row = Db::selectOne(
+            'SELECT COALESCE(SUM(upstream_cost), 0) AS c FROM usage_logs
+             WHERE channel_key_id = ? AND created_at >= ? AND created_at <= ?',
+            [$keyId, $fromTs, $toTs]
+        );
+
+        return (float) ($row['c'] ?? 0);
     }
 
     /**

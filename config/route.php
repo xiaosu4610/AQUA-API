@@ -17,6 +17,7 @@ use app\controller\AuthController;
 use app\controller\ChannelController;
 use app\controller\ConsoleController;
 use app\controller\DocsController;
+use app\controller\GroupController;
 use app\controller\HealthController;
 use app\controller\HomeController;
 use app\controller\InstallController;
@@ -137,6 +138,13 @@ Route::group('/admin', function () {
     Route::post('/channels/keys/toggle', [ChannelController::class, 'keysToggle']);
     Route::post('/channels/keys/delete', [ChannelController::class, 'keysDelete']);
     Route::post('/channels/keys/reset', [ChannelController::class, 'keysReset']);
+
+    // 线路分组（分组管理 + 额度看板）
+    Route::get('/groups', [GroupController::class, 'index']);
+    Route::post('/groups/save', [GroupController::class, 'save']);
+    Route::post('/groups/delete', [GroupController::class, 'delete']);
+    Route::post('/groups/budget', [GroupController::class, 'addBudget']);
+    Route::post('/groups/reconcile', [GroupController::class, 'reconcile']);
 
     // 模型定价（上游成本 + 下游售价）
     Route::get('/pricing', [PricingController::class, 'index']);

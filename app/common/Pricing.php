@@ -183,21 +183,27 @@ final class Pricing
 
         Db::execute(
             'INSERT INTO pricing
-                (model, billing_mode, upstream_kind,
-                 upstream_input_price, upstream_output_price, upstream_call_price,
-                 downstream_input_price, downstream_output_price, downstream_call_price,
+                (model, billing_mode, upstream_kind, group_id,
+                 upstream_input_price, upstream_output_price, upstream_call_price, upstream_cache_hit_price,
+                 downstream_input_price, downstream_output_price, downstream_call_price, downstream_cache_hit_price,
+                 upstream_price_windows, downstream_price_windows,
                  price_unit, note, status, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             [
                 (string) $data['model'],
                 (string) $data['billing_mode'],
                 (string) $data['upstream_kind'],
+                (int) ($data['group_id'] ?? 0),
                 self::dec($data['upstream_input_price'] ?? 0),
                 self::dec($data['upstream_output_price'] ?? 0),
                 self::dec($data['upstream_call_price'] ?? 0),
+                self::dec($data['upstream_cache_hit_price'] ?? 0),
                 self::dec($data['downstream_input_price'] ?? 0),
                 self::dec($data['downstream_output_price'] ?? 0),
                 self::dec($data['downstream_call_price'] ?? 0),
+                self::dec($data['downstream_cache_hit_price'] ?? 0),
+                self::encodeWindows($data['upstream_price_windows'] ?? null),
+                self::encodeWindows($data['downstream_price_windows'] ?? null),
                 max(1, (int) ($data['price_unit'] ?? self::DEFAULT_UNIT)),
                 (string) ($data['note'] ?? ''),
                 (int) ($data['status'] ?? self::STATUS_ENABLED),
@@ -218,21 +224,27 @@ final class Pricing
     {
         Db::execute(
             'UPDATE pricing SET
-                model = ?, billing_mode = ?, upstream_kind = ?,
-                upstream_input_price = ?, upstream_output_price = ?, upstream_call_price = ?,
-                downstream_input_price = ?, downstream_output_price = ?, downstream_call_price = ?,
+                model = ?, billing_mode = ?, upstream_kind = ?, group_id = ?,
+                upstream_input_price = ?, upstream_output_price = ?, upstream_call_price = ?, upstream_cache_hit_price = ?,
+                downstream_input_price = ?, downstream_output_price = ?, downstream_call_price = ?, downstream_cache_hit_price = ?,
+                upstream_price_windows = ?, downstream_price_windows = ?,
                 price_unit = ?, note = ?, status = ?, updated_at = ?
              WHERE id = ?',
             [
                 (string) $data['model'],
                 (string) $data['billing_mode'],
                 (string) $data['upstream_kind'],
+                (int) ($data['group_id'] ?? 0),
                 self::dec($data['upstream_input_price'] ?? 0),
                 self::dec($data['upstream_output_price'] ?? 0),
                 self::dec($data['upstream_call_price'] ?? 0),
+                self::dec($data['upstream_cache_hit_price'] ?? 0),
                 self::dec($data['downstream_input_price'] ?? 0),
                 self::dec($data['downstream_output_price'] ?? 0),
                 self::dec($data['downstream_call_price'] ?? 0),
+                self::dec($data['downstream_cache_hit_price'] ?? 0),
+                self::encodeWindows($data['upstream_price_windows'] ?? null),
+                self::encodeWindows($data['downstream_price_windows'] ?? null),
                 max(1, (int) ($data['price_unit'] ?? self::DEFAULT_UNIT)),
                 (string) ($data['note'] ?? ''),
                 (int) ($data['status'] ?? self::STATUS_ENABLED),
@@ -260,18 +272,23 @@ final class Pricing
      */
     public static function syncFromChannels(): int
     {
+        // 模型 → 分组：取「最先声明这个模型的那条渠道」所属的分组。
+        // 这样批量补齐的定价行自带正确归属（专线的模型不会跑进免费分组里去），
+        // 否则新线路的模型会在模型广场里挂错板块
         $models = [];
 
         foreach (Channel::all() as $channel) {
             foreach (Channel::modelsOf($channel) as $model) {
-                $models[$model] = true;
+                if (!isset($models[$model])) {
+                    $models[$model] = (int) ($channel['group_id'] ?? 0);
+                }
             }
         }
 
         $added = 0;
         $now = time();
 
-        foreach (array_keys($models) as $model) {
+        foreach ($models as $model => $groupId) {
             $exists = Db::selectOne('SELECT id FROM pricing WHERE model = ?', [$model]);
             if ($exists !== null) {
                 continue;
@@ -279,15 +296,16 @@ final class Pricing
 
             Db::execute(
                 'INSERT INTO pricing
-                    (model, billing_mode, upstream_kind,
+                    (model, billing_mode, upstream_kind, group_id,
                      upstream_input_price, upstream_output_price, upstream_call_price,
                      downstream_input_price, downstream_output_price, downstream_call_price,
                      price_unit, note, status, created_at, updated_at)
-                 VALUES (?, ?, ?, 0, 0, 0, 0, 0, 0, ?, ?, ?, ?, ?)',
+                 VALUES (?, ?, ?, ?, 0, 0, 0, 0, 0, 0, ?, ?, ?, ?, ?)',
                 [
                     $model,
                     self::MODE_TOKEN,
                     'official',
+                    $groupId,
                     self::DEFAULT_UNIT,
                     '由渠道模型清单批量创建，价格待填',
                     self::STATUS_ENABLED,
@@ -388,7 +406,10 @@ final class Pricing
         ?array $pricing,
         int $promptTokens,
         int $completionTokens,
-        float $multiplier = 1.0
+        float $multiplier = 1.0,
+        int $cachedTokens = 0,
+        ?int $atTime = null,
+        bool $freeToUser = false
     ): array {
         if ($pricing === null) {
             // 未定价：金额为 0，并如实告知调用方「这个模型没有价格」，
@@ -402,16 +423,27 @@ final class Pricing
                 'priced' => false,
                 'mode_label' => '未定价',
                 'upstream_kind' => '',
+                'window' => '',
             ];
         }
 
         $mode = (string) ($pricing['billing_mode'] ?? self::MODE_TOKEN);
         $unit = max(1, (int) ($pricing['price_unit'] ?? self::DEFAULT_UNIT));
+        $at = $atTime ?? time();
+
+        // 缓存命中数不可能超过输入总数（上游偶尔给出怪值时不能让它算出负成本）
+        $hit = max(0, min($cachedTokens, max(0, $promptTokens)));
+        $miss = max(0, $promptTokens - $hit);
 
         // ── 上游成本 ──
+        // 「时段价」在这里生效：上游常有谷时半价（例如 02:00-08:00），
+        // 不按时段取值的话夜间成本会一直算高一倍
+        $upPrice = self::priceAt($pricing, 'upstream', $at);
+
         $upstream = match ($mode) {
-            self::MODE_TOKEN => $promptTokens / $unit * (float) $pricing['upstream_input_price']
-                + $completionTokens / $unit * (float) $pricing['upstream_output_price'],
+            self::MODE_TOKEN => $miss / $unit * $upPrice['input']
+                + $hit / $unit * $upPrice['cache_hit']
+                + $completionTokens / $unit * $upPrice['output'],
             self::MODE_CALL => (float) $pricing['upstream_call_price'],
             // 订阅制与免费：边际成本为 0。固定月费属于「运营支出」，
             // 不在单次请求上摊销 —— 否则「本次成本」会随着请求量变化而跳动，无法解读
@@ -426,19 +458,23 @@ final class Pricing
         //   free                 —— 不收费
         $usesTokenPrice = in_array($mode, [self::MODE_TOKEN, self::MODE_SUBSCRIPTION], true);
 
-        if ($mode === self::MODE_FREE) {
+        if ($mode === self::MODE_FREE || $freeToUser) {
+            // $freeToUser：所属分组是「对用户免费」的（例如临时免费的专线）。
+            // 售价归 0，但**上游成本照记** —— 站长要的正是「这条线替我烧了多少钱」
             $downstream = 0.0;
         } else {
+            $downPrice = self::priceAt($pricing, 'downstream', $at);
+
             $downstream = $usesTokenPrice
-                ? $promptTokens / $unit * (float) $pricing['downstream_input_price']
-                    + $completionTokens / $unit * (float) $pricing['downstream_output_price']
+                ? $miss / $unit * $downPrice['input']
+                    + $hit / $unit * $downPrice['cache_hit']
+                    + $completionTokens / $unit * $downPrice['output']
                 : (float) $pricing['downstream_call_price'];
 
             // 本模式下该用的下游单价全是 0，视为「没配」，回落到「上游成本 × 倍率」。
             // 只看本模式对应的字段，避免被其它模式残留的数字干扰
             $hasOwnPrice = $usesTokenPrice
-                ? ((float) $pricing['downstream_input_price'] > 0
-                    || (float) $pricing['downstream_output_price'] > 0)
+                ? ($downPrice['input'] > 0 || $downPrice['output'] > 0 || $downPrice['cache_hit'] > 0)
                 : (float) $pricing['downstream_call_price'] > 0;
 
             if (!$hasOwnPrice) {
@@ -455,7 +491,166 @@ final class Pricing
             'priced' => true,
             'mode_label' => self::MODES[$mode]['label'] ?? $mode,
             'upstream_kind' => (string) ($pricing['upstream_kind'] ?? ''),
+            // 命中的时段标签（空串表示用的平价）。写进日志后，
+            // 「为什么这一单比上一单便宜一半」这种问题才有据可查
+            'window' => $upPrice['window'],
+            'used_cache_hit' => $hit,
         ];
+    }
+
+    /**
+     * 取某个时刻该用的单价（支持时段价）。
+     *
+     * 时段价的存储格式（`pricing.upstream_price_windows` / `downstream_price_windows`）：
+     *
+     * ```json
+     * [
+     *   {"from": "02:00", "to": "08:00", "input": 1.5, "output": 4.5, "cache_hit": 0.15},
+     *   {"from": "00:00", "to": "24:00", "input": 3.0, "output": 9.0, "cache_hit": 0.30}
+     * ]
+     * ```
+     *
+     * 规则（都是为了让「配错」不至于变成「算错」）：
+     *   · **第一条命中的时段生效**，所以把特殊时段写在前面、兜底写后面
+     *   · 找不到任何命中时段 → 用平铺的单价字段（也就是「时段价可以不配」）
+     *   · 时段里没写某个价的字段 → 该字段回落到平铺值，而不是当成 0（当成 0 会白送）
+     *   · `cache_hit` 缺失或为 0 且平铺命中价也没配 → **回落到输入价**。
+     *     宁可把命中的部分按全价算（成本偏高、余额早报警），
+     *     也不要按 0 算（成本偏低、余额跑穿了才发现）
+     *
+     * @param array<string, mixed> $pricing
+     * @return array{input:float, output:float, cache_hit:float, window:string}
+     */
+    private static function priceAt(array $pricing, string $prefix, int $at): array
+    {
+        $input = (float) ($pricing[$prefix . '_input_price'] ?? 0);
+        $output = (float) ($pricing[$prefix . '_output_price'] ?? 0);
+        $hit = (float) ($pricing[$prefix . '_cache_hit_price'] ?? 0);
+
+        // 没配命中价：按输入价算（见上面最后一条规则）
+        if ($hit <= 0) {
+            $hit = $input;
+        }
+
+        $windows = self::windowsFrom($pricing[$prefix . '_price_windows'] ?? null);
+
+        if ($windows === []) {
+            return ['input' => $input, 'output' => $output, 'cache_hit' => $hit, 'window' => ''];
+        }
+
+        $now = date('H:i', $at);
+
+        foreach ($windows as $window) {
+            if (!self::inWindow($now, (string) $window['from'], (string) $window['to'])) {
+                continue;
+            }
+
+            $windowInput = isset($window['input']) ? (float) $window['input'] : $input;
+            $windowOutput = isset($window['output']) ? (float) $window['output'] : $output;
+            $windowHit = isset($window['cache_hit']) && (float) $window['cache_hit'] > 0
+                ? (float) $window['cache_hit']
+                : $windowInput;
+
+            return [
+                'input' => $windowInput,
+                'output' => $windowOutput,
+                'cache_hit' => $windowHit,
+                'window' => (string) $window['from'] . '-' . (string) $window['to'],
+            ];
+        }
+
+        return ['input' => $input, 'output' => $output, 'cache_hit' => $hit, 'window' => ''];
+    }
+
+    /**
+     * 某个时刻是否落在时段内。
+     *
+     * 支持跨午夜（`from > to`，例如 22:00-02:00）；`to` 写 `24:00` 表示到当天结束。
+     * 边界取「左闭右开」：02:00-08:00 含 02:00、不含 08:00 ——
+     * 这样两段相邻的时段拼起来不会在交界的那一分钟里两个都命中。
+     */
+    private static function inWindow(string $now, string $from, string $to): bool
+    {
+        $nowMin = self::minuteOf($now);
+        $fromMin = self::minuteOf($from);
+        $toMin = self::minuteOf($to);
+
+        if ($fromMin === null || $toMin === null || $nowMin === null) {
+            return false;
+        }
+
+        if ($fromMin === $toMin) {
+            // 起止相同视为「全天」，否则这一段永远不可能命中，等于白配
+            return true;
+        }
+
+        if ($fromMin < $toMin) {
+            return $nowMin >= $fromMin && $nowMin < $toMin;
+        }
+
+        // 跨午夜
+        return $nowMin >= $fromMin || $nowMin < $toMin;
+    }
+
+    /** "HH:MM" → 当天的第几分钟；不合法返回 null */
+    private static function minuteOf(string $time): ?int
+    {
+        if (preg_match('/^(\d{1,2}):(\d{2})$/', trim($time), $m) !== 1) {
+            return null;
+        }
+
+        $hour = (int) $m[1];
+        $minute = (int) $m[2];
+
+        if ($hour > 24 || $minute > 59) {
+            return null;
+        }
+
+        return $hour * 60 + $minute;
+    }
+
+    /**
+     * 解析时段价 JSON（坏数据一律当「没配时段价」处理，绝不让它把计费带崩）。
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public static function windowsFrom(mixed $raw): array
+    {
+        if (is_array($raw)) {
+            $decoded = $raw;
+        } else {
+            $text = trim((string) $raw);
+            if ($text === '') {
+                return [];
+            }
+            $decoded = json_decode($text, true);
+        }
+
+        if (!is_array($decoded)) {
+            return [];
+        }
+
+        $windows = [];
+        foreach ($decoded as $row) {
+            if (!is_array($row) || !isset($row['from'], $row['to'])) {
+                continue;
+            }
+            $windows[] = $row;
+        }
+
+        return $windows;
+    }
+
+    /**
+     * 时段价数组 → 存库用的 JSON（空数组存 null，让「没配」与「配了空」在库里可区分）。
+     *
+     * @param array<int, array<string, mixed>>|string|null $windows
+     */
+    public static function encodeWindows(mixed $windows): ?string
+    {
+        $rows = self::windowsFrom($windows);
+
+        return $rows === [] ? null : (string) json_encode($rows, JSON_UNESCAPED_UNICODE);
     }
 
     /**

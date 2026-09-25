@@ -315,8 +315,8 @@ final class Channel
 
         Db::execute(
             'INSERT INTO channels
-                (name, type, base_url, api_key_enc, models, config, priority, weight, status, rpm_limit, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                (name, type, base_url, api_key_enc, models, config, group_id, priority, weight, status, rpm_limit, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             [
                 (string) $data['name'],
                 (string) $data['type'],
@@ -324,6 +324,7 @@ final class Channel
                 self::encryptKey((string) ($data['api_key'] ?? '')),
                 self::encodeModels($data['models'] ?? []),
                 self::encodeConfig($data['config'] ?? []),
+                (int) ($data['group_id'] ?? 0),
                 (int) ($data['priority'] ?? 0),
                 (int) ($data['weight'] ?? 1),
                 (int) ($data['status'] ?? self::STATUS_ENABLED),
@@ -353,6 +354,7 @@ final class Channel
             'base_url = ?',
             'models = ?',
             'config = ?',
+            'group_id = ?',
             'priority = ?',
             'weight = ?',
             'status = ?',
@@ -366,6 +368,7 @@ final class Channel
             (string) $data['base_url'],
             self::encodeModels($data['models'] ?? []),
             self::encodeConfig($data['config'] ?? []),
+            (int) ($data['group_id'] ?? 0),
             (int) ($data['priority'] ?? 0),
             (int) ($data['weight'] ?? 1),
             (int) ($data['status'] ?? self::STATUS_ENABLED),
@@ -679,6 +682,58 @@ final class Channel
             'UPDATE channels SET fail_streak = 0, breaker_until = NULL, updated_at = ? WHERE id = ?',
             [time(), $id]
         );
+    }
+
+    /**
+     * 从上游读「累计用量」（用于对账，**不是**余额）。
+     *
+     * ═══ 为什么只认这一个路径 ═══
+     *
+     * 各家的账单接口完全不统一，实测结论：
+     *   · TierFlow（`tierflow.cn`）：`GET /v1/dashboard/billing/usage` 用 **API Key** 就能读，
+     *     返回 `{"object":"list","total_usage":0.0578}` —— 可用
+     *   · 硅基流动：`/v1/user/info` 已下线（410）、`/v1/dashboard/billing/*` 全 404 —— 没有可用接口
+     *   · TierFlow 的 `/v1/dashboard/billing/subscription` 虽然回 200，
+     *     但里面是一亿的占位值（不是真数据），所以**不能**拿它当余额用
+     *
+     * 所以这个方法只做一件事：去 `{base_url}/dashboard/billing/usage` 读 `total_usage`，
+     * 读不到就返回 null —— 让调用方显示「上游没有这个接口」，
+     * 而不是拿一个猜出来的数字去假装余额。
+     *
+     * ⚠️ 它只用于**并排对照**（校准我们的计价口径），绝不参与「还剩多少钱」的计算：
+     * 上游记账的单位与精度我们无法确证，把它当余额会得出错误的剩余额度。
+     */
+    public static function readUpstreamUsage(array $channel, string $plainKey): ?float
+    {
+        $base = rtrim(trim((string) ($channel['base_url'] ?? '')), '/');
+
+        if ($base === '' || $plainKey === '') {
+            return null;
+        }
+
+        $ch = curl_init($base . '/dashboard/billing/usage');
+
+        curl_setopt_array($ch, [
+            CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $plainKey, 'Accept: application/json'],
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 20,
+        ]);
+
+        $body = (string) curl_exec($ch);
+        $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        if ($status !== 200) {
+            return null;
+        }
+
+        $decoded = json_decode($body, true);
+
+        if (!is_array($decoded) || !isset($decoded['total_usage']) || !is_numeric($decoded['total_usage'])) {
+            return null;
+        }
+
+        return (float) $decoded['total_usage'];
     }
 
     /**

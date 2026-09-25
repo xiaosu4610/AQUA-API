@@ -31,6 +31,7 @@ namespace app\controller;
 
 use app\common\Channel;
 use app\common\ChannelKey;
+use app\common\Group;
 use app\common\ModelHealth;
 use app\common\NullResponse;
 use app\common\Pricing;
@@ -68,9 +69,24 @@ class OpenAiController
         }
 
         $models = [];
+        $tokenGroups = Group::idsOfToken($auth['token']);
 
         foreach (Channel::all() as $channel) {
             if ((int) $channel['status'] !== Channel::STATUS_ENABLED) {
+                continue;
+            }
+
+            // 分组维度：这条线路不在令牌的可访问分组里，它的模型就不该出现在列表里。
+            // 放在这里过滤而不是「返回后再删」：客户端拿到列表就会照着调，
+            // 列出它调不了的模型 = 我们自己制造一次必然失败。
+            //
+            // 第二层是「这条线还活着吗」：分组被停用、或额度用完的线路，
+            // 它的模型同样不该出现（用户点进去只会失败）
+            if (!self::inGroups($tokenGroups, (int) ($channel['group_id'] ?? 0))) {
+                continue;
+            }
+
+            if (!Group::isLive((int) ($channel['group_id'] ?? 0))) {
                 continue;
             }
 
@@ -206,6 +222,23 @@ class OpenAiController
             return $this->error(400, '缺少 model 参数');
         }
 
+        // ── 2.5 分组权限（这个模型属于哪条线路、你这把令牌有没有这条线路）──
+        //
+        // 为什么要单独这一层：本站不止一条上游线路，性质完全不同 ——
+        // 免费共享线路（不花钱）、正在烧站长钱的临时免费专线、将来的付费线路。
+        // 令牌上记的是「能访问哪些分组」，所以必须在这里就把不属于它的线路挡掉：
+        // 否则用户会调到一条他本不该用的线路，而站长只看到钱在少、查不出是谁在用。
+        $tokenGroups = Group::idsOfToken($token);
+
+        if ($tokenGroups === []) {
+            return $this->error(
+                403,
+                '本站当前没有任何对你开放的上游线路（分组），请联系管理员为你开通',
+                'invalid_request_error',
+                'no_group_access'
+            );
+        }
+
         if (!UserToken::allowsModel($token, $model)) {
             $this->recordRejection(
                 $request,
@@ -239,6 +272,14 @@ class OpenAiController
                 'model_not_priced'
             );
         }
+
+        // 这个模型属于哪条线路：优先看**定价行**的归属（定价是「这个模型卖多少钱」的唯一真相），
+        // 没定价就沿用 0（后面按渠道归属兜底）。
+        // $freeToUser 的用处有两处，都要看它：
+        //   · 余额门槛：临时免费的专线不该因为用户余额为 0 而被拒（他本来就不用付钱）
+        //   · 计费：售价记 0，但上游成本照记 —— 站长要的正是「这条线替我烧了多少」
+        $groupId = (int) ($pricing['group_id'] ?? 0);
+        $freeToUser = $groupId > 0 && Group::isFreeToUser($groupId);
 
         // ── 3.05 模型健康度闸门（已经坏了的模型，别再让用户陪它等）──
         //
@@ -274,6 +315,7 @@ class OpenAiController
         // 用 0 元的调用去卡余额没有意义，而生产上正是这样把所有人卡住的：
         // 上游全是免费模型，用户余额全是 0，于是「人人 401 / 余额不足」。
         if (Settings::bool('billing.require_balance', true)
+            && !$freeToUser
             && Pricing::isChargeable($pricing, Settings::bool('billing.unpriced_is_free', true))
             && (float) $user['balance'] <= 0) {
             $this->recordRejection(
@@ -296,9 +338,76 @@ class OpenAiController
         }
 
         // ── 4. 选路：先看有没有可用渠道，避免白白建一个任务 ──
-        $candidates = Channel::candidates($model);
+        //
+        // 一次查出全部候选，再按分组筛掉不属于这把令牌的线路 ——
+        // 为什么要留两份：两种「没有渠道」对用户的意义完全不同，
+        // 说错了就是让人白折腾（改模型名 vs 找管理员开权限）
+        $allCandidates = Channel::candidates($model);
+        $candidates = [];
+        $permittedButDead = false;
+
+        foreach ($allCandidates as $candidate) {
+            $candidateGroup = (int) ($candidate['group_id'] ?? 0);
+
+            if (!self::inGroups($tokenGroups, $candidateGroup)) {
+                continue;
+            }
+
+            // 有权访问这条线路，但它本身已经下线（分组被停用 / 免费额度用完了）。
+            // 记下来是为了等下把话说准：这跟「你没权限」是完全不同的两件事 ——
+            // 前者只能等，后者要找管理员开权限
+            if (!Group::isLive($candidateGroup)) {
+                $permittedButDead = true;
+                continue;
+            }
+
+            $candidates[] = $candidate;
+        }
 
         if ($candidates === []) {
+            if ($permittedButDead) {
+                $message = "模型 {$model} 所在的线路已下线（分组被停用，或本次临时免费的额度已用完）。"
+                    . '如需继续使用，请联系管理员补充额度或改换线路';
+
+                $this->recordRejection(
+                    $request,
+                    403,
+                    'model_not_allowed',
+                    $message,
+                    $this->bearerToken($request),
+                    $user,
+                    $token
+                );
+
+                return $this->error(403, $message, 'invalid_request_error', 'model_not_allowed');
+            }
+
+            if ($allCandidates !== []) {
+                // 有线路能服务它，但那条线路不在这把令牌的分组里
+                $labels = [];
+                foreach ($allCandidates as $candidate) {
+                    $label = Group::labelOfId((int) ($candidate['group_id'] ?? 0));
+                    if ($label !== '') {
+                        $labels[$label] = true;
+                    }
+                }
+
+                $message = "模型 {$model} 属于「" . implode('、', array_keys($labels))
+                    . "」线路，你的令牌没有这条线路的访问权限";
+
+                $this->recordRejection(
+                    $request,
+                    403,
+                    'model_not_allowed',
+                    $message,
+                    $this->bearerToken($request),
+                    $user,
+                    $token
+                );
+
+                return $this->error(403, $message, 'invalid_request_error', 'model_not_allowed');
+            }
+
             return $this->error(
                 503,
                 "当前没有可用的上游渠道可以服务模型 {$model}（渠道被禁用、处于熔断、或模型不在其清单内）",
@@ -315,6 +424,9 @@ class OpenAiController
         $job->token = $token;
         $job->user = $user;
         $job->pricing = $pricing;
+        // 所属线路对用户免费（临时免费的专线）：售价记 0、上游成本照记。
+        // 在控制器里定好再交给引擎 —— 计费口径只在一处决定，好核对
+        $job->freeToUser = $freeToUser;
         $job->multiplier = Settings::float('billing.default_multiplier', 1.0);
         $job->estimateRatio = Settings::float('billing.estimate_ratio', 1.0);
         $job->candidates = $candidates;
@@ -491,6 +603,20 @@ class OpenAiController
         }
 
         return $status >= 500 || in_array($status, [408, 429], true);
+    }
+
+    /**
+     * 某个分组里的渠道是否对这把令牌开放。
+     *
+     * `group_id = 0` 一律放行 —— 它表示「没挂分组」（升级前的历史数据，
+     * 或分组表因故没建成）。这条兜底很关键：分组是新增的维度，
+     * 不能让「分组数据缺失」演变成「全站模型都调不到」这种灾难。
+     *
+     * @param array<int, int> $tokenGroups
+     */
+    private static function inGroups(array $tokenGroups, int $groupId): bool
+    {
+        return $groupId <= 0 || in_array($groupId, $tokenGroups, true);
     }
 
     /**

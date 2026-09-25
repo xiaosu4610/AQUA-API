@@ -37,7 +37,7 @@ use Throwable;
 final class Schema
 {
     /** 当前期望的表结构版本。新增迁移时递增。 */
-    public const VERSION = 14;
+    public const VERSION = 15;
 
     /**
      * 确保表结构存在且为最新版本。
@@ -119,6 +119,10 @@ final class Schema
 
         if ($current < 14) {
             self::createV14();
+        }
+
+        if ($current < 15) {
+            self::createV15();
         }
 
         Settings::put('schema_version', (string) self::VERSION);
@@ -575,6 +579,142 @@ final class Schema
     private static function createV11(): void
     {
         self::addColumnIfMissing('channel_model_probe_results', 'latency_ms', 'INTEGER NOT NULL DEFAULT 0');
+    }
+
+    /**
+     * v15：分组（`groups`）+ 计费口径 + 密钥额度
+     *
+     * ═══ 为什么要有「分组」═══
+     *
+     * 同一个站点会接多条上游线路，它们的性质完全不同：
+     *   · 现有 NIM 免费线路：不花钱，给所有用户用
+     *   · 新接的专线（硅基流动 / TierFlow）：**站长在花钱**，临时免费给用户体验
+     *   · 将来的付费线路：站长花钱、用户也花钱
+     * 这三类必须能分开展示、分开计价、分开盯额度 —— 否则「哪条线在烧钱」永远看不清。
+     *
+     * 所以分组的定位是：**「一条（或一组）上游线路 + 它提供的模型 + 它的计价方式」的集合**。
+     * 落地方式刻意选了「挂在渠道上」而不是另建一张分组-模型表：
+     *   本站已经有渠道清单与定价表，再建一张就会**三处描述同一件事**，迟早对不上。
+     *
+     * ═══ cost_mode 与 price_mode 为什么必须分开 ═══
+     *
+     * 「临时免费」这件事用单个字段表达不了：专线是**站长在花钱、用户不花钱**。
+     * 一个字段无论怎么设计都会把其中一半说错，于是分成两个维度：
+     *   · cost_mode  上游要不要花钱（运维视角：这条线要盯额度）
+     *   · price_mode 对用户收不收费（用户视角：模型广场上显不显示价格）
+     *
+     * ═══ 一并加进来的字段，以及它们各自的理由 ═══
+     *
+     *   · `pricing.*_cache_hit_price`   缓存命中是**独立计费维度**（命中价通常是输入价的 1/10），
+     *                                   不分出来的话成本会算高一大截
+     *   · `pricing.*_price_windows`     **时段价**：上游有谷时半价（如 02:00-08:00），
+     *                                   不建模就永远算不准夜间成本
+     *   · `channel_keys.budget_*`       上游余额是**按密钥**给的（16 元 / 74 元各一把），
+     *                                   且上游不提供余额接口 → 只能本地记账
+     *   · `usage_logs.cached_tokens`    记账要能被审计：事后要能拿这条记录重算一遍成本
+     *   · `tokens.groups`               令牌可访问的分组（默认「所有默认可见的分组」）
+     */
+    private static function createV15(): void
+    {
+        $pdo = Db::pdo();
+        $autoId = self::autoId();
+
+        $pdo->exec(<<<SQL
+            CREATE TABLE IF NOT EXISTS groups (
+                id              {$autoId},
+                code            VARCHAR(32)  NOT NULL,
+                label           VARCHAR(64)  NOT NULL,
+                description     VARCHAR(255) NULL,
+                cost_mode       VARCHAR(16)  NOT NULL DEFAULT 'free',
+                price_mode      VARCHAR(16)  NOT NULL DEFAULT 'priced',
+                visible         INTEGER      NOT NULL DEFAULT 1,
+                default_visible INTEGER      NOT NULL DEFAULT 1,
+                sort            INTEGER      NOT NULL DEFAULT 0,
+                status          INTEGER      NOT NULL DEFAULT 1,
+                created_at      INTEGER      NOT NULL,
+                updated_at      INTEGER      NOT NULL,
+                CONSTRAINT uq_groups_code UNIQUE (code)
+            )
+        SQL);
+
+        // 渠道 / 定价 / 令牌 各挂一个分组维度
+        self::addColumnIfMissing('channels', 'group_id', 'INTEGER NOT NULL DEFAULT 0');
+        self::addColumnIfMissing('pricing', 'group_id', 'INTEGER NOT NULL DEFAULT 0');
+        self::addColumnIfMissing('tokens', 'groups', 'VARCHAR(191) NULL');
+
+        // 计费的两个新维度（缓存命中 + 时段价）
+        self::addColumnIfMissing('pricing', 'upstream_cache_hit_price', 'DECIMAL(20,10) NOT NULL DEFAULT 0');
+        self::addColumnIfMissing('pricing', 'downstream_cache_hit_price', 'DECIMAL(20,10) NOT NULL DEFAULT 0');
+        self::addColumnIfMissing('pricing', 'upstream_price_windows', 'TEXT NULL');
+        self::addColumnIfMissing('pricing', 'downstream_price_windows', 'TEXT NULL');
+
+        // 密钥额度（上游给的余额，本地记账）
+        self::addColumnIfMissing('channel_keys', 'budget_total', 'DECIMAL(20,10) NOT NULL DEFAULT 0');
+        self::addColumnIfMissing('channel_keys', 'budget_used', 'DECIMAL(20,10) NOT NULL DEFAULT 0');
+        self::addColumnIfMissing('channel_keys', 'budget_note', 'VARCHAR(255) NULL');
+        // 1 = 这把密钥是**因为额度耗尽被自动停用**的（补录额度后可以自动恢复）。
+        // 为什么要单独一个标记，而不是靠「budget_used >= budget_total」现场判断：
+        // 站长手动停用的密钥必须永远保持停用，不能被「额度还够」自动放出来 ——
+        // 两者混在一起就会出现「我明明关了它，它自己又跑起来了」这种失控感
+        self::addColumnIfMissing('channel_keys', 'budget_disabled', 'INTEGER NOT NULL DEFAULT 0');
+        // 上游口径的读数（目前只有 TierFlow 有：/v1/dashboard/billing/usage 的 total_usage）
+        self::addColumnIfMissing('channel_keys', 'budget_reported', 'DECIMAL(20,10) NOT NULL DEFAULT 0');
+        self::addColumnIfMissing('channel_keys', 'budget_reported_at', 'INTEGER NOT NULL DEFAULT 0');
+
+        // 记账可审计：把缓存命中 tokens 与「这次用的是哪把密钥」都记下来，
+        // 事后能拿这条记录重算一遍成本，也能算出每把密钥各自的消耗速率
+        self::addColumnIfMissing('usage_logs', 'cached_tokens', 'INTEGER NOT NULL DEFAULT 0');
+        self::addColumnIfMissing('usage_logs', 'channel_key_id', 'INTEGER NULL');
+
+        // ── 四个初始分组 ──
+        // 注意两个专线分组刻意是 `visible=0, default_visible=0`：
+        // 代码先上，口径先建好，但**不对外露出**——什么时候放开由站长一句话决定
+        self::seedGroup('free', '免费共享线路', '现有共享线路，所有用户可用', 'free', 'priced', 1, 1, 10);
+        self::seedGroup('paid', '付费线路', '按定价收费的线路（暂未接入渠道）', 'paid', 'priced', 1, 1, 20);
+        self::seedGroup('siliconflow', '高速稳定专线 · 硅基流动', '硅基流动专线，临时免费体验，额度用尽后自动下线', 'paid', 'free', 0, 0, 30);
+        self::seedGroup('tierflow', '高速稳定专线 · TierFlow', 'TierFlow 专线，临时免费体验，额度用尽后自动下线', 'paid', 'free', 0, 0, 40);
+
+        // 现有渠道与定价全部归入「免费共享线路」——
+        // 这样 group_id 永远指向一个真实分组，不必到处写「0 表示免费」这种隐形约定
+        $freeId = (int) (Db::selectOne("SELECT id FROM groups WHERE code = 'free'")['id'] ?? 0);
+        if ($freeId > 0) {
+            Db::execute('UPDATE channels SET group_id = ? WHERE group_id = 0', [$freeId]);
+            Db::execute('UPDATE pricing SET group_id = ? WHERE group_id = 0', [$freeId]);
+        }
+    }
+
+    /**
+     * 插入一个初始分组（已存在则不动）。
+     *
+     * 为什么用「先查再插 + 吞掉重复键异常」而不是 INSERT OR IGNORE：
+     * 两个数据库的「忽略重复」写法不同（SQLite 是 OR IGNORE、MySQL 是 IGNORE），
+     * 而这里要的语义只是「没有就建」，本地并发（多进程同时启动）撞键时吞掉即可。
+     */
+    private static function seedGroup(
+        string $code,
+        string $label,
+        string $description,
+        string $costMode,
+        string $priceMode,
+        int $visible,
+        int $defaultVisible,
+        int $sort
+    ): void {
+        if (Db::selectOne('SELECT id FROM groups WHERE code = ?', [$code]) !== null) {
+            return;
+        }
+
+        $now = time();
+
+        try {
+            Db::execute(
+                'INSERT INTO groups (code, label, description, cost_mode, price_mode, visible, default_visible, sort, status, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)',
+                [$code, $label, $description, $costMode, $priceMode, $visible, $defaultVisible, $sort, $now, $now]
+            );
+        } catch (Throwable) {
+            // 另一个进程刚好抢先建好了：忽略
+        }
     }
 
     /**
