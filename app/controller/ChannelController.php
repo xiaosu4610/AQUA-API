@@ -176,9 +176,18 @@ class ChannelController
                 return $this->back('要更新的渠道不存在', 'err');
             }
 
-            // Key 输入框留空 => 保持原 Key 不变（见类注释第 1 条）
-            Channel::update($id, $data, $data['api_key'] !== '');
+            // Key 输入框留空 => 保持原 Key 不变（见类注释第 1 条）。
+            // 例外：站长勾了「清除已保存的 Key」——那是明确要清空，
+            // 必须与「留空=不动」区分开，否则界面上就永远删不掉单 Key
+            $clearKey = (int) $request->post('clear_key', 0) === 1;
+            $replaceKey = $data['api_key'] !== '' || $clearKey;
+
+            Channel::update($id, $data, $replaceKey);
             $message = "渠道「{$data['name']}」已更新";
+
+            if ($clearKey) {
+                $message .= '（已清除单 Key）';
+            }
         } else {
             $id = Channel::create($data);
             $message = "渠道「{$data['name']}」已创建";

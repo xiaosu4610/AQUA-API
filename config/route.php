@@ -18,6 +18,7 @@ use app\controller\ConsoleController;
 use app\controller\HealthController;
 use app\controller\HomeController;
 use app\controller\InstallController;
+use app\controller\OpenAiController;
 use app\controller\PricingController;
 use app\controller\RechargeController;
 use app\controller\SettingController;
@@ -129,7 +130,11 @@ Route::group('/admin', function () {
 })->middleware([AdminAuth::class]);
 
 // ── 对外的 OpenAI 兼容接口（/v1/*）──────────────────────
-// 待实现（M1 流式引擎）
+// 鉴权走请求头里的令牌（Bearer），**不挂后台中间件** ——
+// 调用方是程序而不是浏览器，没有会话与 CSRF 令牌。
+// 未安装时会被 InstallGuard 拦到安装向导，这是正确的
+Route::get('/v1/models', [OpenAiController::class, 'models']);
+Route::post('/v1/chat/completions', [OpenAiController::class, 'chatCompletions']);
 
 // 关闭控制器自动路由。必须放在所有路由注册之后。
 Route::disableDefaultRoute();

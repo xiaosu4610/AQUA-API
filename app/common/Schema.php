@@ -37,7 +37,7 @@ use Throwable;
 final class Schema
 {
     /** 当前期望的表结构版本。新增迁移时递增。 */
-    public const VERSION = 7;
+    public const VERSION = 8;
 
     /**
      * 确保表结构存在且为最新版本。
@@ -80,6 +80,10 @@ final class Schema
 
         if ($current < 7) {
             self::createV7();
+        }
+
+        if ($current < 8) {
+            self::createV8();
         }
 
         Settings::put('schema_version', (string) self::VERSION);
@@ -476,6 +480,28 @@ final class Schema
         self::createIndexIfMissing('payment_orders', 'idx_orders_status', ['status']);
         self::createIndexIfMissing('users', 'idx_users_verify', ['verify_token']);
         self::createIndexIfMissing('users', 'idx_users_reset', ['reset_token']);
+    }
+
+    /**
+     * v8：渠道级熔断状态
+     *
+     * 解决的问题：某条上游整体挂了（比如对方机房故障）时，
+     * 每个进来的请求都会先去它那儿撞一次墙 —— 白白消耗一次连接超时
+     * （最坏 8 秒）、把用户晾在那儿，然后才轮到下一个渠道。
+     * 几百个请求同时撞上去，还会把上游彻底压垮。
+     *
+     * 做法：连续失败到阈值就把该渠道短路一段时间（breaker_until），
+     * 期间不再选它；到点自动放出来再试（与密钥池的冷却同一个思路）。
+     *
+     * 注意这是**渠道级**而不是密钥级：
+     *   · 密钥级看的是「这把 Key 还行不行」（401/403 立刻停）；
+     *   · 渠道级看的是「这条线路整体通不通」（连不上、超时、5xx 连击）。
+     *   两者粒度不同，混在一起会导致「上游抖动一次就把整个渠道禁掉」。
+     */
+    private static function createV8(): void
+    {
+        self::addColumnIfMissing('channels', 'fail_streak', 'INTEGER NOT NULL DEFAULT 0');
+        self::addColumnIfMissing('channels', 'breaker_until', 'INTEGER NULL');
     }
 
     /**

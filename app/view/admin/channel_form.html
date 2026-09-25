@@ -164,6 +164,15 @@
                         若要多把 Key 轮换使用，可先留空创建渠道，再到「密钥池」批量导入。
                     <?php endif; ?>
                 </div>
+
+                <?php if ($isEdit && $keyMasked !== ''): ?>
+                    <?php /* 「留空=不动」与「清空」必须分开表达，否则界面上删不掉单 Key。
+                             用复选框而不是按钮：它和上面那个输入框属于同一次提交 */ ?>
+                    <label class="check" style="margin-top:8px">
+                        <input type="checkbox" name="clear_key" value="1">
+                        <span>清除已保存的 Key（该渠道将不再带鉴权，仅适用于本地/内网免鉴权的上游）</span>
+                    </label>
+                <?php endif; ?>
             </div>
 
             <div class="field">

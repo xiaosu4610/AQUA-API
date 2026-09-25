@@ -425,9 +425,28 @@ final class Pricing
 
         $length = mb_strlen($text, 'UTF-8');
         $cjk = (int) preg_match_all('/[\x{4e00}-\x{9fff}\x{3040}-\x{30ff}\x{ac00}-\x{d7af}]/u', $text);
-        $other = max(0, $length - $cjk);
 
-        $tokens = ($cjk + $other / 4) * max(0.1, $ratio);
+        return self::estimateFromCounts($cjk, max(0, $length - $cjk), $ratio);
+    }
+
+    /**
+     * 按字符构成估算 token 数。
+     *
+     * 与 estimateTokens() 的区别：那个接收原文，这个接收**已经数好的字符数**。
+     * 为什么需要两个：流式转发的输出内容可能有几百 KB，
+     * 全留在内存里只为数一次 token 是不划算的 —— 所以引擎在读取流的同时
+     * 就把中日韩字符数与其它字符数分别累加好，这里只负责换算。
+     *
+     * @param int $cjkChars   中日韩字符数（约 1 字 = 1 token）
+     * @param int $otherChars 其余字符数（约 4 字符 = 1 token）
+     */
+    public static function estimateFromCounts(int $cjkChars, int $otherChars, float $ratio = 1.0): int
+    {
+        if ($cjkChars <= 0 && $otherChars <= 0) {
+            return 0;
+        }
+
+        $tokens = ($cjkChars + $otherChars / 4) * max(0.1, $ratio);
 
         return max(1, (int) round($tokens));
     }

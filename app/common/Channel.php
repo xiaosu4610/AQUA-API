@@ -465,6 +465,210 @@ final class Channel
         return $single === '' ? null : ['key' => $single, 'key_id' => null, 'from_pool' => false];
     }
 
+    // ═══════════════════════════════════════════════════════════
+    // 路由选路（按模型挑渠道）
+    // ═══════════════════════════════════════════════════════════
+
+    /** 连续失败多少次后熔断该渠道 */
+    public const FAIL_STREAK_TO_OPEN = 5;
+
+    /** 熔断持续秒数（到点自动放出来再试） */
+    public const BREAKER_SECONDS = 60;
+
+    /**
+     * 按模型挑出候选渠道，返回**已排好序**的列表。
+     *
+     * 排序规则（两段式，缺一不可）：
+     *   1. **优先级高的优先**（priority 越大越优先）——
+     *      站长用它表达「主线路 / 备用线路」这种明确意图，必须严格尊重；
+     *   2. **同优先级内按权重加权随机** —— 这才是 weight 的语义。
+     *      如果权重只用来排序（大的永远排前面），那它实际上和优先级没区别，
+     *      流量根本不会按权重分摊。
+     *
+     * 被排除的渠道：
+     *   · 未启用；· 已在 excludeIds 里（换渠道重试时排除刚失败的那条）；
+     *   · 熔断未恢复；· 模型清单里没有这个模型。
+     *
+     * @param array<int, int> $excludeIds
+     * @return array<int, array<string, mixed>>
+     */
+    public static function candidates(string $model, array $excludeIds = []): array
+    {
+        $buckets = [];
+
+        foreach (self::all() as $channel) {
+            if ((int) $channel['status'] !== self::STATUS_ENABLED) {
+                continue;
+            }
+
+            if (in_array((int) $channel['id'], $excludeIds, true)) {
+                continue;
+            }
+
+            if (self::breakerOpen($channel)) {
+                continue;
+            }
+
+            if (!self::supportsModel($channel, $model)) {
+                continue;
+            }
+
+            $buckets[(int) $channel['priority']][] = $channel;
+        }
+
+        // 优先级从高到低
+        krsort($buckets, SORT_NUMERIC);
+
+        $ordered = [];
+
+        foreach ($buckets as $rows) {
+            foreach (self::weightedShuffle($rows) as $row) {
+                $ordered[] = $row;
+            }
+        }
+
+        return $ordered;
+    }
+
+    /**
+     * 该渠道是否支持这个模型。
+     *
+     * 模型清单为空 → 视为「不限」（与同类项目的惯例一致）。
+     * 这样新建渠道后即使还没拉模型清单也能直接使用，不至于卡住。
+     */
+    public static function supportsModel(array $channel, string $model): bool
+    {
+        $models = self::modelsOf($channel);
+
+        if ($models === []) {
+            return true;
+        }
+
+        foreach ($models as $item) {
+            $item = trim((string) $item);
+
+            if ($item === '') {
+                continue;
+            }
+
+            // 支持末尾通配：`gpt-4*` 匹配 gpt-4o / gpt-4-turbo
+            if (str_ends_with($item, '*')) {
+                if (str_starts_with($model, rtrim($item, '*'))) {
+                    return true;
+                }
+                continue;
+            }
+
+            if ($item === $model) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * 按 weight 做**无放回的加权抽样**，得到一个随机顺序。
+     *
+     * 加权随机的意义：权重 10 与权重 1 的两条渠道，
+     * 前者排在第一位的概率是后者的 10 倍。长期看流量就按 10:1 分摊。
+     */
+    private static function weightedShuffle(array $rows): array
+    {
+        $picked = [];
+
+        while ($rows !== []) {
+            $total = 0;
+            foreach ($rows as $row) {
+                $total += max(1, (int) $row['weight']);
+            }
+
+            $roll = random_int(1, max(1, $total));
+            $accumulated = 0;
+            $chosen = null;
+
+            foreach ($rows as $key => $row) {
+                $accumulated += max(1, (int) $row['weight']);
+                if ($roll <= $accumulated) {
+                    $chosen = $key;
+                    break;
+                }
+            }
+
+            $chosen ??= array_key_first($rows);
+            $picked[] = $rows[$chosen];
+            unset($rows[$chosen]);
+        }
+
+        return $picked;
+    }
+
+    /**
+     * 该渠道是否处于熔断中。
+     */
+    public static function breakerOpen(array $channel): bool
+    {
+        return (int) ($channel['breaker_until'] ?? 0) > time();
+    }
+
+    /**
+     * 记录一次渠道级失败（连不上、超时、上游 5xx 等）。
+     *
+     * 连续失败达到阈值就短路一段时间。与密钥池的冷却同理：
+     * 到期自动恢复，不需要人工干预 —— 否则上游抖一下，
+     * 站长就得手工把每条渠道点回来。
+     */
+    public static function markChannelFailure(array $channel, int $status, string $message): void
+    {
+        $id = (int) ($channel['id'] ?? 0);
+        if ($id <= 0) {
+            return;
+        }
+
+        $streak = (int) ($channel['fail_streak'] ?? 0) + 1;
+        $now = time();
+        $until = $streak >= self::FAIL_STREAK_TO_OPEN ? $now + self::BREAKER_SECONDS : null;
+
+        Db::execute(
+            'UPDATE channels
+             SET fail_streak = ?, breaker_until = ?, last_error = ?, updated_at = ?
+             WHERE id = ?',
+            [$streak, $until, mb_substr($message, 0, 450), $now, $id]
+        );
+
+        if ($until !== null) {
+            Log::warning(sprintf(
+                '渠道「%s」连续失败 %d 次，已熔断 %d 秒：%s',
+                (string) ($channel['name'] ?? $id),
+                $streak,
+                self::BREAKER_SECONDS,
+                $message
+            ));
+        }
+    }
+
+    /**
+     * 记录一次渠道级成功：清空失败连击并解除熔断。
+     */
+    public static function markChannelSuccess(array $channel): void
+    {
+        $id = (int) ($channel['id'] ?? 0);
+        if ($id <= 0) {
+            return;
+        }
+
+        // 本来就没有失败记录时不必写库 —— 成功是常态，
+        // 每次成功都写一次会让数据库承受大量无意义的 UPDATE
+        if ((int) ($channel['fail_streak'] ?? 0) === 0 && empty($channel['breaker_until'])) {
+            return;
+        }
+
+        Db::execute(
+            'UPDATE channels SET fail_streak = 0, breaker_until = NULL, updated_at = ? WHERE id = ?',
+            [time(), $id]
+        );
+    }
+
     /**
      * 渠道测活：验证「地址可达」+「Key 有效」两件事。
      *
@@ -1073,10 +1277,18 @@ final class Channel
      * @param string $key    明文 Key（可为空，例如本地免鉴权模型）
      * @param string $path   相对路径，如 /chat/completions
      * @param array<string, mixed>|null $body 请求体；null 表示无请求体（GET）
+     * @param int|null $fallbackTotal 渠道未配总超时时的兜底秒数。
+     *        测活传 null（用较短的探测超时）；正式转发传 gateway.total_timeout
+     *        —— 探测要「快速失败」，转发要「给足时间」，两者的合理值差很多
      * @return array{url:string, headers:array<int,string>, body:?string, connect_timeout:int, total_timeout:int, proxy:string}
      */
-    public static function buildSpec(array $channel, string $key, string $path, ?array $body = null): array
-    {
+    public static function buildSpec(
+        array $channel,
+        string $key,
+        string $path,
+        ?array $body = null,
+        ?int $fallbackTotal = null
+    ): array {
         $adv = self::advConfig($channel);
 
         $baseUrl = rtrim((string) $channel['base_url'], '/');
@@ -1090,7 +1302,11 @@ final class Channel
         }
 
         // ── 鉴权 ──
-        $headers = ['Accept: application/json'];
+        // Accept 与 Expect 是刻意加的：
+        //   · Accept 声明只收 JSON，避免上游按浏览器偏好返回 HTML 错误页
+        //   · Expect 置空是为了压掉 curl 对大于 1KB 的请求体自动加上的
+        //     `Expect: 100-continue`。部分上游不认这个头，会白等 1 秒才收请求体
+        $headers = ['Accept: application/json', 'Expect:'];
         $authType = (string) ($adv['auth_type'] ?? 'bearer');
         $authName = trim((string) ($adv['auth_name'] ?? ''));
         $authPrefix = (string) ($adv['auth_prefix'] ?? '');
@@ -1155,7 +1371,9 @@ final class Channel
             'headers' => $headers,
             'body' => $encodedBody,
             'connect_timeout' => $connect > 0 ? $connect : Settings::int('gateway.connect_timeout', 8),
-            'total_timeout' => $total > 0 ? $total : Settings::int('gateway.probe_timeout', 20),
+            'total_timeout' => $total > 0
+                ? $total
+                : ($fallbackTotal ?? Settings::int('gateway.probe_timeout', 20)),
             'proxy' => trim((string) ($adv['proxy'] ?? '')),
         ];
     }
