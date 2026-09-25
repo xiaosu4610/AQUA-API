@@ -49,7 +49,10 @@ $ok = $ok ?? false;
         <a class="primary" href="<?= $ok ? '/login' : '/' ?>">
             <?= icon($ok ? 'lock' : 'home', 16) ?><?= $ok ? '去登录' : '返回首页' ?>
         </a>
-        <a class="ghost" href="/"><?= icon('home', 15) ?>首页</a>
+        <?php /* 失败态主按钮已经指向首页，再放一个「首页」等于两个按钮去同一个地方 */ ?>
+        <?php if ($ok): ?>
+            <a class="ghost" href="/"><?= icon('home', 15) ?>返回首页</a>
+        <?php endif; ?>
     </div>
 </div>
 </body>
