@@ -51,9 +51,9 @@ include __DIR__ . '/admin/_style.html';
         padding: 1px 9px; font-size: 11.5px; font-weight: 500; border-radius: 999px;
         background: var(--accent-soft); color: var(--accent-dark); border: 1px solid #cceaf2;
     }
-    /* 另一套配色的同名徽标（.mode.welfare）保留着：站点模式变化时仍会用到它的样式。
-       注意注释不要写「商业站 / 公益站」这类词 —— 它在 <style> 里，
-       会随页面源码一起发到浏览器（用户查看源代码就能看到） */
+    /* 另一套配色的同名徽标：站点模式变化时仍会用到这里定义的样式。
+       ⚠️ 这段注释在 <style> 里，会随页面源码一起发到浏览器 ——
+       所以这里不要写任何面向运营的说法（用户能直接看到） */
     .brand .mode.welfare { background: var(--ok-soft); color: #0b7c3e; border-color: #c8ecd6; }
 
     .nav .links { display: flex; align-items: center; gap: var(--sp-4); font-size: 13.5px; }
