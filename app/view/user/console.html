@@ -2,12 +2,28 @@
 /**
  * 用户侧 · 控制台
  *
- * 一页放三件事：我的余额与用量、我的令牌、最近调用记录。
- * 用户的日常操作就是「拿令牌去用」，因此令牌区必须最好找。
+ * ═══ 页面怎么组织的（改版的关键）═══
  *
- * ⚠️ 令牌列显示什么，取决于站长的一个开关（security.token_reveal）：
- *   · 开关开着（且本站配了 APP_KEY）→ 新建的令牌另存了一份可逆副本，这里显示完整令牌 + 一键复制；
- *   · 开关关着 → 只存哈希，这里只能显示掩码，页面要如实说清是「站长关掉了」而不是「系统坏了」；
+ * 用户来控制台 90% 只是为了两件事：**拿令牌**、**看还剩多少钱**。
+ * 所以这一页按「一眼能看到 + 一键能到达」来排：
+ *
+ *   顶部吸顶状态条：今天的量、最近一次调用是否成功，以及三个块的跳转入口。
+ *                  滚到哪儿都看得见 —— 不必为了看余额再滚回页面顶部。
+ *   ① 概览        ：余额、近 30 天、累计，以及最近调用
+ *   ② 令牌与接入   ：令牌卡片列表 + 新建令牌 + 接入信息（Base URL、示例）
+ *   ③ 账号        ：资料、密码、注销（危险动作单独隔开）
+ *
+ * 为什么把「接入信息」从一整个区缩成 ② 里的一个折叠块：
+ * 它是「看一次就够」的内容（地址复制走就不用再来了），
+ * 却原先把最值钱的位置占了一整屏 —— 于是用户每次拿令牌都要多滚一屏。
+ *
+ * 为什么令牌从表格改成卡片：令牌串很长（`sk-aqua-` + 48 位十六进制），
+ * 塞进 6 列表格的一列里必然折成两三行；卡片可以竖排，
+ * 复制按钮就贴在串旁边，手机上也不用横向滚。
+ *
+ * ⚠️ 令牌显示什么，取决于站长的一个开关（security.token_reveal）：
+ *   · 开关开着（且本站配了 APP_KEY）→ 新建的令牌另存了一份可逆副本，显示完整令牌 + 一键复制；
+ *   · 开关关着 → 只存哈希，只能显示掩码，页面要如实说清是「站长关掉了」而不是「系统坏了」；
  *   · 开关开着但令牌是开关打开之前建的 → 没有副本，提示「需要请新建一把」。
  * 鉴权始终走哈希（key_hash），副本只用于展示 —— 见 UserToken::plainOf()。
  *
@@ -18,7 +34,9 @@
  * @var array<int, array<string, mixed>> $tokens
  * @var array<string, mixed> $today
  * @var array<string, mixed> $month
+ * @var array{requests:int} $yesterday
  * @var array<int, array<string, mixed>> $recent
+ * @var array<string, mixed>|null $lastCall 最近一次调用（没有则 null）
  * @var string $currency
  * @var bool   $rechargeEnabled
  * @var string $apiBaseUrl   本站接入地址（已带 /v1）
@@ -29,6 +47,8 @@
  * @var string $noticeType
  */
 $noticeType = $noticeType ?? 'info';
+$yesterday = $yesterday ?? ['requests' => 0];
+$revealEnabled = !empty($revealEnabled);
 
 /** 金额格式化：去掉无意义的小数尾巴 */
 $money = static function (mixed $value): string {
@@ -38,6 +58,16 @@ $money = static function (mixed $value): string {
     }
 
     return rtrim(rtrim(number_format($float, 6, '.', ''), '0'), '.');
+};
+
+/** 令牌额度进度（0-100）。额度不限时为 0，页面据此不画进度条 */
+$quotaPercent = static function (array $t): int {
+    $limit = (float) $t['quotaLimit'];
+    if ($limit <= 0) {
+        return 0;
+    }
+
+    return (int) min(100, round((float) $t['quotaUsed'] * 100 / $limit));
 };
 ?>
 <!DOCTYPE html>
@@ -60,19 +90,57 @@ $money = static function (mixed $value): string {
         </div>
     <?php endif; ?>
 
-    <section>
-        <h2><?= icon('chart', 18) ?>我的用量</h2>
+    <?php /* ── 顶部吸顶状态条 ─────────────────────────────────
+       三件事：今天的量（含昨日对比）、最近一次调用成没成、去哪一块。
+       为什么要吸顶：这几个数字是用户「随时瞄一眼」的，
+       而令牌列表可能很长 —— 不吸顶的话每次都得滚回顶部。
+       刻意**不**在这里重复「余额」：页头右上已经有一个余额胶囊了，
+       同一个数字出现两次只会让人怀疑哪个才是准的。 */ ?>
+    <div class="cbar">
+        <div class="cbar-nums">
+            <span class="cn">
+                <b><?= (int) $today['requests'] ?></b> 今日请求
+                <i>昨日 <?= (int) $yesterday['requests'] ?></i>
+            </span>
+            <span class="cn">
+                <b><?= $money($today['downstream_cost']) ?></b> 今日消费
+            </span>
+            <span class="cn">
+                <?php if ($lastCall === null): ?>
+                    <b class="muted">—</b> 最近调用 <i>还没有调用</i>
+                <?php elseif (($lastCall['status'] ?? '') === 'ok'): ?>
+                    <b class="text-ok"><?= icon('check', 15) ?> 成功</b> 最近调用
+                    <i><?= htmlspecialchars((string) $lastCall['time'], ENT_QUOTES, 'UTF-8') ?></i>
+                <?php else: ?>
+                    <b class="text-danger"><?= icon('alert', 15) ?> 失败</b> 最近调用
+                    <i title="<?= htmlspecialchars((string) ($lastCall['error'] ?? ''), ENT_QUOTES, 'UTF-8') ?>">
+                        <?= htmlspecialchars((string) $lastCall['time'], ENT_QUOTES, 'UTF-8') ?>
+                    </i>
+                <?php endif; ?>
+            </span>
+        </div>
+
+        <nav class="cbar-nav">
+            <a href="#ov">概览</a>
+            <a href="#tk">令牌与接入</a>
+            <a href="#ac">账号</a>
+        </nav>
+    </div>
+
+    <?php /* ═══ ① 概览 ═══════════════════════════════════════ */ ?>
+    <section id="ov">
+        <h2><?= icon('chart', 18) ?>用量概览</h2>
+
         <div class="stats">
             <div class="stat accent">
                 <div class="n" style="font-size:20px"><?= $money($user['balance'] ?? 0) ?></div>
                 <div class="l">余额（<?= htmlspecialchars((string) $currency, ENT_QUOTES, 'UTF-8') ?>）</div>
             </div>
-            <div class="stat"><div class="n"><?= (int) $today['requests'] ?></div><div class="l">今日请求</div></div>
-            <div class="stat"><div class="n" style="font-size:20px"><?= $money($today['downstream_cost']) ?></div><div class="l">今日消费</div></div>
             <div class="stat"><div class="n"><?= (int) $month['requests'] ?></div><div class="l">近 30 天请求</div></div>
             <div class="stat"><div class="n" style="font-size:20px"><?= $money($month['downstream_cost']) ?></div><div class="l">近 30 天消费</div></div>
             <div class="stat"><div class="n" style="font-size:20px"><?= $money($user['total_spent'] ?? 0) ?></div><div class="l">累计消费</div></div>
         </div>
+
         <p class="note">
             <?php if (!empty($rechargeEnabled)): ?>
                 余额不足时可在<a href="/recharge">充值</a>页在线充值。
@@ -84,201 +152,27 @@ $money = static function (mixed $value): string {
                 估算值仅供你自己参考，不适合用于严格对账。
             <?php endif; ?>
         </p>
-    </section>
 
-    <section>
+        <hr class="sep">
+
         <div class="between" style="margin-bottom:16px">
-            <h2 class="mb-0"><?= icon('info', 18) ?>接入信息</h2>
-            <a class="ghost sm" href="/docs" target="_blank" rel="noopener"><?= icon('info', 14) ?>完整接口文档</a>
-        </div>
-
-        <div class="access-card">
-            <span class="ac-label">Base URL</span>
-            <code class="ac-url" id="api-base"><?= htmlspecialchars((string) $apiBaseUrl, ENT_QUOTES, 'UTF-8') ?></code>
-            <button type="button" class="ghost sm" data-copy="<?= htmlspecialchars((string) $apiBaseUrl, ENT_QUOTES, 'UTF-8') ?>">
-                <?= icon('key', 14) ?>复制
-            </button>
-        </div>
-
-        <p class="note">
-            所有客户端（OpenAI SDK、Cherry Studio、NextChat、LobeChat 等）都把接口地址填成上面的
-            Base URL；密钥填你自己创建的令牌（见下一区）。<b>本站与 OpenAI 接口兼容</b>，
-            只换地址和密钥，不用改代码。
-        </p>
-
-        <div class="field" style="margin-top:14px">
-            <div class="lbl">调用示例（把「你的令牌」换成真实令牌即可运行）</div>
-            <pre class="block"><?= htmlspecialchars((string) $apiExample, ENT_QUOTES, 'UTF-8') ?></pre>
-        </div>
-        <div class="actions-bar">
-            <button type="button" class="ghost sm" data-copy="<?= htmlspecialchars((string) $apiExample, ENT_QUOTES, 'UTF-8') ?>">
-                <?= icon('key', 14) ?>复制示例
-            </button>
-        </div>
-    </section>
-
-    <section>
-        <div class="between" style="margin-bottom:16px">
-            <h2 class="mb-0"><?= icon('keys-pool', 18) ?>我的令牌（<?= count($tokens) ?>）</h2>
-        </div>
-
-        <details class="adv" <?= $tokens === [] ? 'open' : '' ?>>
-            <summary><?= icon('plus', 16) ?>新建令牌</summary>
-            <div class="adv-body">
-                <form method="post" action="/console/token/create">
-                    <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
-
-                    <div class="two-col">
-                        <div class="field">
-                            <label class="lbl" for="tk-name">名称</label>
-                            <input id="tk-name" type="text" name="name" maxlength="64" placeholder="例如：我的脚本">
-                            <div class="tip">只用于你自己区分不同用途的令牌</div>
-                        </div>
-                        <div class="field">
-                            <label class="lbl" for="tk-quota">额度上限</label>
-                            <input id="tk-quota" type="number" step="any" min="0" name="quota_limit" value="0">
-                            <div class="tip">0 表示不限。额度只限制消费速度，不影响余额</div>
-                        </div>
-                        <div class="field">
-                            <label class="lbl" for="tk-days">有效期（天）</label>
-                            <input id="tk-days" type="number" min="0" name="expires_days" value="0">
-                            <div class="tip">0 表示永不过期</div>
-                        </div>
-                    </div>
-
-                    <div class="field">
-                        <label class="lbl" for="tk-models">可用模型（可选）</label>
-                        <input id="tk-models" type="text" name="models" maxlength="1024" placeholder="留空表示不限，例如 gpt-4o,gemini-*">
-                        <div class="tip">逗号分隔，支持末尾通配（如 <code>gpt-4*</code>）</div>
-                    </div>
-
-                    <div class="actions-bar" style="margin-top:6px">
-                        <button class="primary" type="submit"><?= icon('key', 16) ?>创建令牌</button>
-                    </div>
-                </form>
-            </div>
-        </details>
-
-        <?php if ($tokens === []): ?>
-            <div class="empty">
-                <?= icon('key', 28) ?>
-                <div>还没有任何令牌。展开上面的「新建令牌」创建一个即可开始使用。</div>
-            </div>
-        <?php else: ?>
-            <div class="table-scroll">
-                <table class="compact">
-                    <thead>
-                    <tr>
-                        <th style="width:14%">名称</th>
-                        <th style="width:30%">令牌</th>
-                        <th style="width:12%">状态</th>
-                        <th style="width:16%">额度</th>
-                        <th style="width:12%">有效期</th>
-                        <th style="width:16%">操作</th>
-                    </tr>
-                    </thead>
-                    <tbody>
-                    <?php foreach ($tokens as $t): ?>
-                        <tr>
-                            <td><?= htmlspecialchars((string) $t['name'], ENT_QUOTES, 'UTF-8') ?></td>
-                            <td>
-                                <?php if ($t['plain'] !== ''): ?>
-                                    <?php /* 有可回显副本：直接把完整令牌摆出来 + 一键复制。
-                                             为什么要显示完整串而不是又藏一层「点击显示」：
-                                             用户来这里就是为了复制它，多一步点击只是多一次摩擦力。 */ ?>
-                                    <div class="tk-full">
-                                        <code><?= htmlspecialchars((string) $t['plain'], ENT_QUOTES, 'UTF-8') ?></code>
-                                        <button type="button" class="ghost sm"
-                                                data-copy="<?= htmlspecialchars((string) $t['plain'], ENT_QUOTES, 'UTF-8') ?>"
-                                                title="复制这把令牌"><?= icon('key', 13) ?>复制</button>
-                                    </div>
-                                <?php else: ?>
-                                    <div class="mono"><?= htmlspecialchars((string) $t['mask'], ENT_QUOTES, 'UTF-8') ?></div>
-                                    <div class="cfg-hint">
-                                        <?php if (($revealOffReason ?? '') !== ''): ?>
-                                            <?= htmlspecialchars((string) $revealOffReason, ENT_QUOTES, 'UTF-8') ?>，看不到完整令牌
-                                        <?php else: ?>
-                                            这把令牌创建于开关打开之前，没有保存副本 —— 看不到完整令牌，需要请新建一把
-                                        <?php endif; ?>
-                                    </div>
-                                <?php endif; ?>
-                            </td>
-                            <td>
-                                <?php if ($t['usable']): ?>
-                                    <span class="pill ok">可用</span>
-                                <?php elseif ($t['enabled']): ?>
-                                    <span class="pill warn" title="<?= htmlspecialchars((string) $t['reason'], ENT_QUOTES, 'UTF-8') ?>">
-                                        <?= htmlspecialchars((string) $t['reason'], ENT_QUOTES, 'UTF-8') ?>
-                                    </span>
-                                <?php else: ?>
-                                    <span class="pill danger">已停用</span>
-                                <?php endif; ?>
-                            </td>
-                            <td class="src"><?= htmlspecialchars((string) $t['quotaLabel'], ENT_QUOTES, 'UTF-8') ?></td>
-                            <td class="src"><?= htmlspecialchars((string) $t['expiresAt'], ENT_QUOTES, 'UTF-8') ?></td>
-                            <td>
-                                <div class="row-actions">
-                                    <?php if ($t['enabled']): ?>
-                                        <button class="ghost" type="submit" form="tk<?= (int) $t['id'] ?>"
-                                                name="disable_id" value="<?= (int) $t['id'] ?>"
-                                                formaction="/console/token/toggle">停用</button>
-                                    <?php else: ?>
-                                        <button class="ghost" type="submit" form="tk<?= (int) $t['id'] ?>"
-                                                name="enable_id" value="<?= (int) $t['id'] ?>"
-                                                formaction="/console/token/toggle">启用</button>
-                                    <?php endif; ?>
-
-                                    <button class="ghost" type="submit" form="tk<?= (int) $t['id'] ?>"
-                                            name="reset_id" value="<?= (int) $t['id'] ?>"
-                                            formaction="/console/token/reset"
-                                            onclick="return confirm('把该令牌的「已用额度」清零？');">清额度</button>
-
-                                    <button class="ghost danger" type="submit" form="tk<?= (int) $t['id'] ?>"
-                                            name="delete_id" value="<?= (int) $t['id'] ?>"
-                                            formaction="/console/token/delete"
-                                            onclick="return confirm('确定删除该令牌？用它发起的调用会立即失效。');">删除</button>
-                                </div>
-                            </td>
-                        </tr>
-                    <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
-
-            <?php /* 整张表共用一个 form，按钮通过 formaction + name/value 携带动作（同后台密钥池的做法） */ ?>
-            <form id="tk0" method="post" action="/console/token/toggle">
-                <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
-            </form>
-            <?php foreach ($tokens as $t): ?>
-                <form id="tk<?= (int) $t['id'] ?>" method="post" action="/console/token/toggle">
-                    <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
-                </form>
-            <?php endforeach; ?>
-        <?php endif; ?>
-
-        <p class="note">
-            调用时把令牌放进请求头 <code>Authorization: Bearer &lt;令牌&gt;</code>，
-            与 OpenAI 的用法一致。<br>
-            <?php if (!empty($revealEnabled)): ?>
-                令牌可以<b>随时复制</b>：点令牌旁边的「复制」就行，不用记着「刚才那一次」。
-                它等同于你的账号密码，别贴到公开的地方（截图、GitHub、聊天群）。
-            <?php elseif (($revealOffReason ?? '') !== ''): ?>
-                <b><?= htmlspecialchars((string) $revealOffReason, ENT_QUOTES, 'UTF-8') ?></b>，
-                因此这里只能显示掩码 —— 库里存的是哈希，连我们都无法还原它。丢了就删掉重建一把。
-            <?php else: ?>
-                令牌只在创建那一刻完整显示，之后只能看到掩码 —— 这是本站的设定：
-                库里存的是哈希而不是密文，连我们都无法还原它。丢了就删掉重建一把。
+            <h2 class="mb-0"><?= icon('chart', 17) ?>最近调用</h2>
+            <?php if (count($recent) > 5): ?>
+                <?php /* 默认只看 5 行：绝大多数时候用户只是想知道「刚才那次成了没」，
+                         不必每次都把 20 行摊在眼前 */ ?>
+                <button type="button" class="ghost sm" id="recent-more" data-total="<?= count($recent) ?>">
+                    看全部 <?= count($recent) ?> 条
+                </button>
             <?php endif; ?>
-        </p>
-    </section>
-
-    <section>
-        <h2><?= icon('chart', 18) ?>最近调用</h2>
+        </div>
 
         <?php if ($recent === []): ?>
             <div class="empty">
                 <?= icon('chart', 26) ?>
-                <div>还没有调用记录。用令牌发起第一次请求后，这里会显示明细。</div>
+                <div>
+                    还没有调用记录。用令牌发起第一次请求后，这里会显示明细。<br>
+                    <a href="#tk">去拿令牌 →</a>
+                </div>
             </div>
         <?php else: ?>
             <div class="table-scroll">
@@ -294,8 +188,8 @@ $money = static function (mixed $value): string {
                     </tr>
                     </thead>
                     <tbody>
-                    <?php foreach ($recent as $row): ?>
-                        <tr>
+                    <?php foreach ($recent as $i => $row): ?>
+                        <tr<?= $i >= 5 ? ' class="recent-more" hidden' : '' ?>>
                             <td class="src"><?= htmlspecialchars((string) $row['time'], ENT_QUOTES, 'UTF-8') ?></td>
                             <td class="mono"><?= htmlspecialchars((string) $row['model'], ENT_QUOTES, 'UTF-8') ?></td>
                             <td class="mono">
@@ -323,7 +217,227 @@ $money = static function (mixed $value): string {
         <?php endif; ?>
     </section>
 
-    <section>
+    <?php /* ═══ ② 令牌与接入 ════════════════════════════════ */ ?>
+    <section id="tk">
+        <h2><?= icon('keys-pool', 18) ?>我的令牌（<?= count($tokens) ?>）</h2>
+
+        <?php /* 新建令牌：常驻卡片，不再折在面板里 ——
+                 这是用户最核心的动作，藏在折叠面板里等于是给每个新用户设了一道门槛 */ ?>
+        <div class="newtk">
+            <div class="newtk-head"><?= icon('plus', 16) ?>新建令牌</div>
+            <form method="post" action="/console/token/create">
+                <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
+
+                <div class="adv-grid">
+                    <div class="field">
+                        <label class="lbl" for="tk-name">名称</label>
+                        <input id="tk-name" type="text" name="name" maxlength="64" placeholder="例如：我的脚本">
+                        <div class="tip">只用于你自己区分不同用途的令牌</div>
+                    </div>
+                    <div class="field">
+                        <label class="lbl" for="tk-quota">额度上限</label>
+                        <input id="tk-quota" type="number" step="any" min="0" name="quota_limit" value="0">
+                        <div class="tip">0 表示不限。额度只限制消费速度，不影响余额</div>
+                    </div>
+                    <div class="field">
+                        <label class="lbl" for="tk-days">有效期（天）</label>
+                        <input id="tk-days" type="number" min="0" name="expires_days" value="0">
+                        <div class="tip">0 表示永不过期</div>
+                    </div>
+                </div>
+
+                <?php /* 模型白名单是少数场景才用得到的（给子账号 / 临时试用限模型），
+                         因此折起来，不占新用户的注意力 */ ?>
+                <details class="adv">
+                    <summary><?= icon('settings', 15) ?>高级：限制这把令牌能调哪些模型（可选）</summary>
+                    <div class="adv-body">
+                        <div class="field">
+                            <label class="lbl" for="tk-models">可用模型</label>
+                            <input id="tk-models" type="text" name="models" maxlength="1024"
+                                   placeholder="留空表示不限，例如 gpt-4o,gemini-*">
+                            <div class="tip">逗号分隔，支持末尾通配（如 <code>gpt-4*</code>）</div>
+                        </div>
+                    </div>
+                </details>
+
+                <div class="actions-bar" style="margin-top:18px">
+                    <button class="primary" type="submit"><?= icon('key', 16) ?>创建令牌</button>
+                    <span class="src">
+                        <?= $revealEnabled
+                            ? '创建后可以随时回到这里复制它'
+                            : '创建后只显示一次，请立即复制保存' ?>
+                    </span>
+                </div>
+            </form>
+        </div>
+
+        <?php if ($tokens === []): ?>
+            <div class="empty">
+                <?= icon('key', 28) ?>
+                <div>还没有任何令牌。用上面的「新建令牌」创建一把即可开始使用。</div>
+            </div>
+        <?php else: ?>
+            <div class="tk-grid">
+                <?php foreach ($tokens as $t): ?>
+                    <div class="tk-card">
+                        <div class="tk-head">
+                            <span class="tk-name"><?= htmlspecialchars((string) $t['name'], ENT_QUOTES, 'UTF-8') ?></span>
+                            <?php if ($t['usable']): ?>
+                                <span class="pill ok">可用</span>
+                            <?php elseif ($t['enabled']): ?>
+                                <span class="pill warn" title="<?= htmlspecialchars((string) $t['reason'], ENT_QUOTES, 'UTF-8') ?>">
+                                    <?= htmlspecialchars((string) $t['reason'], ENT_QUOTES, 'UTF-8') ?>
+                                </span>
+                            <?php else: ?>
+                                <span class="pill danger">已停用</span>
+                            <?php endif; ?>
+                        </div>
+
+                        <div class="tk-key">
+                            <?php if ($t['plain'] !== ''): ?>
+                                <?php /* 有可回显副本：直接把完整令牌摆出来 + 一键复制。
+                                         不再多藏一层「点击显示」：用户来这里就是为了复制它，
+                                         多一步点击只是多一次摩擦力 */ ?>
+                                <code><?= htmlspecialchars((string) $t['plain'], ENT_QUOTES, 'UTF-8') ?></code>
+                                <button type="button" class="ghost sm"
+                                        data-copy="<?= htmlspecialchars((string) $t['plain'], ENT_QUOTES, 'UTF-8') ?>"
+                                        title="复制这把令牌"><?= icon('key', 13) ?>复制</button>
+                            <?php else: ?>
+                                <code class="muted"><?= htmlspecialchars((string) $t['mask'], ENT_QUOTES, 'UTF-8') ?></code>
+                                <div class="cfg-hint">
+                                    <?php if (($revealOffReason ?? '') !== ''): ?>
+                                        <?= htmlspecialchars((string) $revealOffReason, ENT_QUOTES, 'UTF-8') ?>，看不到完整令牌
+                                    <?php else: ?>
+                                        这把令牌创建于开关打开之前，没有保存副本 —— 需要请新建一把
+                                    <?php endif; ?>
+                                </div>
+                            <?php endif; ?>
+                        </div>
+
+                        <div class="tk-meta">
+                            <div class="m">
+                                <span class="k">额度</span>
+                                <span class="v">
+                                    <?php if ($t['quotaLimit'] > 0): ?>
+                                        已用 <?= $money($t['quotaUsed']) ?> / <?= $money($t['quotaLimit']) ?>
+                                    <?php else: ?>
+                                        已用 <?= $money($t['quotaUsed']) ?>（不限）
+                                    <?php endif; ?>
+                                </span>
+                            </div>
+                            <?php if ($t['quotaLimit'] > 0): ?>
+                                <?php $pct = $quotaPercent($t); ?>
+                                <div class="prog" title="额度已用 <?= $pct ?>%">
+                                    <i style="width:<?= $pct ?>%"></i>
+                                </div>
+                            <?php endif; ?>
+
+                            <div class="m">
+                                <span class="k">有效期</span>
+                                <span class="v"><?= htmlspecialchars((string) $t['expiresAt'], ENT_QUOTES, 'UTF-8') ?></span>
+                            </div>
+                            <div class="m">
+                                <span class="k">最近使用</span>
+                                <span class="v"><?= htmlspecialchars((string) $t['lastUsedAt'], ENT_QUOTES, 'UTF-8') ?></span>
+                            </div>
+                            <div class="m">
+                                <span class="k">可用模型</span>
+                                <span class="v">
+                                    <?= $t['models'] === ''
+                                        ? '不限'
+                                        : htmlspecialchars((string) $t['models'], ENT_QUOTES, 'UTF-8') ?>
+                                </span>
+                            </div>
+                        </div>
+
+                        <?php /* 操作折进「更多」：日常动作是复制（在令牌旁边），
+                                 停用/清额度/删除都是低频的，摊在卡片上会挤，
+                                 也容易和复制挨太近而误点 */ ?>
+                        <details class="tk-more">
+                            <summary>更多操作</summary>
+                            <div class="row-actions" style="margin-top:10px">
+                                <?php if ($t['enabled']): ?>
+                                    <button class="ghost" type="submit" form="tk<?= (int) $t['id'] ?>"
+                                            name="disable_id" value="<?= (int) $t['id'] ?>"
+                                            formaction="/console/token/toggle">停用</button>
+                                <?php else: ?>
+                                    <button class="ghost" type="submit" form="tk<?= (int) $t['id'] ?>"
+                                            name="enable_id" value="<?= (int) $t['id'] ?>"
+                                            formaction="/console/token/toggle">启用</button>
+                                <?php endif; ?>
+
+                                <button class="ghost" type="submit" form="tk<?= (int) $t['id'] ?>"
+                                        name="reset_id" value="<?= (int) $t['id'] ?>"
+                                        formaction="/console/token/reset"
+                                        onclick="return confirm('把该令牌的「已用额度」清零？');">清额度</button>
+
+                                <button class="ghost danger" type="submit" form="tk<?= (int) $t['id'] ?>"
+                                        name="delete_id" value="<?= (int) $t['id'] ?>"
+                                        formaction="/console/token/delete"
+                                        onclick="return confirm('确定删除该令牌？用它发起的调用会立即失效。');">删除</button>
+                            </div>
+                        </details>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+
+            <?php /* 每张卡的按钮共用一个空 form：按钮通过 formaction + name/value 携带动作
+                     （同后台密钥池的做法，避免在卡片里嵌套 form） */ ?>
+            <?php foreach ($tokens as $t): ?>
+                <form id="tk<?= (int) $t['id'] ?>" method="post" action="/console/token/toggle">
+                    <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
+                </form>
+            <?php endforeach; ?>
+        <?php endif; ?>
+
+        <p class="note">
+            调用时把令牌放进请求头 <code>Authorization: Bearer &lt;令牌&gt;</code>，与 OpenAI 的用法一致。<br>
+            <?php if ($revealEnabled): ?>
+                令牌可以<b>随时复制</b>：点令牌旁边的「复制」就行，不用记着「刚才那一次」。
+                它等同于你的账号密码，别贴到公开的地方（截图、GitHub、聊天群）。
+            <?php elseif (($revealOffReason ?? '') !== ''): ?>
+                <b><?= htmlspecialchars((string) $revealOffReason, ENT_QUOTES, 'UTF-8') ?></b>，
+                因此这里只能显示掩码 —— 库里存的是哈希，连我们都无法还原它。丢了就删掉重建一把。
+            <?php else: ?>
+                令牌只在创建那一刻完整显示，之后只能看到掩码 —— 这是本站的设定：
+                库里存的是哈希而不是密文，连我们都无法还原它。丢了就删掉重建一把。
+            <?php endif; ?>
+        </p>
+
+        <?php /* 接入信息：地址 + 示例。看过一次就够用的内容，折起来，默认不占位置 */ ?>
+        <details class="adv" style="margin-top:16px">
+            <summary><?= icon('info', 15) ?>接入信息（Base URL 与调用示例）</summary>
+            <div class="adv-body">
+                <div class="access-card">
+                    <span class="ac-label">Base URL</span>
+                    <code class="ac-url" id="api-base"><?= htmlspecialchars((string) $apiBaseUrl, ENT_QUOTES, 'UTF-8') ?></code>
+                    <button type="button" class="ghost sm" data-copy="<?= htmlspecialchars((string) $apiBaseUrl, ENT_QUOTES, 'UTF-8') ?>">
+                        <?= icon('key', 14) ?>复制
+                    </button>
+                </div>
+
+                <p class="note">
+                    所有客户端（OpenAI SDK、Cherry Studio、NextChat、LobeChat 等）都把接口地址填成上面的
+                    Base URL；密钥填你自己创建的令牌。<b>本站与 OpenAI 接口兼容</b>，
+                    只换地址和密钥，不用改代码。
+                </p>
+
+                <div class="field" style="margin-top:14px">
+                    <div class="lbl">调用示例（把「你的令牌」换成真实令牌即可运行）</div>
+                    <pre class="block"><?= htmlspecialchars((string) $apiExample, ENT_QUOTES, 'UTF-8') ?></pre>
+                </div>
+                <div class="actions-bar" style="margin-top:0;margin-bottom:8px">
+                    <button type="button" class="ghost sm" data-copy="<?= htmlspecialchars((string) $apiExample, ENT_QUOTES, 'UTF-8') ?>">
+                        <?= icon('key', 14) ?>复制示例
+                    </button>
+                    <a class="ghost sm" href="/docs" target="_blank" rel="noopener"><?= icon('info', 14) ?>完整接口文档</a>
+                </div>
+            </div>
+        </details>
+    </section>
+
+    <?php /* ═══ ③ 账号 ═══════════════════════════════════════ */ ?>
+    <section id="ac">
         <h2><?= icon('user', 18) ?>账号设置</h2>
 
         <div class="two-col">
@@ -367,8 +481,9 @@ $money = static function (mixed $value): string {
             </form>
         </div>
 
+        <?php /* 危险动作与日常动作分开：注销在这里被看见，但不会被顺手点到 */ ?>
         <div class="danger-zone" style="margin-top:22px">
-            <div class="dz-head">危险操作</div>
+            <div class="dz-head"><?= icon('alert', 15) ?>危险操作</div>
             <div class="dz-body">
                 <p class="dz-conseq">
                     注销账号会<b>连同全部令牌一起删除</b>，正在使用它们的程序会立刻开始报 401，且不可撤销。
@@ -378,20 +493,112 @@ $money = static function (mixed $value): string {
             </div>
         </div>
     </section>
+
+    <p class="src" style="text-align:center;margin:0 0 28px">
+        当前登录：<?= htmlspecialchars((string) $user['email'], ENT_QUOTES, 'UTF-8') ?>
+    </p>
 </div>
 
 <style>
-    /* 令牌单元格：完整令牌 + 复制按钮。令牌很长（sk-aqua- + 48 位十六进制），
-       必须允许在任意位置断行，否则会把表格撑出横向滚动条 */
-    .tk-full { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-    .tk-full code {
+    /* ══════════════════════════════════════════════════════
+       控制台专用样式。刻意不写进共用的 _style.html：
+       这些类只有这一页用，放进公共样式表会让别的页面多背上不相干的规则
+       ══════════════════════════════════════════════════════ */
+
+    /* ── 顶部的块跳转 + 吸顶状态条 ── */
+    .cbar {
+        position: sticky; top: 0; z-index: 20;
+        display: flex; align-items: center; justify-content: space-between; gap: 14px;
+        flex-wrap: wrap;
+        margin-bottom: 18px; padding: 10px 16px;
+        background: rgba(255, 255, 255, .93);
+        backdrop-filter: blur(8px);
+        border: 1px solid var(--border); border-radius: 12px;
+        box-shadow: var(--shadow);
+    }
+    .cbar-nums { display: flex; gap: 18px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+    .cbar-nums .cn { display: inline-flex; align-items: center; gap: 5px; }
+    .cbar-nums .cn b { font-size: 15px; color: var(--text); font-weight: 680; }
+    .cbar-nums .cn b.text-ok { color: var(--ok); }
+    .cbar-nums .cn b.text-danger { color: var(--danger); }
+    .cbar-nums .cn i { font-style: normal; font-size: 12px; color: #93a3b3; }
+    .cbar-nav { display: flex; gap: 6px; }
+    .cbar-nav a {
+        padding: 5px 12px; font-size: 13px; border-radius: 999px;
+        color: var(--muted); text-decoration: none;
+        border: 1px solid transparent; transition: all .16s ease;
+    }
+    .cbar-nav a:hover { color: var(--accent-dark); background: var(--accent-soft); border-color: #cceaf2; }
+
+    /* 锚点跳转时留出吸顶条的高度，否则标题会被挡住 */
+    section[id] { scroll-margin-top: 96px; }
+
+    /* ── 新建令牌卡片 ── */
+    .newtk {
+        margin-bottom: 20px; padding: 18px;
+        background: #fafcfe; border: 1px solid var(--border); border-radius: var(--radius);
+    }
+    .newtk-head {
+        display: flex; align-items: center; gap: 7px;
+        margin-bottom: 14px; font-size: 13.5px; font-weight: 650; color: var(--text);
+    }
+    .newtk .field { margin-bottom: 0; }
+    .newtk details.adv { margin: 14px 0 0; }
+
+    /* ── 令牌卡片列表 ── */
+    .tk-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 14px; }
+    .tk-card {
+        padding: 16px; border: 1px solid var(--border); border-radius: var(--radius);
+        background: var(--surface);
+    }
+    .tk-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+    .tk-name { font-size: 14px; font-weight: 650; color: var(--text); word-break: break-all; }
+
+    .tk-key {
+        display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+        padding: 10px 12px; border-radius: 9px;
+        background: #f4f8fd; border: 1px dashed #d8e4f3;
+    }
+    /* 令牌串很长（sk-aqua- + 48 位十六进制），必须允许在任意位置断行，
+       否则在窄屏上会把卡片撑破 */
+    .tk-key code {
         font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
         font-size: 12.5px; word-break: break-all; line-height: 1.6;
+    }
+    .tk-key .cfg-hint { width: 100%; }
+
+    .tk-meta { margin-top: 12px; display: grid; gap: 6px; }
+    .tk-meta .m { display: flex; gap: 10px; font-size: 12.5px; }
+    .tk-meta .m .k { flex: none; width: 62px; color: var(--muted); }
+    .tk-meta .m .v { color: var(--text); word-break: break-all; }
+
+    /* 额度进度条：只画给「有上限」的令牌看 */
+    .prog { height: 5px; border-radius: 999px; background: #eef2f7; overflow: hidden; }
+    .prog i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+
+    details.tk-more { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; }
+    details.tk-more > summary {
+        cursor: pointer; list-style: none;
+        font-size: 12.5px; color: var(--muted);
+    }
+    details.tk-more > summary::-webkit-details-marker { display: none; }
+    details.tk-more > summary::after { content: ' ▾'; }
+    details.tk-more[open] > summary { color: var(--text); }
+    details.tk-more[open] > summary::after { content: ' ▴'; }
+
+    @media (max-width: 720px) {
+        .cbar { position: static; }
+        section[id] { scroll-margin-top: 12px; }
+        .cbar-nums { gap: 12px; }
+        .cbar-nav { width: 100%; }
+        .cbar-nav a { flex: 1; text-align: center; background: #f6f9fc; }
+        .tk-grid { grid-template-columns: 1fr; }
+        .tk-meta .m { flex-wrap: wrap; }
     }
 </style>
 
 <script>
-/* BaseURL / 示例复制：优先用 Clipboard API，非 HTTPS 或旧浏览器退回 execCommand */
+/* BaseURL / 令牌 / 示例复制：优先用 Clipboard API，非 HTTPS 或旧浏览器退回 execCommand */
 (function () {
     document.querySelectorAll('[data-copy]').forEach(function (btn) {
         btn.addEventListener('click', function () {
@@ -416,6 +623,24 @@ $money = static function (mixed $value): string {
                 fallback();
             }
         });
+    });
+})();
+
+/* 「最近调用」默认只显示 5 行，点一下展开剩下的。
+   为什么要展开而不是分页：这一屏的用途是「扫一眼最近发生了什么」，
+   分页会让人为了看第 6 条再点一次「下一页」，反而更麻烦 */
+(function () {
+    var btn = document.getElementById('recent-more');
+    if (!btn) { return; }
+
+    var extra = document.querySelectorAll('.recent-more');
+    var total = btn.getAttribute('data-total') || '';
+
+    btn.addEventListener('click', function () {
+        var expanded = btn.getAttribute('data-expanded') === '1';
+        extra.forEach(function (row) { row.hidden = expanded; });
+        btn.setAttribute('data-expanded', expanded ? '0' : '1');
+        btn.textContent = expanded ? ('看全部 ' + total + ' 条') : '收起';
     });
 })();
 </script>

@@ -420,19 +420,6 @@ final class UserToken
         Db::execute('UPDATE tokens SET quota_used = 0, updated_at = ? WHERE id = ?', [time(), $id]);
     }
 
-    /**
-     * 额度的人类可读描述：`已用 1.23 / 10` 或 `已用 1.23（不限）`。
-     */
-    public static function quotaLabel(array $token): string
-    {
-        $used = User::money($token['quota_used'] ?? 0);
-        $limit = (float) ($token['quota_limit'] ?? 0);
-
-        return $limit > 0
-            ? '已用 ' . $used . ' / ' . User::money($limit)
-            : '已用 ' . $used . '（不限）';
-    }
-
     private static function dec(float $value): string
     {
         return number_format($value, 10, '.', '');

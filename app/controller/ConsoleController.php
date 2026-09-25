@@ -65,7 +65,10 @@ class ConsoleController
                 'enabled' => (int) $row['status'] === UserToken::STATUS_ENABLED,
                 'usable' => $usable['ok'],
                 'reason' => $usable['reason'],
-                'quotaLabel' => UserToken::quotaLabel($row),
+                // 额度拆成「已用 / 上限」两个数字，页面据此画进度条 ——
+                // 只给一句「已用 1.23 / 10」的话，用掉九成还是一成都得自己算
+                'quotaUsed' => (float) $row['quota_used'],
+                'quotaLimit' => (float) $row['quota_limit'],
                 'models' => trim((string) ($row['models'] ?? '')),
                 'expiresAt' => $this->formatTime($row['expires_at'] ?? null),
                 'lastUsedAt' => $this->formatTime($row['last_used_at'] ?? null),
@@ -73,13 +76,26 @@ class ConsoleController
         }
 
         $todayStart = strtotime('today') ?: time();
+        $today = UsageLog::summaryForUser((int) $user['id'], $todayStart);
+        $month = UsageLog::summaryForUser((int) $user['id'], $todayStart - 29 * 86400);
+        $recent = $this->recentRows((int) $user['id']);
+
+        // 「昨天」＝「从昨天 0 点起」减去「从今天 0 点起」。
+        // 两次计数都带 `created_at >= ts`，相减正好是昨天那一天的量，
+        // 不必再为它单开一个「区间汇总」的查询
+        $sinceYesterday = UsageLog::summaryForUser((int) $user['id'], $todayStart - 86400);
 
         return $this->view('console', [
             'user' => $user,
             'tokens' => $tokens,
-            'today' => UsageLog::summaryForUser((int) $user['id'], $todayStart),
-            'month' => UsageLog::summaryForUser((int) $user['id'], $todayStart - 29 * 86400),
-            'recent' => $this->recentRows((int) $user['id']),
+            'today' => $today,
+            'month' => $month,
+            'yesterday' => [
+                'requests' => max(0, (int) $sinceYesterday['requests'] - (int) $today['requests']),
+            ],
+            'recent' => $recent,
+            // 顶部状态条上的「最近调用」：没有记录时给 null，页面显示「还没有调用」
+            'lastCall' => $recent === [] ? null : $recent[0],
             'currency' => (string) Settings::get('billing.currency', 'CNY'),
             'rechargeEnabled' => \app\common\Epay::enabled(),
             // 给页面上的「Base URL 复制」用：用户接入时唯一需要改的就是它
