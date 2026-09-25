@@ -291,6 +291,56 @@ check('渠道自己声明的 extra_body 字段仍在（不能被误剥）', isse
 check('业务字段仍然是请求体里的（model/messages）', isset($sent['model'], $sent['messages']));
 Db::execute('UPDATE channels SET config = NULL WHERE id = 1');
 
+echo "\n六之二、按上游原话学习「它不认的字段」\n";
+
+// 这条措辞是从生产日志里原样抄下来的（NIM 的真实回话）
+$realError = '上游返回 HTTP 400：Validation: Unsupported parameter(s): `prompt_cache_key`, `enable_thinking`';
+$parsed = Channel::unsupportedParamsFrom($realError);
+check('认得出上游点名的两个字段', in_array('prompt_cache_key', $parsed, true) && in_array('enable_thinking', $parsed, true), implode(',', $parsed));
+check('不会把普通错误里的词当成字段名', Channel::unsupportedParamsFrom('上游返回 HTTP 500：Internal Server Error') === []);
+
+Settings::put('gateway.auto_strip_params', '');
+Settings::forget();
+$learned = Channel::learnUnsupportedParams($realError);
+check('学到的字段被写进配置', count($learned) === 2, implode(',', $learned));
+Settings::forget();
+check('配置里能读到', Channel::autoStripFields() === ['prompt_cache_key', 'enable_thinking'], implode(',', Channel::autoStripFields()));
+check('再学一次不会重复记（幂等）', Channel::learnUnsupportedParams($realError) === []);
+
+// 关键：prompt_cache_key 本来在白名单里（OpenAI 官方字段），
+// 但上游明确说不认识 —— 事实必须压过白名单，否则会一直 400
+$strippedByLearning = Channel::sanitizeBody(Channel::find(1), [
+    'model' => 'ok-1',
+    'messages' => [],
+    'prompt_cache_key' => 'abc',
+    'temperature' => 0.5,
+]);
+check('上游点名的字段即使在白名单里也会被剥掉', !isset($strippedByLearning['prompt_cache_key']), implode(',', array_keys($strippedByLearning)));
+check('其余标准字段不受影响', isset($strippedByLearning['model'], $strippedByLearning['temperature']));
+
+$spec2 = Channel::buildSpec(Channel::find(1), 'sk-upstream-key', '/chat/completions', [
+    'model' => 'ok-1',
+    'messages' => [],
+    'prompt_cache_key' => 'abc',
+    'enable_thinking' => true,
+], 60);
+$sent2 = json_decode((string) $spec2['body'], true);
+check('学到的字段真的不会再发给上游', !isset($sent2['prompt_cache_key']) && !isset($sent2['enable_thinking']), (string) $spec2['body']);
+
+// 这一条是本次踩坑的直接回归：某一家自己的推理开关**默认不该被转发**，
+// 因为它不是 OpenAI 标准字段，不支持的上游会整条请求 400
+$thinkingSpec = Channel::buildSpec(Channel::find(1), 'sk-upstream-key', '/chat/completions', [
+    'model' => 'ok-1',
+    'messages' => [],
+    'enable_thinking' => true,
+    'thinking' => ['type' => 'enabled'],
+], 60);
+$thinkingSent = json_decode((string) $thinkingSpec['body'], true);
+check('非标准的「推理开关」默认不转发（本次线上 400 的根因）', !isset($thinkingSent['enable_thinking'], $thinkingSent['thinking']), (string) $thinkingSpec['body']);
+
+Settings::put('gateway.auto_strip_params', '');
+Settings::forget();
+
 echo "\n七、被拒绝的调用要留痕，且不算上游失败\n";
 
 $rejectToken = 'sk-aqua-' . bin2hex(random_bytes(24));

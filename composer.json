@@ -1,7 +1,7 @@
 {
     "name": "xiaosu/aqua-api-php",
     "type": "project",
-    "version": "0.2.5",
+    "version": "0.2.6",
     "description": "小型 LLM API 资源管理网关：对外提供 OpenAI 兼容接口，对内管理多上游密钥池、路由、用量统计与配额，并针对 NVIDIA NIM 接口做专项优化。",
     "keywords": [
         "llm",

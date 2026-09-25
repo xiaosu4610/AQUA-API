@@ -1346,8 +1346,14 @@ final class Channel
         // 其它官方字段
         'user' => true, 'metadata' => true, 'store' => true, 'service_tier' => true,
         'reasoning_effort' => true, 'verbosity' => true, 'prompt_cache_key' => true,
-        // 各家常见的兼容字段（推理开关、向量维度等）
-        'thinking' => true, 'enable_thinking' => true, 'reasoning' => true,
+        // 各家常见的兼容字段（推理开关、向量维度等）。
+        //
+        // ⚠️ 刻意**不**把 `thinking` / `enable_thinking` / `reasoning` 这类
+        //    「某一家自己的推理开关」放进来：它们不是 OpenAI 的标准字段，
+        //    放进来就意味着默认发给所有上游，而不支持的上游会直接 400 ——
+        //    生产上就是这么踩的（NIM 对 `enable_thinking` 回
+        //    `Validation: Unsupported parameter(s)`）。
+        //    需要它们的站点在渠道的「保留请求体字段」里加一下即可。
         'dimensions' => true, 'encoding_format' => true,
     ];
 
@@ -1374,9 +1380,23 @@ final class Channel
             $keep[$field] = true;
         }
 
+        // 「上游自己说不认识」的字段优先级最高 —— 它是**事实**，
+        // 压倒白名单（我们猜的）与保留清单（站长按文档填的）。
+        // 否则会出现「上游每次都拒绝、我们每次都照发」的死循环
+        $autoStrip = [];
+        foreach (self::autoStripFields() as $field) {
+            $autoStrip[$field] = true;
+        }
+
         $stripped = [];
         foreach (array_keys($body) as $name) {
             $field = (string) $name;
+            if (isset($autoStrip[$field])) {
+                unset($body[$field]);
+                $stripped[] = $field;
+                continue;
+            }
+
             if (isset(self::STANDARD_BODY_FIELDS[$field]) || isset($keep[$field])) {
                 continue;
             }
@@ -1390,6 +1410,118 @@ final class Channel
         }
 
         return $body;
+    }
+
+    /**
+     * 自动学到的「上游不认的字段」清单。
+     *
+     * @return array<int, string>
+     */
+    public static function autoStripFields(): array
+    {
+        $fields = [];
+
+        foreach (preg_split('/[\s,]+/', (string) Settings::get('gateway.auto_strip_params', '')) ?: [] as $field) {
+            $field = trim($field);
+            if ($field !== '') {
+                $fields[$field] = true;
+            }
+        }
+
+        return array_keys($fields);
+    }
+
+    /**
+     * 从上游的错误里认出它「点名拒绝」的字段名。
+     *
+     * ═══ 为什么要做这件事 ═══
+     *
+     * 各家上游支持的字段不一样，而客户端会带一堆自己的东西。硬编码一份
+     * 「谁支持什么」是维护不了的 —— 生产上实测：上游对我们的
+     * `prompt_cache_key`、`enable_thinking` 回
+     * `Validation: Unsupported parameter(s): ...`，整条请求 400。
+     *
+     * 所以改成「按上游自己的原话学习」：它在错误里点了名的字段，
+     * 我们记下来、之后不再发 —— 于是这个字段**只会在第一次失败一次**，
+     * 不需要人去查文档、也不需要改代码。
+     *
+     * 只认「明确说不认识」的措辞（unsupported / unknown / unrecognized /
+     * not supported / invalid ... parameter），避免把上游错误里其它
+     * 被引号包起来的内容（模型名、Trace ID 之类）误当成字段名。
+     *
+     * @return array<int, string> 学到的字段名（可能为空）
+     */
+    public static function unsupportedParamsFrom(string $message): array
+    {
+        if ($message === '') {
+            return [];
+        }
+
+        $lower = mb_strtolower($message);
+
+        $mentions = false;
+        foreach (['unsupported parameter', 'unknown parameter', 'unrecognized parameter',
+            'unsupported field', 'unknown field', 'not supported', 'unsupported'] as $hint) {
+            if (str_contains($lower, $hint)) {
+                $mentions = true;
+                break;
+            }
+        }
+
+        if (!$mentions) {
+            return [];
+        }
+
+        $names = [];
+
+        // 反引号与双引号是各家上游最常用的「点名」写法
+        if (preg_match_all('/[`"\']([A-Za-z][A-Za-z0-9_]{1,63})[`"\']/', $message, $matches) > 0) {
+            foreach ($matches[1] as $name) {
+                $names[$name] = true;
+            }
+        }
+
+        // 去掉明显不是字段名的（我们自己的措辞里可能出现的词）
+        foreach (['unsupported', 'parameter', 'parameters', 'field', 'fields', 'error', 'message'] as $noise) {
+            unset($names[$noise]);
+        }
+
+        return array_keys($names);
+    }
+
+    /**
+     * 把上游点名拒绝的字段记进配置，之后不再发送。
+     *
+     * @return array<int, string> 本次**新增**的字段（没有新增时为空数组）
+     */
+    public static function learnUnsupportedParams(string $message): array
+    {
+        $found = self::unsupportedParamsFrom($message);
+
+        if ($found === []) {
+            return [];
+        }
+
+        $known = [];
+        foreach (self::autoStripFields() as $field) {
+            $known[$field] = true;
+        }
+
+        $fresh = array_values(array_filter($found, static fn (string $field): bool => !isset($known[$field])));
+
+        if ($fresh === []) {
+            return [];
+        }
+
+        $all = array_merge(array_keys($known), $fresh);
+        Settings::put('gateway.auto_strip_params', implode(',', $all));
+
+        Log::warning('上游点名不认识的请求字段，已记下并不再发送：' . implode('、', $fresh)
+            . '（原因：' . mb_substr($message, 0, 160) . '）'
+            . '。若某个上游其实支持它，请把该字段从「自动剥离的字段」里删掉，'
+            . '并加进该渠道的「保留请求体字段」');
+
+        return $fresh;
     }
 
     /**

@@ -440,6 +440,14 @@ class OpenAiController
         $status = $job->httpStatus;
         $message = $job->error !== '' ? $job->error : $reason;
 
+        // 上游点名说「不认识这些字段」时，把它们记下来 —— 之后不再发给上游。
+        //
+        // 放在这里而不是「最终失败」处，是因为**每一次尝试**都会经过这里：
+        // 一个请求换渠道重试时，第二次就会带着新的剥离清单出去。
+        // 而且这是唯一能自愈的做法：各家上游支持的字段不一样，
+        // 硬编码一份清单永远追不上（实测 NIM 拒绝 `prompt_cache_key`）。
+        Channel::learnUnsupportedParams($message);
+
         if ($this->isRouteLevelFailure($job, $status)) {
             Channel::markChannelFailure($failedChannel, $status, $message);
         }
