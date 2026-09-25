@@ -136,6 +136,53 @@ class PricingController
     }
 
     /**
+     * POST /admin/pricing/free —— 一键把某个模型设为免费，或恢复按量计费。
+     *
+     * 为什么单独做这个动作，而不是让站长去编辑表单里改「计费模式」：
+     *   免费是很常用的一种定价选择（免费额度的上游、公益模型、拉新试用），
+     *   而编辑表单里有 9 个价格字段，只想改个模式要在大表单里找半天。
+     *   这里**只动「计费模式」一个字段，价格原样保留** ——
+     *   于是「先免费给用户试、过一阵恢复收费」变成一条可逆操作，不用重填价格。
+     *
+     * 注意 Pricing::update() 是整行覆盖（它要求传全字段），
+     * 所以这里必须把原值读出来再改一个字段，不能只传 billing_mode ——
+     * 否则价格会被一起清零。
+     */
+    public function setFree(Request $request): Response
+    {
+        if (!Csrf::check($request->post('_csrf'))) {
+            return $this->back('页面已过期，请重新提交', 'err');
+        }
+
+        $row = Pricing::find((int) $request->post('id', 0));
+        if ($row === null) {
+            return $this->back('定价记录不存在', 'err');
+        }
+
+        $free = (string) $request->post('free', '1') === '1';
+        $model = (string) $row['model'];
+
+        Pricing::update((int) $row['id'], [
+            'model' => $model,
+            'billing_mode' => $free ? Pricing::MODE_FREE : Pricing::MODE_TOKEN,
+            'upstream_kind' => (string) $row['upstream_kind'],
+            'upstream_input_price' => (float) $row['upstream_input_price'],
+            'upstream_output_price' => (float) $row['upstream_output_price'],
+            'upstream_call_price' => (float) $row['upstream_call_price'],
+            'downstream_input_price' => (float) $row['downstream_input_price'],
+            'downstream_output_price' => (float) $row['downstream_output_price'],
+            'downstream_call_price' => (float) $row['downstream_call_price'],
+            'price_unit' => (int) $row['price_unit'],
+            'note' => (string) ($row['note'] ?? ''),
+            'status' => (int) $row['status'],
+        ]);
+
+        return $free
+            ? $this->back("「{$model}」已设为免费，这一项不再计费", 'ok')
+            : $this->back("「{$model}」已恢复按 Token 计费（价格沿用原来填的值）", 'ok');
+    }
+
+    /**
      * POST /admin/pricing/delete —— 删除
      */
     public function delete(Request $request): Response

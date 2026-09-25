@@ -127,6 +127,7 @@ Route::group('/admin', function () {
     Route::get('/pricing/edit', [PricingController::class, 'editForm']);
     Route::post('/pricing/save', [PricingController::class, 'save']);
     Route::post('/pricing/delete', [PricingController::class, 'delete']);
+    Route::post('/pricing/free', [PricingController::class, 'setFree']);
     Route::post('/pricing/sync', [PricingController::class, 'sync']);
 
     // 下游用户与订单
