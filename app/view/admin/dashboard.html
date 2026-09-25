@@ -150,7 +150,11 @@ $money = static function (mixed $value): string {
                 <tbody>
                 <?php foreach ($configs as $row): ?>
                     <tr>
-                        <td class="mono"><?= htmlspecialchars((string) $row['key'], ENT_QUOTES, 'UTF-8') ?></td>
+                        <td>
+                            <?php /* 中文名优先，英文键名留在下面一行小字 —— 排查时要用它对 .env */ ?>
+                            <div class="cfg-label"><?= htmlspecialchars((string) ($row['label'] ?? $row['key']), ENT_QUOTES, 'UTF-8') ?></div>
+                            <div class="cfg-key"><?= htmlspecialchars((string) $row['key'], ENT_QUOTES, 'UTF-8') ?></div>
+                        </td>
                         <td class="mono"><?= htmlspecialchars((string) $row['value'], ENT_QUOTES, 'UTF-8') ?></td>
                         <td>
                             <?php

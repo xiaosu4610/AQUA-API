@@ -275,7 +275,11 @@ class AdminController
 
             $rows[] = [
                 'key'    => $key,
-                'value'  => $this->stringify(Settings::get($key)),
+                // 中文名与配置页共用同一份定义：同一项在两个页面必须叫同一个名字
+                'label'  => SettingController::labelOf($key),
+                // 枚举值换成中文说法（commercial → 「收费模式（…）」），
+                // 直接显示英文取值的话站长不知道它改变了什么
+                'value'  => SettingController::optionLabel($key, $this->stringify(Settings::get($key))),
                 'source' => $source,
                 // 只有来自数据库的值才允许在后台直接改；
                 // 环境变量与默认值需要改文件，这里标出来避免站长白找

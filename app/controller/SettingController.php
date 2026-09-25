@@ -97,6 +97,125 @@ class SettingController
     private const FLASH_TYPE = 'settings_notice_type';
 
     /**
+     * 配置项的中文名与说明（第一个元素是名字，第二个是「填错会怎样」的大白话）。
+     *
+     * 为什么必须补这一层：页面原来只显示 `billing.unpriced_is_free` 这种键名 ——
+     * 那是给写代码的人看的。站长看到它只能猜，猜错就是把业务规则改坏，
+     * 而且改坏了往往要过几天（用户来投诉）才发现。
+     *
+     * 写法要求（很重要，不是文风问题）：
+     *   · 名字用**用户会说的话**，不用术语：「没有人订阅的超时」而不是「idle_timeout」
+     *   · 说明必须回答「这是什么现象 / 填错会怎样」，而不只是重复名字
+     *   · 保留英文键名显示在角落（模板里小字灰色），方便对照文档与 .env
+     */
+    private const KEY_LABELS = [
+        // ── 站点 ──
+        'site.name' => ['站点名称', '显示在浏览器标题、后台页头与首页上。改完立即生效，不影响已发出的邮件'],
+        'site.domain' => ['站点域名', '可留空。填了会用于邮件里的链接与支付回调地址（例如 https://aqua.is3.cc）'],
+        'site.mode' => ['是否向用户收费', '选「收费」会显示定价与充值入口；选「免费」会隐藏它们。页面上不会出现任何标签'],
+        'site.description' => ['站点一句话介绍', '显示在首页副标题。留空则用内置文案'],
+        'site.announcement' => ['站点公告', '填了会在首页与后台顶部显示一条横幅，适合通知维护、限流等临时情况'],
+        'site.icp' => ['ICP 备案号', '境内服务器必须展示，否则有被通报的风险。例如 陕ICP备2025068157号-2'],
+        'site.footer' => ['页脚署名', '显示在页脚。留空则显示开源项目名'],
+        'site.show_models' => ['首页展示可用模型', '关闭后访客看不到任何模型清单，只看到登录入口。新站建议保持开启'],
+        'site.demo_model' => ['首页示例用的模型名', '首页示例代码会用它。填一个你亲自验证过能调通的模型，否则访客照抄会报错'],
+
+        // ── 网关 ──
+        'gateway.connect_timeout' => ['连接上游的超时（秒）', '只管「连上」这一步（TCP/TLS 握手）。连不上就换 Key/渠道，通常 5-10 秒足够'],
+        'gateway.probe_timeout' => ['测活/拉清单的超时（秒）', '后台「测活」和「检测模型」单个请求的最长等待。调大能少误判慢模型，代价是测一遍更久'],
+        'gateway.ttft_timeout' => ['首字节超时（秒）', '上游多久还不吐第一个字就算「没响应」，会触发换 Key 重试。模型思考慢就调大（30-120）'],
+        'gateway.idle_timeout' => ['卡住超时（秒）', '两个数据块之间最长允许停多久。长回答不会因为总时长被掐，只会因为「卡住不动」被掐'],
+        'gateway.total_timeout' => ['单请求总时长上限（秒）', '兜底值，防止一条连接被永久占住。设为 0 关闭兜底（不推荐）'],
+        'gateway.max_retries' => ['失败最多重试几次', '每次重试都会换一条渠道或换一把 Key，不是把同样的请求再发一遍。设 0 表示不重试'],
+        'gateway.retry_status' => ['哪些错误码该换渠道重试', '逗号分隔。默认含 401/403（那把 Key 坏了，换一把常常立刻就好）与 429/5xx（上游抖了）'],
+        'gateway.heartbeat_interval' => ['SSE 心跳间隔（秒）', '每隔这么久发一个心跳，防止 Nginx 等中间设备把长时间没数据的连接掐断'],
+
+        // ── 密钥池 ──
+        'key_pool.default_rpm' => ['单把 Key 每分钟上限', '渠道和 Key 都没单独设置时用这个值。NVIDIA 免费层官方口径约 40 次/分钟'],
+        'key_pool.fail_threshold' => ['连续失败几次就停用该 Key', '只统计瞬时失败（429/5xx/网络抖动）。凭据失效（401/403）是立即停用，不看这个值'],
+        'key_pool.auto_disable' => ['自动停用坏 Key', '关掉后只计数不停用。排查问题时可以关，但正常运营建议开着'],
+        'key_pool.cooldown_seconds' => ['停用后多久自动恢复（秒）', '到期自动重新启用再给一次机会。设 0 表示不自动恢复，需要人工启用'],
+
+        // ── 注册 ──
+        'register.open' => ['开放注册', '关闭后注册页显示「暂未开放」，只能由你在后台手工开号'],
+        'register.need_verify' => ['注册需要邮箱验证码', '开启后必须收到并填对邮件里的 6 位验证码才能注册成功。前提是下面的邮件服务已配好'],
+        'register.invite_code' => ['邀请码', '非空时注册必须填对。内测或想控制入口时用它'],
+        'register.verify_email' => ['注册前检查邮箱是否真实存在', '能挡掉乱填的地址。发信通道的退信率一高会被邮件商降级，所以这项值得开'],
+        'register.verify_smtp' => ['连到对方邮件服务器确认收件人存在', '最准的一项，但需要服务器能访问外部 25 端口（云厂商常封）。封了就关掉，前三项检查仍然有效'],
+        'register.block_disposable' => ['拒绝一次性/临时邮箱', '这类地址收得到信但用户拿不到，会拉高投诉率'],
+        'register.extra_blocked_domains' => ['额外屏蔽的邮箱域名', '逗号或空格分隔。内置了一份常见一次性邮箱，这里放你自己遇到的'],
+        'register.gift_balance' => ['注册赠送余额', '这是真金白银（能消耗你的上游额度）。开放注册时建议配合「新用户令牌额度」一起收紧'],
+        'register.default_token_quota' => ['新用户令牌额度上限', '注册时自动建的那把令牌能消耗多少额度。0 表示不限（慎用）'],
+
+        // ── 邮件 ──
+        'mail.enabled' => ['启用发信', '关掉后注册验证码与找回密码都发不出邮件（会记日志），但流程不报错，容易让人以为「邮件在发」'],
+        'mail.host' => ['SMTP 服务器', '例如 smtp.qiye.aliyun.com / smtp.qq.com / smtp.163.com'],
+        'mail.port' => ['SMTP 端口', 'SSL 通常 465；STARTTLS 通常 587'],
+        'mail.secure' => ['加密方式', '必须与端口匹配：465 配 SSL，587 配 STARTTLS。配错的表现是「一直连不上」'],
+        'mail.username' => ['SMTP 登录账号', '通常就是发件邮箱地址，例如 acu@ltzy.top'],
+        'mail.password' => ['SMTP 口令/授权码', '多数邮箱这里要填的是「授权码」而不是登录密码。此项加密存储，只显示「已配置」'],
+        'mail.from' => ['发件人地址', '必须与上面的 SMTP 账号一致，否则会被判为伪造发件人而进垃圾箱'],
+        'mail.from_name' => ['发件人显示名', '收件人看到的发件人名字。留空则用站点名称'],
+
+        // ── 支付 ──
+        'payment.enabled' => ['启用在线充值', '关闭后用户只能看余额，不能自助充值'],
+        'payment.gateway' => ['支付接口类型', '不同接口要填的参数不一样，选好后下面会自动只显示它需要的项'],
+        'payment.api_url' => ['支付网关地址', '只填到域名，不要带路径。例如 https://pay.example.com'],
+        'payment.pid' => ['商户 PID', '支付平台分配给你的商户号'],
+        'payment.key' => ['商户密钥', '支付平台给的密钥，用于签名校验。此项加密存储，只显示「已配置」'],
+        'payment.submit_path' => ['接口路径（可选）', '留空用该类型的默认路径（V1 是 /submit.php，V2 是 /mapi.php）。对不上时在这里覆盖'],
+        'payment.pay_types' => ['开放的支付方式', '逗号分隔：alipay（支付宝）/ wxpay（微信）/ qqpay（QQ）/ bank（网银）'],
+        'payment.min_amount' => ['单笔最低充值金额', '低于这个数的充值请求会被拒'],
+        'payment.credit_rate' => ['到账倍率', '充 1 元到账多少余额。做活动时调大即可，例如填 1.2 表示送 20%'],
+
+        // ── 计费 ──
+        'billing.currency' => ['货币单位', '只用于界面展示，不做汇率换算。要换币种请按统一口径重新填价格'],
+        'billing.default_multiplier' => ['默认加价倍率', '模型只填了上游成本、没填售价时：售价 = 成本 × 这个倍率。必须写小数（1.0）'],
+        'billing.estimate_ratio' => ['估算用量的校准系数', '上游不返回用量时按文本估算的补偿系数。估少了调大（1.2），估多了调小'],
+        'billing.unpriced_is_free' => ['没有定价的模型免费放行', '开着：没配价格的模型可以调用、成本记 0（适合前期）。关掉：一律拒绝（适合已正式收费的站）'],
+        'billing.require_balance' => ['余额为 0 时拒绝调用', '开着：没钱就不能用。关掉等于允许欠费使用，只适合免费站'],
+        'billing.log_retention_days' => ['用量日志保留天数', '超期由维护脚本清理。日志表是唯一会无限增长的表，不建议设得过大'],
+
+        // ── 安全 ──
+        'security.login_max_attempts' => ['后台密码连续错几次锁定', '后台只有一个入口且不需要用户名，没有锁定等于把门敞开'],
+        'security.login_lock_minutes' => ['后台锁定时长（分钟）', '锁满这么久后自动解锁'],
+        'security.user_login_max_attempts' => ['用户密码连续错几次锁定', '用户是一个群体，阈值比后台宽松些，避免把记错密码的正常人挡在门外'],
+        'security.user_login_lock_minutes' => ['用户锁定时长（分钟）', '锁满这么久后自动解锁'],
+        'security.admin_session_minutes' => ['后台登录态有效期（分钟）', '超过后需要重新输密码。改完立即生效，不用重启'],
+
+        // ── 会话 ──
+        'session.secure' => ['会话 Cookie 仅走 HTTPS', '生产必须是「是」。本地用 http://127.0.0.1 调试时设为「否」，否则登录后会立刻掉线'],
+    ];
+
+    /**
+     * 配置项的中文名 / 说明（供本页与仪表盘共用）。
+     *
+     * 放在这里而不是散在各页面：中文名是「这个键是说给人听的说法」，
+     * 必须只有一处定义 —— 否则配置页说「首字节超时」、仪表盘说「等待首包」，
+     * 站长会以为是两个不同的东西。
+     */
+    public static function labelOf(string $key): string
+    {
+        return self::KEY_LABELS[$key][0] ?? $key;
+    }
+
+    public static function hintOf(string $key): string
+    {
+        return self::KEY_LABELS[$key][1] ?? '';
+    }
+
+    /**
+     * 枚举值的显示文案（`site.mode` 的 `commercial` → 「收费模式（…）」）。
+     *
+     * 仪表盘原来直接显示英文取值，站长看到 `commercial` 并不知道
+     * 它到底改变了什么；这里统一换成配置页里那个说法。
+     */
+    public static function optionLabel(string $key, string $value): string
+    {
+        return self::ENUM_OPTIONS[$key][$value] ?? $value;
+    }
+
+    /**
      * GET /admin/settings —— 配置列表
      */
     public function index(Request $request): Response
@@ -332,6 +451,9 @@ class SettingController
 
             $groups[$prefix]['items'][] = [
                 'key'         => $key,
+                // 中文名 + 大白话说明（缺失时退回键名，至少不会显示成空白）
+                'label'       => self::labelOf($key),
+                'hint'        => self::hintOf($key),
                 'raw'         => Settings::isSecret($key) ? '' : $raw,
                 // 凭据从不回显：只告诉站长「配没配」
                 'display'     => $this->displayValue($key, $raw),
