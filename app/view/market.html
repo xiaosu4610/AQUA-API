@@ -55,6 +55,50 @@ $unitLabel = static function (int $unit): string {
     return '每 ' . number_format($unit) . ' tokens';
 };
 
+/**
+ * 价格区块（卡片与表格共用同一段渲染）。
+ *
+ * 之所以抽成一处：卡片与表格是两个视图，价格规则却有五种分支
+ * （按次 / 按 token / 站长设免费 / 配了计费但没填价 / 未定价）。
+ * 各写一份的话，改一次价格文案就要记得改两个地方，迟早不一致 ——
+ * 而「两个视图显示的价格不一样」是最容易被用户截图打脸的那类 bug。
+ */
+$priceBlock = static function (array $row) use ($money, $unitLabel): string {
+    $esc = static fn (string $v): string => htmlspecialchars($v, ENT_QUOTES, 'UTF-8');
+
+    if (!$row['isFree'] && $row['mode'] === 'call') {
+        return '<div>每次 ' . $esc($money((float) $row['callPrice'])) . '</div>';
+    }
+
+    if (!$row['isFree']) {
+        return '<div>入 ' . $esc($money((float) $row['inPrice']))
+            . ' · 出 ' . $esc($money((float) $row['outPrice'])) . '</div>'
+            . '<div class="src">' . $esc($unitLabel((int) $row['unit'])) . '</div>';
+    }
+
+    if ($row['mode'] === 'free') {
+        return '<div class="text-ok">免费</div><div class="src">站长已设为免费</div>';
+    }
+
+    // 配了计费方式但没填价格，等同于未定价。把「未设置价格」说清楚，
+    // 比写「不收费」更准确 —— 后者会让人以为这是站长的定价决定
+    return '<div class="muted">未设置价格</div><div class="src">当前不收费</div>';
+};
+
+/** 计费方式的小标签（卡片与表格共用） */
+$modeTag = static function (array $row): string {
+    $esc = static fn (string $v): string => htmlspecialchars($v, ENT_QUOTES, 'UTF-8');
+
+    if ($row['mode'] === 'free') {
+        return '<span class="pill ok">免费</span>';
+    }
+    if ($row['mode'] === 'unpriced') {
+        return '<span class="pill warn">未定价</span>';
+    }
+
+    return '<span class="pill accent">' . $esc((string) $row['modeLabel']) . '</span>';
+};
+
 // 拼回分页链接时保留当前筛选条件（去掉空值，避免 URL 里一串 key=）
 $baseQuery = array_filter(
     [
@@ -62,6 +106,8 @@ $baseQuery = array_filter(
         'vendor' => $filters['vendor'],
         'mode' => $filters['mode'],
         'sort' => $filters['sort'] !== 'name' ? $filters['sort'] : '',
+        // 卡片是默认视图，切到表格时才写进地址，避免默认链接带一串多余参数
+        'view' => $filters['view'] !== 'cards' ? $filters['view'] : '',
     ],
     static fn (string $v): bool => $v !== ''
 );
@@ -117,6 +163,38 @@ if ($pages > 1) {
     <title>模型广场 · <?= htmlspecialchars((string) $siteName, ENT_QUOTES, 'UTF-8') ?></title>
     <meta name="description" content="本站可调用的全部模型与售价。共 <?= (int) $allTotal ?> 个模型，接口与 OpenAI 兼容。">
     <?php include __DIR__ . '/_public_style.html'; ?>
+    <style>
+        /* 模型卡片：为「一眼比较」而排 —— 名字、状态、速度、价格四件事
+           占一行到两行，不追求信息密度，追求扫一眼就能决定点哪个 */
+        .mcards { display: grid; grid-template-columns: repeat(auto-fill, minmax(268px, 1fr)); gap: var(--sp-3); padding: 0 22px 22px; }
+        .mcard { border: 1px solid var(--border); border-radius: 12px; padding: 14px 15px; background: #fff; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+        .mcard:hover { border-color: #c8d3e5; box-shadow: 0 2px 10px rgba(20, 40, 80, .06); }
+        .mcard-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+        .mcard-name { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; min-width: 0; }
+        /* 复制按钮不许换行、不许被长模型名挤压 —— 它在窄卡片里被折成两行会很难看 */
+        .mcard .ghost.sm { white-space: nowrap; flex: 0 0 auto; padding: 3px 8px; }
+        .mcard-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+        .mcard-foot { display: flex; align-items: flex-end; justify-content: space-between; gap: 10px; margin-top: auto; padding-top: 8px; border-top: 1px dashed var(--border); }
+        .mcard-price { font-size: 15px; font-weight: 600; }
+        .mcard-price .src { font-weight: 400; }
+        .speed { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); }
+        .speed::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+        .speed.fast { color: #0a7c46; border-color: #b7e2c9; background: #f2fbf6; }
+        .speed.mid { color: #9a6b00; border-color: #f0dca6; background: #fffaf0; }
+        .speed.slow { color: #b42318; border-color: #f2c3bd; background: #fff5f4; }
+        .speed.untested { color: var(--muted); }
+        /* 视图切换：做成分段控件，不用下拉 —— 两个选项点一下就到，比展开菜单快 */
+        .view-switch { margin-left: auto; display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+        .view-switch a { padding: 4px 11px; font-size: 12.5px; color: var(--muted); text-decoration: none; }
+        .view-switch a + a { border-left: 1px solid var(--border); }
+        .view-switch a.on { background: #eef3fb; color: #1b4b8f; font-weight: 600; }
+        /* 手机上两栏挤成一团，直接单列；筛选栏也要能竖着排 */
+        @media (max-width: 620px) {
+            .mcards { grid-template-columns: 1fr; padding: 0 14px 18px; }
+            .filter-bar form { display: flex; flex-direction: column; gap: 8px; }
+            .filter-bar input, .filter-bar select, .filter-bar button { width: 100%; }
+        }
+    </style>
 </head>
 <body>
 
@@ -190,7 +268,11 @@ if ($pages > 1) {
                     <option value="name" <?= $filters['sort'] === 'name' ? 'selected' : '' ?>>按名称</option>
                     <option value="price_asc" <?= $filters['sort'] === 'price_asc' ? 'selected' : '' ?>>价格从低到高</option>
                     <option value="price_desc" <?= $filters['sort'] === 'price_desc' ? 'selected' : '' ?>>价格从高到低</option>
+                    <option value="latency_asc" <?= $filters['sort'] === 'latency_asc' ? 'selected' : '' ?>>响应从快到慢</option>
                 </select>
+
+                <?php /* 视图切换保留全部筛选条件：切换视图不该丢掉用户已经选好的条件 */ ?>
+                <input type="hidden" name="view" value="<?= htmlspecialchars($filters['view'], ENT_QUOTES, 'UTF-8') ?>">
 
                 <button class="primary sm" type="submit"><?= icon('pulse', 14) ?>筛选</button>
                 <?php if ($activeTags !== []): ?>
@@ -232,9 +314,21 @@ if ($pages > 1) {
                 <h2><?= icon('coin', 17) ?>模型与售价</h2>
                 <span class="muted" style="font-size:12.5px">
                     共 <?= (int) $total ?> 条
+                    <?php if ($measuredCount > 0): ?>
+                        · 已实测 <b><?= (int) $measuredCount ?></b> 个
+                        <?php if ($slowCount > 0): ?>
+                            （其中 <b><?= (int) $slowCount ?></b> 个响应偏慢）
+                        <?php endif; ?>
+                    <?php endif; ?>
                     <?php if ($pages > 1): ?>
                         · 第 <?= (int) $page ?> / <?= (int) $pages ?> 页
                     <?php endif; ?>
+                </span>
+                <span class="view-switch">
+                    <a class="<?= $filters['view'] === 'cards' ? 'on' : '' ?>"
+                       href="<?= htmlspecialchars($urlFor(array_merge($baseQuery, ['view' => 'cards'])), ENT_QUOTES, 'UTF-8') ?>">卡片</a>
+                    <a class="<?= $filters['view'] === 'table' ? 'on' : '' ?>"
+                       href="<?= htmlspecialchars($urlFor(array_merge($baseQuery, ['view' => 'table'])), ENT_QUOTES, 'UTF-8') ?>">表格</a>
                 </span>
             </div>
 
@@ -252,6 +346,38 @@ if ($pages > 1) {
                     </div>
                 </div>
             <?php else: ?>
+            <?php if ($filters['view'] === 'cards'): ?>
+                <?php /* 卡片视图：默认。名字、状态、速度、价格四件事各占一块，
+                         扫一眼就能决定点哪个 —— 表格适合「精确对比」，卡片适合「挑一个」 */ ?>
+                <div class="mcards">
+                    <?php foreach ($rows as $row): ?>
+                        <div class="mcard">
+                            <div class="mcard-top">
+                                <div class="mcard-name"><?= htmlspecialchars((string) $row['model'], ENT_QUOTES, 'UTF-8') ?></div>
+                                <button type="button" class="ghost sm" data-copy="<?= htmlspecialchars((string) $row['model'], ENT_QUOTES, 'UTF-8') ?>"
+                                        title="复制模型名，粘贴到你的代码里"><?= icon('external', 13) ?>复制</button>
+                            </div>
+
+                            <div class="mcard-meta">
+                                <span class="pill"><?= htmlspecialchars((string) $row['vendorLabel'], ENT_QUOTES, 'UTF-8') ?></span>
+                                <span class="pill <?= htmlspecialchars((string) $row['statusClass'], ENT_QUOTES, 'UTF-8') ?>"
+                                      title="来自站长最近一次的实测"><?= htmlspecialchars((string) $row['statusLabel'], ENT_QUOTES, 'UTF-8') ?></span>
+                                <?php if ($row['latencyText'] !== ''): ?>
+                                    <span class="speed <?= htmlspecialchars((string) $row['latencyClass'], ENT_QUOTES, 'UTF-8') ?>"
+                                          title="最近一次实测的响应耗时"><?= htmlspecialchars((string) $row['latencyText'], ENT_QUOTES, 'UTF-8') ?></span>
+                                <?php else: ?>
+                                    <span class="speed untested" title="站长还没测过这个模型">暂无耗时</span>
+                                <?php endif; ?>
+                            </div>
+
+                            <div class="mcard-foot">
+                                <div class="mcard-price"><?= $priceBlock($row) ?></div>
+                                <div><?= $modeTag($row) ?></div>
+                            </div>
+                        </div>
+                    <?php endforeach; ?>
+                </div>
+            <?php else: ?>
                 <div class="table-scroll">
                     <table>
                         <thead>
@@ -259,6 +385,8 @@ if ($pages > 1) {
                             <th>模型</th>
                             <th>厂商</th>
                             <th>计费方式</th>
+                            <th>实测状态</th>
+                            <th class="num">响应耗时</th>
                             <th class="num">售价</th>
                             <th style="width:86px"></th>
                         </tr>
@@ -273,32 +401,22 @@ if ($pages > 1) {
                                     <span class="pill"><?= htmlspecialchars((string) $row['vendorLabel'], ENT_QUOTES, 'UTF-8') ?></span>
                                 </td>
                                 <td>
-                                    <?php if ($row['mode'] === 'free'): ?>
-                                        <span class="pill ok">免费</span>
-                                    <?php elseif ($row['mode'] === 'unpriced'): ?>
-                                        <span class="pill warn">未定价</span>
+                                    <?= $modeTag($row) ?>
+                                </td>
+                                <td>
+                                    <span class="pill <?= htmlspecialchars((string) $row['statusClass'], ENT_QUOTES, 'UTF-8') ?>">
+                                        <?= htmlspecialchars((string) $row['statusLabel'], ENT_QUOTES, 'UTF-8') ?>
+                                    </span>
+                                </td>
+                                <td class="num">
+                                    <?php if ($row['latencyText'] !== ''): ?>
+                                        <span class="speed <?= htmlspecialchars((string) $row['latencyClass'], ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars((string) $row['latencyText'], ENT_QUOTES, 'UTF-8') ?></span>
                                     <?php else: ?>
-                                        <span class="pill accent"><?= htmlspecialchars((string) $row['modeLabel'], ENT_QUOTES, 'UTF-8') ?></span>
+                                        <span class="muted">—</span>
                                     <?php endif; ?>
                                 </td>
                                 <td class="num">
-                                    <?php if (!$row['isFree'] && $row['mode'] === 'call'): ?>
-                                        <div>每次 <?= htmlspecialchars($money((float) $row['callPrice']), ENT_QUOTES, 'UTF-8') ?></div>
-                                    <?php elseif (!$row['isFree']): ?>
-                                        <div>
-                                            入 <?= htmlspecialchars($money((float) $row['inPrice']), ENT_QUOTES, 'UTF-8') ?>
-                                            · 出 <?= htmlspecialchars($money((float) $row['outPrice']), ENT_QUOTES, 'UTF-8') ?>
-                                        </div>
-                                        <div class="src"><?= htmlspecialchars($unitLabel((int) $row['unit']), ENT_QUOTES, 'UTF-8') ?></div>
-                                    <?php elseif ($row['mode'] === 'free'): ?>
-                                        <div class="text-ok">免费</div>
-                                        <div class="src">站长已设为免费</div>
-                                    <?php else: ?>
-                                        <?php /* 配了计费方式但没填价格，等同于未定价。把「未设置价格」说清楚，
-                                                 比写「不收费」更准确 —— 后者会让人以为这是站长的定价决定 */ ?>
-                                        <div class="muted">未设置价格</div>
-                                        <div class="src">当前不收费</div>
-                                    <?php endif; ?>
+                                    <?= $priceBlock($row) ?>
                                 </td>
                                 <td>
                                     <button type="button" class="ghost sm" data-copy="<?= htmlspecialchars((string) $row['model'], ENT_QUOTES, 'UTF-8') ?>"
@@ -311,6 +429,7 @@ if ($pages > 1) {
                         </tbody>
                     </table>
                 </div>
+            <?php endif; ?>
 
                 <?php if ($pages > 1): ?>
                     <div class="pager">

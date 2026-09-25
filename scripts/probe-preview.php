@@ -74,6 +74,9 @@ foreach ($completedModels as $model) {
         'result' => $classification,
         'http' => $http,
         'summary' => $summary,
+        // 预览用的假耗时：按模型名稳定散列，这样每次跑出来的排版都一样，
+        // 便于比较「快 / 一般 / 慢」三档标签在页面上的观感
+        'latency_ms' => 380 + (crc32($model) % 9200),
     ]);
 }
 ModelProbeTask::finish($taskId);

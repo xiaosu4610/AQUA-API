@@ -28,11 +28,13 @@ declare(strict_types=1);
 namespace app\controller;
 
 use app\common\Channel;
+use app\common\Db;
 use app\common\Pricing;
 use app\common\Settings;
 use support\exception\PageNotFoundException;
 use support\Request;
 use support\Response;
+use Throwable;
 
 class MarketController
 {
@@ -58,6 +60,10 @@ class MarketController
         $currency = (string) Settings::get('billing.currency', 'CNY');
         $mode = (string) Settings::get('site.mode', 'commercial');
 
+        // 最近一次实测的状态与耗时。没有实测数据时不编造 ——
+        // 页面如实显示「未检测」，比给个看起来很好的默认值诚实得多
+        $states = $this->latestProbeStates();
+
         // ── 汇总可用模型 ──
         // 只统计**已启用**渠道。被停用的渠道所支持的模型对外并不存在
         $rows = [];
@@ -69,7 +75,7 @@ class MarketController
                 continue;
             }
 
-            $rows[] = $this->describe($model, $pricing, $multiplier);
+            $rows[] = $this->describe($model, $pricing, $multiplier, $states[$model] ?? null);
         }
 
         usort($rows, static fn (array $a, array $b): int => strnatcasecmp($a['model'], $b['model']));
@@ -110,7 +116,54 @@ class MarketController
             // 汇总卡：都要来自真实数据，没有就如实为 0
             'freeCount' => count(array_filter($rows, static fn (array $r): bool => $r['isFree'])),
             'callModes' => $this->modeCounts($rows),
+
+            // 实测覆盖情况：让访客知道「哪些是抽测过的，哪些还没测」
+            'measuredCount' => count(array_filter($rows, static fn (array $r): bool => $r['status'] !== '')),
+            'slowCount' => count(array_filter($rows, static fn (array $r): bool => $r['latencyClass'] === 'slow')),
         ], '');
+    }
+
+    /**
+     * 每个模型最近一次的实测结论与耗时。
+     *
+     * 取「同一个模型的所有历史结果里 id 最大的那一条」——
+     * 按 id 而不是按时间取，是因为 id 严格单调，不会被机器时间回拨影响。
+     *
+     * 为什么用自连接而不是窗口函数：
+     *   MySQL 5.7 没有窗口函数，而本项目的用户可能就跑在 5.7 上。
+     *   这个查询走的是 idx_probe_results_task 之外的模型维度，数据量很小
+     *   （每次检测每个模型一行），代价可以接受。
+     *
+     * @return array<string, array{classification:string,latency_ms:int,at:int}>
+     */
+    private function latestProbeStates(): array
+    {
+        try {
+            $rows = Db::select(
+                'SELECT r.model, r.classification, r.latency_ms, r.completed_at
+                 FROM channel_model_probe_results r
+                 JOIN (
+                     SELECT model, MAX(id) AS latest_id
+                     FROM channel_model_probe_results
+                     GROUP BY model
+                 ) t ON t.latest_id = r.id'
+            );
+        } catch (Throwable) {
+            // 探测表还没建（老部署尚未迁移）时不能让模型广场整个挂掉 ——
+            // 它是一张公开页，宁可少显示一列状态
+            return [];
+        }
+
+        $states = [];
+        foreach ($rows as $row) {
+            $states[(string) $row['model']] = [
+                'classification' => (string) $row['classification'],
+                'latency_ms' => (int) $row['latency_ms'],
+                'at' => (int) $row['completed_at'],
+            ];
+        }
+
+        return $states;
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -156,9 +209,10 @@ class MarketController
      * 页面不需要知道里面的规则。
      *
      * @param array<string, mixed>|null $pricing
+     * @param array{classification:string,latency_ms:int,at:int}|null $state 最近一次实测结论
      * @return array<string, mixed>
      */
-    private function describe(string $model, ?array $pricing, float $multiplier): array
+    private function describe(string $model, ?array $pricing, float $multiplier, ?array $state = null): array
     {
         // 厂商取模型名的前缀（`openai/gpt-oss-20b` → openai）。
         // 没有前缀的归入「其他」—— 不猜，猜错了会把模型归到别的厂商名下
@@ -181,7 +235,29 @@ class MarketController
             'sortPrice' => 0.0,
             'isFree' => false,
             'note' => '',
+            // 实测状态与耗时：没有实测数据时 status 为空串，页面据此显示「未检测」
+            'status' => '',
+            'statusLabel' => '未检测',
+            'statusClass' => 'muted',
+            'latencyMs' => 0,
+            'latencyText' => '',
+            'latencyClass' => '',
         ];
+
+        if ($state !== null) {
+            $row['status'] = $state['classification'];
+            [$row['statusLabel'], $row['statusClass']] = self::statusMeta($state['classification']);
+
+            $ms = max(0, (int) $state['latency_ms']);
+            $row['latencyMs'] = $ms;
+            if ($ms > 0) {
+                $row['latencyText'] = $ms < 1000
+                    ? $ms . ' 毫秒'
+                    : number_format($ms / 1000, 1) . ' 秒';
+                // 分档口径写在数据里而不是模板里：阈值以后要调只改这一处
+                $row['latencyClass'] = $ms <= 1500 ? 'fast' : ($ms <= 6000 ? 'mid' : 'slow');
+            }
+        }
 
         // 没有定价行：当前不收费（因为 unpriced_is_free 为真，否则上面已被过滤掉）
         if ($pricing === null) {
@@ -240,13 +316,15 @@ class MarketController
     // ═══════════════════════════════════════════════════════════
 
     /**
-     * @return array{q:string, vendor:string, mode:string, sort:string, page:int}
+     * @return array{q:string, vendor:string, mode:string, sort:string, page:int, view:string}
      */
     private function readFilters(Request $request): array
     {
-        $allowSort = ['name', 'price_asc', 'price_desc'];
+        $allowSort = ['name', 'price_asc', 'price_desc', 'latency_asc'];
+        $allowView = ['cards', 'table'];
 
         $sort = (string) $request->get('sort', 'name');
+        $view = (string) $request->get('view', 'cards');
 
         return [
             'q' => mb_substr(trim((string) $request->get('q', '')), 0, 80),
@@ -254,6 +332,8 @@ class MarketController
             'mode' => trim((string) $request->get('mode', '')),
             'sort' => in_array($sort, $allowSort, true) ? $sort : 'name',
             'page' => max(1, (int) $request->get('page', 1)),
+            // 卡片是默认视图：模型广场的主要用途是「快速浏览有哪些模型、快不快」
+            'view' => in_array($view, $allowView, true) ? $view : 'cards',
         ];
     }
 
@@ -297,9 +377,39 @@ class MarketController
             usort($rows, static function (array $a, array $b): int {
                 return [$b['sortPrice'], $a['model']] <=> [$a['sortPrice'], $b['model']];
             });
+        } elseif ($sort === 'latency_asc') {
+            // 按实测耗时从快到慢。「没测过」的排在最后而不是当成 0 ——
+            // 把未测的混进「最快」里，等于用一个假数据骗用户先试最没把握的那个
+            usort($rows, static function (array $a, array $b): int {
+                $av = (int) $a['latencyMs'] > 0 ? (int) $a['latencyMs'] : PHP_INT_MAX;
+                $bv = (int) $b['latencyMs'] > 0 ? (int) $b['latencyMs'] : PHP_INT_MAX;
+
+                return [$av, $a['model']] <=> [$bv, $b['model']];
+            });
         }
 
         return $rows;
+    }
+
+    /**
+     * 实测结论 → 页面上的说法与配色。
+     *
+     * 说法刻意用「用户视角」而不是内部术语：
+     *   · no_access 是「上游只给了部分模型的使用权」，说「本账号无权限」比「404」有用
+     *   · inconclusive 是「这一次没问出来」，绝不能写成「不可用」——
+     *     超时的模型很可能只是冷启动慢，标成不可用会让人白白放弃
+     *
+     * @return array{0:string,1:string}
+     */
+    private static function statusMeta(string $classification): array
+    {
+        return match ($classification) {
+            'ok' => ['实测可用', 'ok'],
+            'no_access' => ['本账号无权限', 'warn'],
+            'unroutable' => ['暂不支持调用', 'err'],
+            'inconclusive' => ['未测出（响应慢或超时）', 'muted'],
+            default => ['未检测', 'muted'],
+        };
     }
 
     /**
