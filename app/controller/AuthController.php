@@ -313,7 +313,10 @@ class AuthController
                     . '本次已直接完成验证（此情况已记入日志，请站长尽快配置 SMTP）。',
             'ok' => true,
             'tokenPlain' => $token['plain'],
-            'extra' => '下面这把令牌只会显示这一次，请立即复制保存 —— 之后列表里只显示掩码。',
+            'revealEnabled' => UserToken::revealEnabled(),
+            'extra' => UserToken::revealEnabled()
+                ? '这把令牌是你的身份凭证：别贴到公开的地方（截图、GitHub、聊天群）。'
+                : '下面这把令牌只会显示这一次，请立即复制保存 —— 之后列表里只显示掩码。',
         ]);
     }
 

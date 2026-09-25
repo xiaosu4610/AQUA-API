@@ -12,7 +12,8 @@
  *     验证时只需 `hash(收到的令牌) === 库里的哈希`，**永不需要还原原文**。
  *     因此用 SHA-256 哈希存储 —— 库被拖走也无法直接拿去调用。
  *
- * 明文只在创建那一刻返回给用户看一次，之后再也拿不到。
+ * 明文在创建那一刻一定返回给用户看一次；之后还能不能再看到，
+ * 取决于站长的开关 `security.token_reveal`（见 revealEnabled 的说明）。
  *
  * ═══ 哈希为什么要加盐/前缀 ═══
  *
@@ -26,6 +27,9 @@
 declare(strict_types=1);
 
 namespace app\common;
+
+use support\Log;
+use Throwable;
 
 final class UserToken
 {
@@ -43,11 +47,74 @@ final class UserToken
     private const HASH_DOMAIN = 'aqua-user-token:';
 
     /**
-     * 生成一个新的令牌明文（只在创建时出现这一次）。
+     * 生成一个新的令牌明文（创建时返回给用户，之后能否再看取决于回显开关）。
      */
     public static function generate(): string
     {
         return self::PREFIX . bin2hex(random_bytes(24));
+    }
+
+    /**
+     * 是否允许「随时复制令牌」。
+     *
+     * 开着时：新建令牌会额外存一份**可逆**副本（AES-256-GCM），控制台上可以直接复制；
+     * 关掉时：只存哈希，令牌除了创建那一刻再也拿不到（回到原来的口径）。
+     *
+     * ⚠️ 这里同时要求 APP_KEY 已配置：没有 APP_KEY 就没法加密，
+     * 此时**不能**假装开着（否则用户会看到一堆「点了没反应」的复制按钮），
+     * 而是如实降级成「不保存副本」。
+     */
+    public static function revealEnabled(): bool
+    {
+        return Settings::bool('security.token_reveal', true) && Crypto::isConfigured();
+    }
+
+    /**
+     * 取某个令牌的可回显明文。
+     *
+     * 取不到（开关关着、老令牌、APP_KEY 换过导致解不开）一律返回空串 ——
+     * 调用方据此显示「无法回显」的说明，而不是抛错让整页打不开。
+     */
+    public static function plainOf(array $token): string
+    {
+        $enc = trim((string) ($token['key_enc'] ?? ''));
+        if ($enc === '' || !self::revealEnabled()) {
+            return '';
+        }
+
+        try {
+            return Crypto::decrypt($enc);
+        } catch (Throwable $e) {
+            // 解密失败最常见的原因是 APP_KEY 被换过。记一条日志便于排查，
+            // 但不影响页面：令牌本身（哈希）仍然能用
+            Log::warning('令牌副本解密失败（可能换过 APP_KEY）：token_id=' . (int) ($token['id'] ?? 0)
+                . ' —— ' . $e->getMessage());
+
+            return '';
+        }
+    }
+
+    /**
+     * 清掉所有已保存的令牌副本（把「可回显」这件事彻底收回）。
+     *
+     * 关掉开关时用它：开关只管「以后还存不存」，
+     * 已经存下来的明文不会凭空消失，需要站长显式清一次。
+     *
+     * @return int 被清除的条数
+     */
+    public static function purgePlaintext(): int
+    {
+        return Db::execute('UPDATE tokens SET key_enc = NULL WHERE key_enc IS NOT NULL');
+    }
+
+    /**
+     * 还有多少把令牌保存着可回显副本（后台显示用）。
+     */
+    public static function countRevealable(): int
+    {
+        $row = Db::selectOne('SELECT COUNT(*) AS c FROM tokens WHERE key_enc IS NOT NULL');
+
+        return (int) ($row['c'] ?? 0);
     }
 
     public static function hash(string $plain): string
@@ -57,7 +124,9 @@ final class UserToken
 
     /**
      * 掩码：`sk-aqua-1a2b…9f3a`。
-     * 列表页只显示它，绝不显示完整令牌。
+     *
+     * 没有可回显副本时列表页显示它（有副本则显示完整令牌 + 复制按钮）。
+     * 无论哪种情况，日志与后台渠道密钥的展示一律用掩码。
      */
     public static function mask(string $plain): string
     {
@@ -86,15 +155,22 @@ final class UserToken
         $plain = self::generate();
         $now = time();
 
+        // 回显开关开着时额外存一份可逆副本（只用于展示，鉴权仍然走哈希）
+        $keyEnc = null;
+        if (self::revealEnabled()) {
+            $keyEnc = Crypto::encrypt($plain);
+        }
+
         Db::execute(
             'INSERT INTO tokens
-                (user_id, name, key_hash, key_mask, quota_limit, quota_used, models, expires_at, status, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)',
+                (user_id, name, key_hash, key_mask, key_enc, quota_limit, quota_used, models, expires_at, status, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)',
             [
                 $userId,
                 mb_substr(trim($name) === '' ? '默认令牌' : trim($name), 0, 64),
                 self::hash($plain),
                 self::mask($plain),
+                $keyEnc,
                 self::dec(max(0.0, $quotaLimit)),
                 $models === null || trim($models) === '' ? null : mb_substr(trim($models), 0, 1024),
                 $expiresAt,

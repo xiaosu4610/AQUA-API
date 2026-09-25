@@ -113,6 +113,8 @@ Route::group('/admin', function () {
     Route::post('/settings', [SettingController::class, 'save']);
     // 超时专项保存：与整页保存分开，只认超时这几个键（见 saveTimeouts 的说明）
     Route::post('/settings/timeouts', [SettingController::class, 'saveTimeouts']);
+    // 清空已保存的令牌副本（关掉「随时复制」后把存量一并收回）
+    Route::post('/settings/token-reveal/purge', [SettingController::class, 'purgeTokenCopies']);
     Route::post('/settings/reset', [SettingController::class, 'reset']);
 
     // 渠道与密钥池管理

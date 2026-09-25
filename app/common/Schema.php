@@ -37,7 +37,7 @@ use Throwable;
 final class Schema
 {
     /** 当前期望的表结构版本。新增迁移时递增。 */
-    public const VERSION = 12;
+    public const VERSION = 13;
 
     /**
      * 确保表结构存在且为最新版本。
@@ -100,6 +100,10 @@ final class Schema
 
         if ($current < 12) {
             self::createV12();
+        }
+
+        if ($current < 13) {
+            self::createV13();
         }
 
         Settings::put('schema_version', (string) self::VERSION);
@@ -556,6 +560,28 @@ final class Schema
     private static function createV11(): void
     {
         self::addColumnIfMissing('channel_model_probe_results', 'latency_ms', 'INTEGER NOT NULL DEFAULT 0');
+    }
+
+    /**
+     * v13：令牌的可回显副本（`tokens.key_enc`）
+     *
+     * ═══ 为什么加这一列 ═══
+     *
+     * 令牌原来只存 SHA-256 哈希，**设计上不可还原** —— 好处是库被拖走也拿不到明文，
+     * 代价是用户掉了令牌就只能新建一把，然后去各处改配置。站长反馈这一步太折腾，
+     * 需要「随时复制」。
+     *
+     * 于是加一列存**可逆**副本（AES-256-GCM，与渠道 API Key 同一套 Crypto）。
+     * 安全边界随之变化，所以配套三件事：
+     *   1. 后台开关 `security.token_reveal` 控制「要不要存明文、要不要显示」，
+     *      关掉就不存、也不显示 —— 想回到「只存哈希」的口径随时可以
+     *   2. **鉴权路径完全不变**：仍然用 key_hash 比对，明文只用于展示
+     *   3. 老令牌没有这一列的值 → 界面上如实说「创建时未保存副本，需要请新建」，
+     *      而不是给一个点了没反应的按钮
+     */
+    private static function createV13(): void
+    {
+        self::addColumnIfMissing('tokens', 'key_enc', 'VARCHAR(512) NULL');
     }
 
     /**

@@ -1,17 +1,22 @@
 <?php
 /**
- * 用户侧 · 令牌创建成功（明文只显示这一次）
+ * 用户侧 · 令牌创建成功
  *
- * 这一页是用户唯一能看到完整令牌的机会 —— 库里存的是 SHA-256 哈希，
- * 之后任何地方（包括我们自己）都还原不出来。
- * 因此页面上必须把这件事说得非常清楚，并给出一键复制的便利。
+ * 这一页在创建那一刻把明文令牌交给用户 —— 无论站长是否开着「随时复制」，
+ * 这一刻都必须给，因为用户接下来马上要用它。
+ *
+ * 但**之后还能不能再看到**是两回事，页面必须说清当前是哪种：
+ *   · 开着「随时复制」→ 告诉他「以后回控制台也能复制」，别让他惊慌地以为错过了；
+ *   · 关着          → 库里只有 SHA-256 哈希，之后谁也还原不出来，必须当场存好。
+ * 说反了会直接造成损失（关了却让人以为还能再拿，用户真的会丢令牌）。
  *
  * @var string $csrf
  * @var string $siteName
  * @var string $siteMode
  * @var string $plain 令牌明文
  * @var string $name  令牌名称
- * @var array<string, mixed>|null $user
+ * @var bool   $revealEnabled 站长是否开启了「随时复制」
+ * @var string $apiBaseUrl 本站接入地址（已带 /v1）
  */
 ?>
 <!DOCTYPE html>
@@ -30,14 +35,26 @@
     <section style="max-width:760px">
         <h2><?= icon('key', 18) ?>令牌已创建：「<?= htmlspecialchars((string) $name, ENT_QUOTES, 'UTF-8') ?>」</h2>
 
-        <div class="alert err">
-            <?= icon('alert', 17) ?>
-            <span>
-                <b>这串令牌只会显示这一次。</b>
-                库里保存的是它的哈希值，连我们、以及任何数据库管理员都无法还原 ——
-                请现在就复制保存到安全的地方。丢失后只能删掉重建。
-            </span>
-        </div>
+        <?php if (!empty($revealEnabled)): ?>
+            <div class="alert ok">
+                <?= icon('check', 17) ?>
+                <span>
+                    <b>本站开启了「随时复制」。</b>
+                    这串令牌以后可以在<b>控制台</b>里再次复制，忘了也不用重建。
+                    不过既然已经在这里了，建议现在就存进你要用的客户端 ——
+                    少跑一趟，也免得中间被人看到。
+                </span>
+            </div>
+        <?php else: ?>
+            <div class="alert err">
+                <?= icon('alert', 17) ?>
+                <span>
+                    <b>这串令牌只会显示这一次。</b>
+                    库里保存的是它的哈希值，连我们、以及任何数据库管理员都无法还原 ——
+                    请现在就复制保存到安全的地方。丢失后只能删掉重建。
+                </span>
+            </div>
+        <?php endif; ?>
 
         <div class="field">
             <div class="lbl">你的令牌</div>
@@ -55,14 +72,15 @@
         <p class="note" style="margin-top:0">
             请求时把它放进 <code>Authorization</code> 头，与 OpenAI 完全一致：
         </p>
-        <textarea readonly rows="6" style="min-height:auto">curl <?= htmlspecialchars((string) ($siteDomain ?? ''), ENT_QUOTES, 'UTF-8') ?> \
+        <textarea readonly rows="6" style="min-height:auto">curl <?= htmlspecialchars((string) $apiBaseUrl, ENT_QUOTES, 'UTF-8') ?>/chat/completions \
   -H "Authorization: Bearer <?= htmlspecialchars((string) $plain, ENT_QUOTES, 'UTF-8') ?>" \
   -H "Content-Type: application/json" \
   -d '{"model":"你的模型名","messages":[{"role":"user","content":"你好"}]}'</textarea>
 
         <p class="note">
-            ⚠️ 接口路由（<code>/v1/chat/completions</code>）仍在开发中。
-            转发引擎落地后，上面这把令牌即可直接使用 —— 令牌体系已经就绪。
+            把上面这段里的「你的模型名」换成<b>模型广场里列出的名字</b>就能跑。
+            各客户端的接口地址填 <code><?= htmlspecialchars((string) $apiBaseUrl, ENT_QUOTES, 'UTF-8') ?></code>，
+            密钥填这串令牌 —— 更详细的说明见<a href="/docs" target="_blank" rel="noopener">接口文档</a>。
         </p>
     </section>
 </div>

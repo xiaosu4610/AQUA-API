@@ -11,7 +11,8 @@
  * @var string $message 多行文本（用 \n 分行，会按原样换行显示）
  * @var bool   $ok      成功还是失败（决定图标与颜色）
  * @var string $extra   补充说明（可选）
- * @var string $tokenPlain 新令牌明文（仅在注册后直接可用时出现，只显示这一次）
+ * @var string $tokenPlain 新令牌明文（仅在注册后直接可用时出现）
+ * @var bool   $revealEnabled 站长是否开启了「随时复制令牌」
  */
 $ok = $ok ?? false;
 ?>
@@ -36,9 +37,14 @@ $ok = $ok ?? false;
     <p class="lead" style="text-align:center;white-space:pre-line"><?= htmlspecialchars((string) $message, ENT_QUOTES, 'UTF-8') ?></p>
 
     <?php if (!empty($tokenPlain)): ?>
-        <?php /* 明文令牌只在这里出现一次。之后列表里只有掩码 —— 请立刻保存 */ ?>
+        <?php /* 明文令牌在这里给出。之后还能不能再看到，取决于站长的「随时复制」开关 ——
+                 说反了会直接造成损失（关着却让人以为还能再拿，用户真的会丢令牌） */ ?>
         <code class="token-box"><?= htmlspecialchars((string) $tokenPlain, ENT_QUOTES, 'UTF-8') ?></code>
-        <div class="tip">这串令牌只会显示这一次，请立即复制保存。</div>
+        <div class="tip">
+            <?= !empty($revealEnabled)
+                ? '这是给你自动创建的第一把令牌，之后在控制台随时可以再复制它。'
+                : '这串令牌只会显示这一次，请立即复制保存。' ?>
+        </div>
     <?php endif; ?>
 
     <?php if (!empty($extra)): ?>

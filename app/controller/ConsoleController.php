@@ -24,6 +24,7 @@ declare(strict_types=1);
 namespace app\controller;
 
 use app\common\Csrf;
+use app\common\Crypto;
 use app\common\Settings;
 use app\common\UsageLog;
 use app\common\User;
@@ -53,11 +54,14 @@ class ConsoleController
         $tokens = [];
         foreach (UserToken::allForUser((int) $user['id']) as $row) {
             $usable = UserToken::usable($row);
+            $plain = UserToken::plainOf($row);
 
             $tokens[] = [
                 'id' => (int) $row['id'],
                 'name' => (string) $row['name'],
                 'mask' => (string) $row['key_mask'],
+                // 完整令牌（仅当站长开启了「随时复制」且这把令牌存有副本时非空）
+                'plain' => $plain,
                 'enabled' => (int) $row['status'] === UserToken::STATUS_ENABLED,
                 'usable' => $usable['ok'],
                 'reason' => $usable['reason'],
@@ -81,6 +85,13 @@ class ConsoleController
             // 给页面上的「Base URL 复制」用：用户接入时唯一需要改的就是它
             'apiBaseUrl' => Url::apiBase(request()),
             'apiExample' => $this->apiExample(),
+            // 站长是否开启了「随时复制令牌」，页面据此决定展示完整令牌还是掩码
+            'revealEnabled' => UserToken::revealEnabled(),
+            'revealConfigured' => Crypto::isConfigured(),
+            // 看不到完整令牌时必须说清「为什么」——只显示一句「看不到」等于让人去猜
+            'revealOffReason' => !Crypto::isConfigured()
+                ? '本站没有配置 APP_KEY，无法保存可回显副本'
+                : (Settings::bool('security.token_reveal', true) ? '' : '站长关闭了「随时复制令牌」'),
         ]);
     }
 
@@ -122,10 +133,13 @@ class ConsoleController
 
         $created = UserToken::create((int) $user['id'], $name, $quota, $models, $expiresAt);
 
-        // 明文令牌只在**创建这一刻**返回一次，之后永远拿不到
+        // 明文令牌在创建这一刻一定给用户看一次；之后还能不能再看到，
+        // 取决于站长是否开着「随时复制」（见 UserToken::revealEnabled）
         return $this->view('token_created', [
             'plain' => $created['plain'],
             'name' => $name === '' ? '默认令牌' : $name,
+            'revealEnabled' => UserToken::revealEnabled(),
+            'apiBaseUrl' => Url::apiBase(request()),
         ]);
     }
 

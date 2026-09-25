@@ -32,6 +32,7 @@ use app\common\Csrf;
 use app\common\Mailer;
 use app\common\Settings;
 use app\common\Timeouts;
+use app\common\UserToken;
 use support\Log;
 use support\Request;
 use support\Response;
@@ -188,6 +189,12 @@ class SettingController
         'billing.log_retention_days' => ['用量日志保留天数', '超期由维护脚本清理。日志表是唯一会无限增长的表，不建议设得过大'],
 
         // ── 安全 ──
+        'security.token_reveal' => [
+            '允许用户随时复制自己的令牌',
+            '开着：新建的令牌会另存一份可逆副本，用户掉了令牌可以回控制台直接复制（不用重建）。'
+            . '关掉：只存哈希，令牌除了创建那一刻再也看不到 —— 更安全，但用户掉了就得新建。'
+            . '关掉后已保存的副本不会自动消失，用下面的「清空已保存的令牌副本」清一次',
+        ],
         'security.login_max_attempts' => ['后台密码连续错几次锁定', '后台只有一个入口且不需要用户名，没有锁定等于把门敞开'],
         'security.login_lock_minutes' => ['后台锁定时长（分钟）', '锁满这么久后自动解锁'],
         'security.user_login_max_attempts' => ['用户密码连续错几次锁定', '用户是一个群体，阈值比后台宽松些，避免把记错密码的正常人挡在门外'],
@@ -277,6 +284,9 @@ class SettingController
             // 超时专项卡片：这几个数字是站长最常调的（免费上游慢就要放宽），
             // 单独放一张卡片、配好范围和推荐值，比让他在几十项配置里翻要省事得多
             'timeouts'   => $this->timeoutCard(),
+            // 令牌「随时复制」卡片：这是一个「安全 vs 省事」的取舍，
+            // 站长需要把代价看清楚了才选，所以单独一张卡片讲明白
+            'reveal'     => $this->revealCard(),
             // pull 会读取并删除，保证提示只显示一次
             'notice'     => (string) session()->pull(self::FLASH_NOTICE, ''),
             'noticeType' => (string) session()->pull(self::FLASH_TYPE, 'info'),
@@ -309,6 +319,63 @@ class SettingController
         }
 
         return $rows;
+    }
+
+    /**
+     * 「令牌随时复制」卡片的数据。
+     *
+     * 为什么要单独一张卡片：这一项不是普通开关，而是一个**取舍** ——
+     * 开着方便（用户掉了令牌自己复制回来，不必重建、不必逐台改客户端配置），
+     * 代价是库里多一份**可逆**副本（库 + APP_KEY 同时泄露就等于令牌泄露）。
+     * 站长要看清代价才能决定，所以这里把「当前实际效果」直接算出来放在页面上，
+     * 而不是只给他一个复选框猜。
+     */
+    private function revealCard(): array
+    {
+        $on = Settings::bool('security.token_reveal', true);
+        $configured = Crypto::isConfigured();
+
+        return [
+            'on' => $on,
+            'configured' => $configured,
+            // 还有多少把令牌存着可回显副本 —— 「清空」按钮要不要启用看它
+            'copies' => UserToken::countRevealable(),
+            // 当前**实际**效果（注意 APP_KEY 没配时，开关开着也做不到）
+            'state' => !$on
+                ? '当前：关闭。新令牌只存哈希，用户只在创建那一刻能看到它'
+                : ($configured
+                    ? '当前：开启。新令牌会另存一份可逆副本，用户可随时回自己的控制台复制'
+                    : '当前：做不到 —— 开关是开的，但本站没有配置 APP_KEY（无法加密），'
+                        . '实际按「关闭」处理'),
+        ];
+    }
+
+    /**
+     * POST /admin/settings/token-reveal/purge —— 清空已保存的令牌副本
+     *
+     * 为什么需要它：关掉「随时复制」只管「以后还存不存」，
+     * 已经存下来的副本不会凭空消失。站长关开关的意图是「库里不要再有可还原的令牌」，
+     * 那就必须有一个动作把存量清掉 —— 否则他会以为关了就安全了。
+     *
+     * 清的是副本（key_enc），不是令牌本身：令牌哈希、额度、有效期全都不动，
+     * 用户手上的令牌照旧能用。
+     */
+    public function purgeTokenCopies(Request $request): Response
+    {
+        if (!Csrf::check($request->post('_csrf'))) {
+            return $this->back('页面已过期，请重新提交', 'err');
+        }
+
+        $count = UserToken::countRevealable();
+        if ($count === 0) {
+            return $this->back('没有需要清除的令牌副本', 'info');
+        }
+
+        $cleared = UserToken::purgePlaintext();
+
+        Log::warning("管理员清空了已保存的令牌副本：{$cleared} 条（令牌本身不受影响，仍可正常调用）");
+
+        return $this->back("已清除 {$cleared} 把令牌的可回显副本（令牌本身照旧能用，只是以后看不到完整令牌了）", 'ok');
     }
 
     /**

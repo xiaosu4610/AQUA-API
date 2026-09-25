@@ -5,8 +5,11 @@
  * 一页放三件事：我的余额与用量、我的令牌、最近调用记录。
  * 用户的日常操作就是「拿令牌去用」，因此令牌区必须最好找。
  *
- * ⚠️ 令牌列表只显示掩码（key_mask）。完整令牌只在创建那一刻出现过一次，
- * 这里永远拿不到 —— 也正因如此，库里存的是哈希而不是密文。
+ * ⚠️ 令牌列显示什么，取决于站长的一个开关（security.token_reveal）：
+ *   · 开关开着（且本站配了 APP_KEY）→ 新建的令牌另存了一份可逆副本，这里显示完整令牌 + 一键复制；
+ *   · 开关关着 → 只存哈希，这里只能显示掩码，页面要如实说清是「站长关掉了」而不是「系统坏了」；
+ *   · 开关开着但令牌是开关打开之前建的 → 没有副本，提示「需要请新建一把」。
+ * 鉴权始终走哈希（key_hash），副本只用于展示 —— 见 UserToken::plainOf()。
  *
  * @var string $csrf
  * @var string $siteName
@@ -20,6 +23,8 @@
  * @var bool   $rechargeEnabled
  * @var string $apiBaseUrl   本站接入地址（已带 /v1）
  * @var string $apiExample   可直接抄走的调用示例
+ * @var bool   $revealEnabled 站长是否开启了「随时复制令牌」（且本站能加密）
+ * @var string $revealOffReason 看不到完整令牌的原因（空串表示没被关掉）
  * @var string $notice
  * @var string $noticeType
  */
@@ -164,11 +169,11 @@ $money = static function (mixed $value): string {
                 <table class="compact">
                     <thead>
                     <tr>
-                        <th style="width:16%">名称</th>
-                        <th style="width:20%">令牌</th>
-                        <th style="width:14%">状态</th>
-                        <th style="width:20%">额度</th>
-                        <th style="width:14%">有效期</th>
+                        <th style="width:14%">名称</th>
+                        <th style="width:30%">令牌</th>
+                        <th style="width:12%">状态</th>
+                        <th style="width:16%">额度</th>
+                        <th style="width:12%">有效期</th>
                         <th style="width:16%">操作</th>
                     </tr>
                     </thead>
@@ -176,7 +181,28 @@ $money = static function (mixed $value): string {
                     <?php foreach ($tokens as $t): ?>
                         <tr>
                             <td><?= htmlspecialchars((string) $t['name'], ENT_QUOTES, 'UTF-8') ?></td>
-                            <td class="mono"><?= htmlspecialchars((string) $t['mask'], ENT_QUOTES, 'UTF-8') ?></td>
+                            <td>
+                                <?php if ($t['plain'] !== ''): ?>
+                                    <?php /* 有可回显副本：直接把完整令牌摆出来 + 一键复制。
+                                             为什么要显示完整串而不是又藏一层「点击显示」：
+                                             用户来这里就是为了复制它，多一步点击只是多一次摩擦力。 */ ?>
+                                    <div class="tk-full">
+                                        <code><?= htmlspecialchars((string) $t['plain'], ENT_QUOTES, 'UTF-8') ?></code>
+                                        <button type="button" class="ghost sm"
+                                                data-copy="<?= htmlspecialchars((string) $t['plain'], ENT_QUOTES, 'UTF-8') ?>"
+                                                title="复制这把令牌"><?= icon('key', 13) ?>复制</button>
+                                    </div>
+                                <?php else: ?>
+                                    <div class="mono"><?= htmlspecialchars((string) $t['mask'], ENT_QUOTES, 'UTF-8') ?></div>
+                                    <div class="cfg-hint">
+                                        <?php if (($revealOffReason ?? '') !== ''): ?>
+                                            <?= htmlspecialchars((string) $revealOffReason, ENT_QUOTES, 'UTF-8') ?>，看不到完整令牌
+                                        <?php else: ?>
+                                            这把令牌创建于开关打开之前，没有保存副本 —— 看不到完整令牌，需要请新建一把
+                                        <?php endif; ?>
+                                    </div>
+                                <?php endif; ?>
+                            </td>
                             <td>
                                 <?php if ($t['usable']): ?>
                                     <span class="pill ok">可用</span>
@@ -233,8 +259,16 @@ $money = static function (mixed $value): string {
         <p class="note">
             调用时把令牌放进请求头 <code>Authorization: Bearer &lt;令牌&gt;</code>，
             与 OpenAI 的用法一致。<br>
-            <b>令牌只在创建时显示一次</b>，之后只能看到掩码 —— 这是刻意的：
-            库里存的是哈希而不是密文，连我们都无法还原它。
+            <?php if (!empty($revealEnabled)): ?>
+                令牌可以<b>随时复制</b>：点令牌旁边的「复制」就行，不用记着「刚才那一次」。
+                它等同于你的账号密码，别贴到公开的地方（截图、GitHub、聊天群）。
+            <?php elseif (($revealOffReason ?? '') !== ''): ?>
+                <b><?= htmlspecialchars((string) $revealOffReason, ENT_QUOTES, 'UTF-8') ?></b>，
+                因此这里只能显示掩码 —— 库里存的是哈希，连我们都无法还原它。丢了就删掉重建一把。
+            <?php else: ?>
+                令牌只在创建那一刻完整显示，之后只能看到掩码 —— 这是本站的设定：
+                库里存的是哈希而不是密文，连我们都无法还原它。丢了就删掉重建一把。
+            <?php endif; ?>
         </p>
     </section>
 
@@ -345,6 +379,16 @@ $money = static function (mixed $value): string {
         </div>
     </section>
 </div>
+
+<style>
+    /* 令牌单元格：完整令牌 + 复制按钮。令牌很长（sk-aqua- + 48 位十六进制），
+       必须允许在任意位置断行，否则会把表格撑出横向滚动条 */
+    .tk-full { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .tk-full code {
+        font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+        font-size: 12.5px; word-break: break-all; line-height: 1.6;
+    }
+</style>
 
 <script>
 /* BaseURL / 示例复制：优先用 Clipboard API，非 HTTPS 或旧浏览器退回 execCommand */
