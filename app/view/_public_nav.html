@@ -1,0 +1,64 @@
+<?php
+/**
+ * 公开页顶部导航
+ *
+ * 用法：<body> 之后 include，先设 $active 表示当前页。
+ *     <?php $active = 'models'; include __DIR__ . '/_public_nav.html'; ?>
+ *
+ * 两条约束：
+ *   · **只放真实存在的链接**。不提前挂「接入文档」「服务条款」这类还没做的入口 ——
+ *     点进去是 404 比没有入口更伤信任（这也是 docs/13 的「不做死链」）。
+ *   · **绝不出现管理后台入口**。导航是全站最显眼的位置，
+ *     在上面挂后台链接等于主动公告入口（docs/06 铁律第一条）。
+ *
+ * @var string $siteName  站点名
+ * @var string $modeLabel 站点模式中文名
+ * @var bool   $isWelfare 是否公益站（决定徽标配色）
+ * @var bool   $loggedIn  当前访客是否已登录
+ * @var string $active    当前高亮的导航项
+ */
+
+$active = $active ?? '';
+$siteName = $siteName ?? '';
+$modeLabel = $modeLabel ?? '';
+$isWelfare = $isWelfare ?? false;
+$loggedIn = $loggedIn ?? false;
+// 站长可以关掉「公开模型清单」。关掉时导航里也不该留入口 ——
+// 否则点进去是 404，比没有入口更让人困惑
+$showModels = $showModels ?? true;
+
+// 导航项集中定义，新增公开页只改这一处
+$navLinks = [
+    'home'   => ['label' => '首页',     'href' => '/'],
+    'models' => ['label' => '模型广场', 'href' => '/models', 'requires_models' => true],
+    'status' => ['label' => '服务状态', 'href' => '/healthz'],
+];
+
+if (empty($showModels)) {
+    unset($navLinks['models']);
+}
+?>
+<header class="nav">
+    <div class="shell inner">
+        <a class="brand" href="/">
+            <img src="/favicon.ico" alt="" width="28" height="28">
+            <?= htmlspecialchars((string) $siteName, ENT_QUOTES, 'UTF-8') ?>
+            <?php if ($modeLabel !== ''): ?>
+                <span class="mode<?= $isWelfare ? ' welfare' : '' ?>"><?= htmlspecialchars((string) $modeLabel, ENT_QUOTES, 'UTF-8') ?></span>
+            <?php endif; ?>
+        </a>
+        <nav class="links">
+            <?php foreach ($navLinks as $key => $item): ?>
+                <a class="<?= $active === $key ? 'on' : '' ?>"
+                   href="<?= htmlspecialchars($item['href'], ENT_QUOTES, 'UTF-8') ?>">
+                    <?= htmlspecialchars($item['label'], ENT_QUOTES, 'UTF-8') ?>
+                </a>
+            <?php endforeach; ?>
+            <?php if ($loggedIn): ?>
+                <a class="cta" href="/console"><?= icon('dashboard', 15) ?>控制台</a>
+            <?php else: ?>
+                <a class="cta" href="/login"><?= icon('lock', 15) ?>登录</a>
+            <?php endif; ?>
+        </nav>
+    </div>
+</header>

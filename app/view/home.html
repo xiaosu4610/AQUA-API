@@ -17,15 +17,15 @@
  *   3. **不编造数据**。没有真实统计就不写「99.9% 可用率」这类话 ——
  *      宁可少写一块，也不要写假数字。
  *
- * @var string $csrf
+ * 页面骨架（导航/样式/页脚）与其它公开页共用，见 _public_*.html ——
+ * 这样「新增一个公开页」不会各自长一副样子。
+ *
  * @var string $siteName
  * @var string $modeLabel
  * @var bool   $isWelfare
  * @var string $description
  * @var string $announcement
- * @var string $icp
- * @var string $footer
- * @var bool   $loggedIn
+ * @var string $loggedIn
  * @var bool   $registerOpen
  * @var bool   $rechargeEnabled
  * @var array<int, string> $models     公开可见的模型名（已截断）
@@ -52,162 +52,11 @@ $apiBase = rtrim((string) $apiBase, '/');
         ENT_QUOTES,
         'UTF-8'
     ) ?>">
-    <link rel="icon" href="/favicon.ico" sizes="any">
-    <style>
-        /* 首页独立样式：复用后台的配色语言，但不引入后台的表格/表单等无关样式 */
-        :root {
-            --bg: #f5f7fa; --surface: #fff; --text: #1b2733; --muted: #6b7d8f;
-            --faint: #93a4b3; --border: #e3e8ef; --border-strong: #cdd5df;
-            --accent: #0d9dbf; --accent-dark: #0a7f9c; --accent-soft: #e6f6fa;
-            --ok: #12a150; --ok-soft: #e8f7ee;
-        }
-        * { box-sizing: border-box; }
-        html { scroll-behavior: smooth; }
-        body {
-            margin: 0; background: var(--bg); color: var(--text);
-            font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
-            line-height: 1.6; -webkit-font-smoothing: antialiased;
-        }
-        .ico { vertical-align: -3px; flex: none; }
-        .shell { max-width: 1060px; margin: 0 auto; padding: 0 22px; }
-        a { color: var(--accent-dark); }
-
-        /* ── 顶部导航 ───────────────────────────────────── */
-        .nav {
-            position: sticky; top: 0; z-index: 10;
-            background: rgba(255, 255, 255, .88);
-            backdrop-filter: saturate(180%) blur(12px);
-            border-bottom: 1px solid var(--border);
-        }
-        .nav .inner { display: flex; align-items: center; justify-content: space-between; gap: 16px; height: 62px; }
-        .brand { display: flex; align-items: center; gap: 10px; font-weight: 650; font-size: 15.5px; }
-        .brand img { width: 28px; height: 28px; border-radius: 7px; display: block; }
-        .brand .mode {
-            padding: 1px 9px; font-size: 11.5px; font-weight: 500; border-radius: 999px;
-            background: <?= $isWelfare ? '#e8f7ee' : '#e6f6fa' ?>;
-            color: <?= $isWelfare ? '#0b7c3e' : '#0a7f9c' ?>;
-            border: 1px solid <?= $isWelfare ? '#c8ecd6' : '#cceaf2' ?>;
-        }
-        .nav .links { display: flex; align-items: center; gap: 20px; font-size: 13.5px; }
-        .nav .links a { color: var(--muted); text-decoration: none; }
-        .nav .links a:hover { color: var(--text); }
-        .nav .links a.cta {
-            padding: 7px 15px; border-radius: 8px; font-weight: 600;
-            background: var(--accent); color: #fff;
-        }
-        .nav .links a.cta:hover { background: var(--accent-dark); color: #fff; }
-        @media (max-width: 640px) { .nav .links a:not(.cta) { display: none; } }
-
-        /* ── Hero ───────────────────────────────────────── */
-        .hero { padding: 74px 0 54px; }
-        .hero h1 {
-            margin: 0 0 16px; font-size: clamp(28px, 4.6vw, 43px); font-weight: 700;
-            letter-spacing: -.8px; line-height: 1.22;
-        }
-        .hero h1 em { font-style: normal; color: var(--accent-dark); }
-        .hero .lead {
-            margin: 0 0 30px; max-width: 640px;
-            font-size: 16px; color: var(--muted); white-space: pre-line;
-        }
-        .actions { display: flex; flex-wrap: wrap; gap: 11px; margin-bottom: 40px; }
-        .btn {
-            display: inline-flex; align-items: center; gap: 8px;
-            padding: 12px 22px; border-radius: 9px; text-decoration: none;
-            font-size: 14.5px; font-weight: 600;
-            background: var(--accent); color: #fff; border: 1px solid var(--accent);
-        }
-        .btn:hover { background: var(--accent-dark); border-color: var(--accent-dark); color: #fff; }
-        .btn.ghost { background: var(--surface); color: var(--muted); border-color: var(--border-strong); }
-        .btn.ghost:hover { color: var(--text); border-color: var(--accent); background: var(--accent-soft); }
-
-        .facts { display: flex; flex-wrap: wrap; gap: 34px; }
-        .fact .n { font-size: 22px; font-weight: 700; letter-spacing: -.3px; }
-        .fact .l { font-size: 12.5px; color: var(--faint); }
-
-        /* ── 通用区块 ───────────────────────────────────── */
-        section.block { padding: 52px 0; border-top: 1px solid var(--border); }
-        h2.title {
-            margin: 0 0 8px; font-size: 21px; font-weight: 680; letter-spacing: -.3px;
-            display: flex; align-items: center; gap: 9px;
-        }
-        h2.title .ico { color: var(--accent); }
-        p.sub { margin: 0 0 28px; font-size: 14px; color: var(--muted); }
-
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(258px, 1fr)); gap: 16px; }
-        .card {
-            padding: 22px 20px; background: var(--surface);
-            border: 1px solid var(--border); border-radius: 13px;
-        }
-        .card .ic {
-            width: 36px; height: 36px; margin-bottom: 13px;
-            display: flex; align-items: center; justify-content: center;
-            background: var(--accent-soft); color: var(--accent-dark); border-radius: 10px;
-        }
-        .card h3 { margin: 0 0 6px; font-size: 15px; font-weight: 650; }
-        .card p { margin: 0; font-size: 13.5px; color: var(--muted); }
-
-        /* ── 模型标签 ───────────────────────────────────── */
-        .tags { display: flex; flex-wrap: wrap; gap: 8px; }
-        .tag {
-            padding: 5px 12px; font-size: 12.5px; border-radius: 999px;
-            font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-            background: var(--surface); border: 1px solid var(--border); color: var(--muted);
-        }
-        .tag.more { background: var(--accent-soft); border-color: #cceaf2; color: var(--accent-dark); font-weight: 600; }
-
-        /* ── 代码块 ─────────────────────────────────────── */
-        pre {
-            margin: 0; padding: 18px 20px; overflow-x: auto;
-            background: #fbfdff; border: 1px solid var(--border); border-radius: 12px;
-            font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-            font-size: 12.5px; line-height: 1.85; color: #2b3a48;
-        }
-        pre .c { color: #8b9aa8; }
-        pre .k { color: var(--accent-dark); }
-
-        /* ── 公告 ───────────────────────────────────────── */
-        .notice {
-            display: flex; gap: 10px; align-items: flex-start;
-            margin: 26px 0 -14px; padding: 13px 16px;
-            background: #fdf4e3; border: 1px solid #f0dcb4; border-radius: 11px;
-            font-size: 13.5px; color: #a05f04; white-space: pre-line;
-        }
-        .notice .ico { margin-top: 2px; }
-
-        /* ── 页脚 ───────────────────────────────────────── */
-        footer {
-            padding: 34px 0 44px; border-top: 1px solid var(--border);
-            font-size: 12.5px; color: var(--faint);
-            display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center;
-        }
-        footer a { color: var(--muted); }
-        .dot {
-            width: 7px; height: 7px; border-radius: 50%; display: inline-block;
-            background: var(--ok); margin-right: 6px;
-        }
-    </style>
+    <?php include __DIR__ . '/_public_style.html'; ?>
 </head>
 <body>
 
-<header class="nav">
-    <div class="shell inner">
-        <div class="brand">
-            <img src="/favicon.ico" alt="" width="28" height="28">
-            <?= htmlspecialchars((string) $siteName, ENT_QUOTES, 'UTF-8') ?>
-            <span class="mode"><?= htmlspecialchars((string) $modeLabel, ENT_QUOTES, 'UTF-8') ?></span>
-        </div>
-        <nav class="links">
-            <?php if (!empty($showModels)): ?><a href="#models">可用模型</a><?php endif; ?>
-            <a href="#start">快速开始</a>
-            <a href="/healthz">服务状态</a>
-            <?php if (!empty($loggedIn)): ?>
-                <a class="cta" href="/console"><?= icon('dashboard', 15) ?>控制台</a>
-            <?php else: ?>
-                <a class="cta" href="/login"><?= icon('lock', 15) ?>登录</a>
-            <?php endif; ?>
-        </nav>
-    </div>
-</header>
+<?php $active = 'home'; include __DIR__ . '/_public_nav.html'; ?>
 
 <main class="shell">
 
@@ -231,8 +80,11 @@ $apiBase = rtrim((string) $apiBase, '/');
         <?php endif; ?>
 
         <div class="actions">
+            <?php if (!empty($showModels) && $modelTotal > 0): ?>
+                <a class="btn" href="/models"><?= icon('channels', 16) ?>查看有哪些模型</a>
+            <?php endif; ?>
             <?php if (!empty($loggedIn)): ?>
-                <a class="btn" href="/console"><?= icon('dashboard', 16) ?>进入控制台</a>
+                <a class="btn ghost" href="/console"><?= icon('dashboard', 16) ?>进入控制台</a>
             <?php elseif (!empty($registerOpen)): ?>
                 <a class="btn" href="/register"><?= icon('user', 16) ?>注册账号</a>
                 <a class="btn ghost" href="/login"><?= icon('lock', 16) ?>已有账号，登录</a>
@@ -272,38 +124,38 @@ $apiBase = rtrim((string) $apiBase, '/');
         <h2 class="title"><?= icon('shield', 19) ?>这个网关做了什么</h2>
         <p class="sub">把「对接多家上游」这件事从你的应用里挪出来，统一在一层解决。</p>
 
-        <div class="grid">
-            <div class="card">
+        <div class="fgrid">
+            <div class="fcard">
                 <div class="ic"><?= icon('bolt', 19) ?></div>
                 <h3>接口兼容，改一行就能用</h3>
                 <p>遵循 OpenAI 的 <code>/v1/chat/completions</code> 与 <code>/v1/models</code>，
                     现有的 SDK、客户端、脚本只需换掉 base_url 与 Key。</p>
             </div>
-            <div class="card">
+            <div class="fcard">
                 <div class="ic"><?= icon('pulse', 19) ?></div>
                 <h3>原生流式，不缓冲</h3>
                 <p>基于事件循环的转发引擎，逐块透传上游数据。上游返回 401 / 429 / 5xx 时
                     你收到的是真实状态码，而不是伪装成 200 的错误流。</p>
             </div>
-            <div class="card">
+            <div class="fcard">
                 <div class="ic"><?= icon('keys-pool', 19) ?></div>
                 <h3>多上游与密钥池</h3>
                 <p>一个模型可挂多家上游，按优先级与权重分流；单个上游可挂上百把密钥轮换，
                     单把限流、失败自动冷却、失效自动停用。</p>
             </div>
-            <div class="card">
+            <div class="fcard">
                 <div class="ic"><?= icon('refresh', 19) ?></div>
                 <h3>故障自动切换</h3>
                 <p>上游超时、限流、报错时自动换一条线路重试；某条线路连续失败会被短期熔断，
                     不会让每个请求都去撞一次墙。</p>
             </div>
-            <div class="card">
+            <div class="fcard">
                 <div class="ic"><?= icon('coin', 19) ?></div>
                 <h3>用量与计费</h3>
                 <p>按 Token / 按次 / 订阅 / 免费四种口径计费，上游成本与下游售价分开记录，
                     每一笔调用都能回溯到具体模型与线路。</p>
             </div>
-            <div class="card">
+            <div class="fcard">
                 <div class="ic"><?= icon('chart', 19) ?></div>
                 <h3>可观测</h3>
                 <p>每次请求的 token、耗时、状态、成败都有记录；控制台可看余额与调用明细，
@@ -314,20 +166,26 @@ $apiBase = rtrim((string) $apiBase, '/');
 
     <?php if (!empty($showModels) && $models !== []): ?>
         <section class="block" id="models">
-            <h2 class="title"><?= icon('channels', 19) ?>可用模型</h2>
-            <p class="sub">
-                当前网关可转发的模型共 <b><?= (int) $modelTotal ?></b> 个
-                <?php if ($modelTotal > count($models)): ?>
-                    ，以下展示前 <?= count($models) ?> 个
-                <?php endif; ?>
-                。实际可用范围以你的账号权限为准。
-            </p>
-            <div class="tags">
+            <div class="between">
+                <div>
+                    <h2 class="title"><?= icon('channels', 19) ?>可用模型</h2>
+                    <p class="sub" style="margin-bottom:0">
+                        当前网关可转发的模型共 <b><?= (int) $modelTotal ?></b> 个
+                        <?php if ($modelTotal > count($models)): ?>
+                            ，以下展示前 <?= count($models) ?> 个
+                        <?php endif; ?>
+                        。实际可用范围以你的账号权限为准。
+                    </p>
+                </div>
+                <a class="ghost" href="/models">全部模型与价格<?= icon('external', 14) ?></a>
+            </div>
+
+            <div class="chips" style="margin-top:22px">
                 <?php foreach ($models as $model): ?>
-                    <span class="tag"><?= htmlspecialchars((string) $model, ENT_QUOTES, 'UTF-8') ?></span>
+                    <span class="chip"><?= htmlspecialchars((string) $model, ENT_QUOTES, 'UTF-8') ?></span>
                 <?php endforeach; ?>
                 <?php if ($modelTotal > count($models)): ?>
-                    <span class="tag more">还有 <?= (int) ($modelTotal - count($models)) ?> 个…</span>
+                    <span class="chip more">还有 <?= (int) ($modelTotal - count($models)) ?> 个…</span>
                 <?php endif; ?>
             </div>
         </section>
@@ -368,23 +226,7 @@ curl <?= htmlspecialchars($apiBase, ENT_QUOTES, 'UTF-8') ?>/v1/chat/completions 
 
 </main>
 
-<footer class="shell">
-    <span><span class="dot"></span>服务运行中</span>
-    <?php if (!empty($rechargeEnabled)): ?>
-        <span>支持在线充值</span>
-    <?php endif; ?>
-    <span>
-        <?php if (trim((string) $footer) !== ''): ?>
-            <?= htmlspecialchars((string) $footer, ENT_QUOTES, 'UTF-8') ?>
-        <?php else: ?>
-            由开源项目 <a href="https://gitee.com/xiaosu4610/aqua-api-php" target="_blank" rel="noopener">aqua-api-php</a> 驱动 · MIT 许可
-        <?php endif; ?>
-    </span>
-    <?php if (trim((string) $icp) !== ''): ?>
-        <span><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener"><?= htmlspecialchars((string) $icp, ENT_QUOTES, 'UTF-8') ?></a></span>
-    <?php endif; ?>
-    <span style="margin-left:auto"><a href="/healthz">状态</a></span>
-</footer>
+<?php include __DIR__ . '/_public_foot.html'; ?>
 
 </body>
 </html>

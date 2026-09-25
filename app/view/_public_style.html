@@ -1,0 +1,156 @@
+<?php
+/**
+ * 公开页共用样式（首页、模型广场、接入文档、服务条款……）
+ *
+ * 为什么不自己再写一份：
+ *   公开页也要用表格、筛选栏、分页、三态（加载/空/错误）、徽标 ——
+ *   这些后台那套 _style.html 里已经有了。再抄一份的后果是
+ *   「改表格样式要改两个文件」，然后两边慢慢长歪 ——
+ *   这正是三家中转站最常见的问题（同一个东西有多处事实源）。
+ *
+ * 于是这里的做法是：**先引入后台那份设计系统，再用一个 <style> 覆盖公开页特有的部分**。
+ * 覆盖的只有「整页布局」这一层（导航、Hero、页脚、通栏），
+ * 组件层（表格/表单/分页/三态/按钮）一个字都不改。
+ *
+ * 覆盖能生效的原因：同权重选择器后定义者胜，而这段 <style> 在引入之后。
+ */
+
+include __DIR__ . '/admin/_style.html';
+?>
+<style>
+    /* ── 整页布局：公开页通栏，不能有后台那圈内边距 ─────────── */
+    body { padding: 0; }
+    html { scroll-behavior: smooth; }
+    .shell { max-width: 1060px; margin: 0 auto; padding: 0 22px; }
+    main.shell { padding-top: var(--sp-6); padding-bottom: var(--sp-6); }
+    a { color: var(--accent-dark); }
+
+    /* 公开页的区块是「通栏段落 + 分隔线」，不是后台那种「一张张悬浮卡片」。
+       后台用卡片是对的 —— 那里每个区块是一个独立的操作区；
+       公开页要连续阅读，一张张卡片会把阅读节奏切碎。
+       这条必须写在 .hero / .block 之前，让后面更具体的选择器把间距改回来 */
+    section {
+        background: transparent; border: 0; border-radius: 0;
+        box-shadow: none; margin: 0; padding: 46px 0;
+    }
+
+    /* 公开页的补充色：比后台多一个更浅的灰，用于页脚等次要信息 */
+    :root { --faint: #93a4b3; }
+
+    /* ── 顶部导航 ──────────────────────────────────────────── */
+    .nav {
+        position: sticky; top: 0; z-index: 20;
+        background: rgba(255, 255, 255, .9);
+        backdrop-filter: saturate(180%) blur(12px);
+        border-bottom: 1px solid var(--border);
+    }
+    .nav .inner { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-4); min-height: 62px; }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 650; font-size: 15.5px; text-decoration: none; color: var(--text); }
+    .brand img { width: 28px; height: 28px; border-radius: 7px; display: block; }
+    .brand .mode {
+        padding: 1px 9px; font-size: 11.5px; font-weight: 500; border-radius: 999px;
+        background: var(--accent-soft); color: var(--accent-dark); border: 1px solid #cceaf2;
+    }
+    /* 公益站用绿色，与商业站区分开 —— 用类名而不是内联样式，
+       否则「换主题要改模板」 */
+    .brand .mode.welfare { background: var(--ok-soft); color: #0b7c3e; border-color: #c8ecd6; }
+
+    .nav .links { display: flex; align-items: center; gap: var(--sp-4); font-size: 13.5px; }
+    .nav .links a { color: var(--muted); text-decoration: none; }
+    .nav .links a:hover { color: var(--text); }
+    .nav .links a.on { color: var(--accent-dark); font-weight: 600; }
+    .nav .links a.cta {
+        padding: 7px 15px; border-radius: 8px; font-weight: 600;
+        background: var(--accent); color: #fff; display: inline-flex; align-items: center; gap: 6px;
+    }
+    .nav .links a.cta:hover { background: var(--accent-dark); color: #fff; }
+    /* 窄屏不要靠「隐藏导航项」来解决 —— 那会让用户在手机上找不到模型广场。
+       换成折行，导航项一个都不少 */
+    @media (max-width: 700px) {
+        .nav .inner { flex-wrap: wrap; padding: 10px 0; }
+        .nav .links { gap: var(--sp-3); flex-wrap: wrap; }
+    }
+
+    /* ── 按钮：公开页的主行动按钮比后台的大一号 ──────────────
+       后台是「密集操作」，按钮小一点能放下更多；
+       公开页是「引导点击」，按钮要显眼。所以这里单独定义 .btn，
+       而不去改后台的 .primary —— 改了会影响所有后台页面 */
+    .btn {
+        display: inline-flex; align-items: center; gap: 8px;
+        padding: 12px 22px; border-radius: 9px; text-decoration: none;
+        font-size: 14.5px; font-weight: 600;
+        background: var(--accent); color: #fff; border: 1px solid var(--accent);
+    }
+    .btn:hover { background: var(--accent-dark); border-color: var(--accent-dark); color: #fff; }
+    .btn.ghost { background: var(--surface); color: var(--muted); border-color: var(--border-strong); }
+    .btn.ghost:hover { color: var(--text); border-color: var(--accent); background: var(--accent-soft); }
+
+    /* ── Hero（只有首页用）──────────────────────────────────── */
+    .hero { padding: 58px 0 46px; }
+    .hero h1 {
+        margin: 0 0 16px; font-size: clamp(27px, 4.4vw, 42px); font-weight: 700;
+        letter-spacing: -.8px; line-height: 1.22; display: block;
+    }
+    .hero h1 em { font-style: normal; color: var(--accent-dark); }
+    .hero .lead { margin: 0 0 28px; max-width: 640px; font-size: 16px; color: var(--muted); white-space: pre-line; }
+    .actions { display: flex; flex-wrap: wrap; gap: 11px; margin-bottom: var(--sp-6); }
+    .facts { display: flex; flex-wrap: wrap; gap: 34px; }
+    .fact .n { font-size: 22px; font-weight: 700; letter-spacing: -.3px; }
+    .fact .l { font-size: 12.5px; color: var(--faint); }
+
+    /* ── 区块 ──────────────────────────────────────────────── */
+    section.block { padding: 46px 0; border-top: 1px solid var(--border); }
+    h2.title {
+        margin: 0 0 8px; font-size: 21px; font-weight: 680; letter-spacing: -.3px;
+        display: flex; align-items: center; gap: 9px;
+    }
+    h2.title .ico { color: var(--accent); }
+    p.sub { margin: 0 0 26px; font-size: 14px; color: var(--muted); }
+
+    /* 特性卡：名字避开后台的 .card（那是「面板」的意思），
+       否则两个同名的类会随加载顺序打架 */
+    .fgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(258px, 1fr)); gap: 16px; }
+    .fcard { padding: 22px 20px; background: var(--surface); border: 1px solid var(--border); border-radius: 13px; }
+    .fcard .ic {
+        width: 36px; height: 36px; margin-bottom: 13px;
+        display: flex; align-items: center; justify-content: center;
+        background: var(--accent-soft); color: var(--accent-dark); border-radius: 10px;
+    }
+    .fcard h3 { margin: 0 0 6px; font-size: 15px; font-weight: 650; }
+    .fcard p { margin: 0; font-size: 13.5px; color: var(--muted); }
+
+    /* 模型名小标签：同样避开后台的 .tag（那是「筛选标签」） */
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+    .chip {
+        padding: 5px 12px; font-size: 12.5px; border-radius: 999px;
+        font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+        background: var(--surface); border: 1px solid var(--border); color: var(--muted);
+    }
+    .chip.more { background: var(--accent-soft); border-color: #cceaf2; color: var(--accent-dark); font-weight: 600; }
+
+    pre {
+        margin: 0; padding: 18px 20px; overflow-x: auto;
+        background: #fbfdff; border: 1px solid var(--border); border-radius: 12px;
+        font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+        font-size: 12.5px; line-height: 1.85; color: #2b3a48;
+    }
+    pre .c { color: #8b9aa8; }
+    pre .k { color: var(--accent-dark); }
+
+    .notice {
+        display: flex; gap: 10px; align-items: flex-start;
+        margin: 26px 0 -14px; padding: 13px 16px;
+        background: var(--warn-soft); border: 1px solid #f0dcb4; border-radius: 11px;
+        font-size: 13.5px; color: #a05f04; white-space: pre-line;
+    }
+    .notice .ico { margin-top: 2px; }
+
+    /* ── 页脚 ──────────────────────────────────────────────── */
+    footer.site {
+        padding: 34px 0 44px; border-top: 1px solid var(--border);
+        font-size: 12.5px; color: var(--faint);
+        display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center;
+    }
+    footer.site a { color: var(--muted); }
+    .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; background: var(--ok); margin-right: 6px; }
+</style>
