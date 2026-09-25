@@ -84,32 +84,42 @@ final class UsageLog
     }
 
     /**
-     * 后台列表用：按时间倒序分页。
+     * 后台明细列表：指定时间窗内按时间倒序分页。
+     *
+     * 必须带时间窗，而不是「全表倒序分页」：报表页上选了「今天」，
+     * 明细却混进昨天的记录，站长一眼就会认为数字算错了 ——
+     * 报表和明细必须是同一个口径。
      *
      * @return array<int, array<string, mixed>>
      */
-    public static function page(int $limit, int $offset, string $model = ''): array
+    public static function listInRange(int $fromTs, int $toTs, string $model = '', int $limit = 50, int $offset = 0): array
     {
         $limit = max(1, min(200, $limit));
+        $offset = max(0, $offset);
 
-        if ($model === '') {
-            return Db::select(
-                'SELECT * FROM usage_logs ORDER BY id DESC LIMIT ' . $limit . ' OFFSET ' . $offset
-            );
+        $sql = 'SELECT * FROM usage_logs WHERE created_at >= ? AND created_at < ?';
+        $bindings = [$fromTs, $toTs];
+
+        if ($model !== '') {
+            $sql .= ' AND model LIKE ?';
+            $bindings[] = '%' . $model . '%';
         }
 
-        return Db::select(
-            'SELECT * FROM usage_logs WHERE model LIKE ? ORDER BY id DESC LIMIT ' . $limit . ' OFFSET ' . $offset,
-            ['%' . $model . '%']
-        );
+        return Db::select($sql . ' ORDER BY id DESC LIMIT ' . $limit . ' OFFSET ' . $offset, $bindings);
     }
 
-    /** 分页总数 */
-    public static function count(string $model = ''): int
+    /** 指定时间窗内的记录条数（分页用） */
+    public static function countInRange(int $fromTs, int $toTs, string $model = ''): int
     {
-        $row = $model === ''
-            ? Db::selectOne('SELECT COUNT(*) AS c FROM usage_logs')
-            : Db::selectOne('SELECT COUNT(*) AS c FROM usage_logs WHERE model LIKE ?', ['%' . $model . '%']);
+        $sql = 'SELECT COUNT(*) AS c FROM usage_logs WHERE created_at >= ? AND created_at < ?';
+        $bindings = [$fromTs, $toTs];
+
+        if ($model !== '') {
+            $sql .= ' AND model LIKE ?';
+            $bindings[] = '%' . $model . '%';
+        }
+
+        $row = Db::selectOne($sql, $bindings);
 
         return (int) ($row['c'] ?? 0);
     }
@@ -243,6 +253,243 @@ final class UsageLog
             'errors' => (int) $row['errors'],
             'estimated' => (int) $row['estimated'],
         ];
+    }
+
+    /**
+     * 一段区间（左闭右开）的汇总，比 summary() 多两项：
+     * 平均耗时与流式请求数 —— 报表里最常被问的就是「慢不慢」。
+     *
+     * 之所以要「区间」而不只是「起点之后」：按天拆报表时，
+     * 每一天都要用自己的边界去查，不能拿「起点之后」糊过去。
+     *
+     * @return array{requests:int, prompt_tokens:int, completion_tokens:int,
+     *               upstream_cost:float, downstream_cost:float, profit:float,
+     *               errors:int, estimated:int, streams:int, avg_latency_ms:int}
+     */
+    public static function statsRange(int $fromTs, int $toTs, string $model = ''): array
+    {
+        $empty = [
+            'requests' => 0, 'prompt_tokens' => 0, 'completion_tokens' => 0,
+            'upstream_cost' => 0.0, 'downstream_cost' => 0.0, 'profit' => 0.0,
+            'errors' => 0, 'estimated' => 0, 'streams' => 0, 'avg_latency_ms' => 0,
+        ];
+
+        $sql = 'SELECT
+                    COUNT(*) AS requests,
+                    SUM(prompt_tokens) AS prompt_tokens,
+                    SUM(completion_tokens) AS completion_tokens,
+                    SUM(upstream_cost) AS upstream_cost,
+                    SUM(downstream_cost) AS downstream_cost,
+                    SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS errors,
+                    SUM(usage_estimated) AS estimated,
+                    SUM(is_stream) AS streams,
+                    AVG(latency_ms) AS avg_latency
+                FROM usage_logs
+                WHERE created_at >= ? AND created_at < ?';
+
+        $bindings = [self::STATUS_ERROR, $fromTs, $toTs];
+        if ($model !== '') {
+            $sql .= ' AND model LIKE ?';
+            $bindings[] = '%' . $model . '%';
+        }
+
+        try {
+            $row = Db::selectOne($sql, $bindings);
+        } catch (Throwable) {
+            return $empty;
+        }
+
+        if ($row === null || $row['requests'] === null) {
+            return $empty;
+        }
+
+        $upstream = (float) $row['upstream_cost'];
+        $downstream = (float) $row['downstream_cost'];
+
+        return [
+            'requests' => (int) $row['requests'],
+            'prompt_tokens' => (int) $row['prompt_tokens'],
+            'completion_tokens' => (int) $row['completion_tokens'],
+            'upstream_cost' => $upstream,
+            'downstream_cost' => $downstream,
+            'profit' => $downstream - $upstream,
+            'errors' => (int) $row['errors'],
+            'estimated' => (int) $row['estimated'],
+            'streams' => (int) $row['streams'],
+            'avg_latency_ms' => (int) round((float) ($row['avg_latency'] ?? 0)),
+        ];
+    }
+
+    /**
+     * 按天拆分的报表数据（含今天，倒序返回最近 $days 天）。
+     *
+     * ⚠️ 刻意在 PHP 里算好每天的边界，再逐天查，而不是用数据库的
+     * `strftime` / `DATE(FROM_UNIXTIME())` 分组：
+     * 两家数据库的日期函数不通用，而且它们各自按**数据库会话的时区**解释，
+     * 页面上用 PHP 的 date() 显示时间 —— 两边时区不一致时，
+     * 「凌晨那几小时的请求」会被算到前一天，报表与明细对不上。
+     * 一天的边界由 PHP 决定，两家数据库都只能按时间戳区间去查，不会错。
+     *
+     * 代价是每天一次查询（30 天 = 30 次）。走 created_at 索引，代价可忽略。
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public static function dailySeries(int $days, string $model = ''): array
+    {
+        $days = max(1, min(90, $days));
+        $today = strtotime('today') ?: time();
+        $series = [];
+
+        for ($i = $days - 1; $i >= 0; $i--) {
+            $from = $today - $i * 86400;
+            $to = $from + 86400;
+            $row = self::statsRange($from, $to, $model);
+            $row['date'] = date('Y-m-d', $from);
+            $row['label'] = date('m-d', $from);
+            $row['weekday'] = ['日', '一', '二', '三', '四', '五', '六'][(int) date('w', $from)];
+            $series[] = $row;
+        }
+
+        return $series;
+    }
+
+    /**
+     * 按模型聚合（报表用）。
+     *
+     * 报表页上的每个数字都吃同一个筛选条件（含模型名过滤）：
+     * 页面上有一块没跟着筛，就会出现「总数与明细对不上」——
+     * 那是报表最不能有的毛病。
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public static function byModel(int $fromTs, int $toTs, int $limit = 30, string $model = ''): array
+    {
+        $bindings = [self::STATUS_ERROR, $fromTs, $toTs];
+        $filter = '';
+        if ($model !== '') {
+            $filter = ' AND model LIKE ?';
+            $bindings[] = '%' . $model . '%';
+        }
+
+        $rows = Db::select(
+            'SELECT model,
+                    COUNT(*) AS requests,
+                    SUM(prompt_tokens) AS prompt_tokens,
+                    SUM(completion_tokens) AS completion_tokens,
+                    SUM(total_tokens) AS total_tokens,
+                    SUM(upstream_cost) AS upstream_cost,
+                    SUM(downstream_cost) AS downstream_cost,
+                    SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS errors,
+                    SUM(usage_estimated) AS estimated,
+                    AVG(latency_ms) AS avg_latency
+             FROM usage_logs
+             WHERE created_at >= ? AND created_at < ?' . $filter . '
+             GROUP BY model
+             ORDER BY requests DESC LIMIT ' . max(1, min(200, $limit)),
+            $bindings
+        );
+
+        return array_map(static function (array $row): array {
+            $upstream = (float) $row['upstream_cost'];
+            $downstream = (float) $row['downstream_cost'];
+            $requests = (int) $row['requests'];
+
+            return [
+                'model' => (string) $row['model'],
+                'requests' => $requests,
+                'prompt_tokens' => (int) $row['prompt_tokens'],
+                'completion_tokens' => (int) $row['completion_tokens'],
+                'total_tokens' => (int) $row['total_tokens'],
+                'upstream_cost' => $upstream,
+                'downstream_cost' => $downstream,
+                'profit' => $downstream - $upstream,
+                'errors' => (int) $row['errors'],
+                'estimated' => (int) $row['estimated'],
+                'success_rate' => $requests > 0 ? (int) round(($requests - (int) $row['errors']) * 100 / $requests) : 100,
+                'avg_latency_ms' => (int) round((float) ($row['avg_latency'] ?? 0)),
+            ];
+        }, $rows);
+    }
+
+    /**
+     * 失败请求的原因排行（报表用）。
+     *
+     * 为什么按 error_message 分组而不是按状态码：上游把状态码藏在
+     * 各种包装里，真正能指向问题的是那句原文（例如 「monthly quota exceeded」）。
+     *
+     * @return array<int, array{message:string, count:int}>
+     */
+    public static function topErrors(int $fromTs, int $toTs, int $limit = 10, string $model = ''): array
+    {
+        $bindings = [self::STATUS_ERROR, $fromTs, $toTs];
+        $filter = '';
+        if ($model !== '') {
+            $filter = ' AND model LIKE ?';
+            $bindings[] = '%' . $model . '%';
+        }
+
+        $rows = Db::select(
+            'SELECT error_message AS message, COUNT(*) AS c
+             FROM usage_logs
+             WHERE status = ? AND created_at >= ? AND created_at < ? AND error_message IS NOT NULL
+                   AND error_message <> \'\'' . $filter . '
+             GROUP BY error_message ORDER BY c DESC LIMIT ' . max(1, min(50, $limit)),
+            $bindings
+        );
+
+        return array_map(
+            static fn (array $row): array => ['message' => (string) $row['message'], 'count' => (int) $row['c']],
+            $rows
+        );
+    }
+
+    /**
+     * 下游用户用量排行（报表用）。
+     *
+     * 已注销的用户在 usage_logs 里的归属是 NULL，会并入「（已注销）」一行 ——
+     * 账要对得上，就不能让这部分金额凭空消失。
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public static function topUsers(int $fromTs, int $toTs, int $limit = 20, string $model = ''): array
+    {
+        $bindings = [self::STATUS_ERROR, $fromTs, $toTs];
+        $filter = '';
+        if ($model !== '') {
+            $filter = ' AND model LIKE ?';
+            $bindings[] = '%' . $model . '%';
+        }
+
+        $rows = Db::select(
+            'SELECT user_id, COUNT(*) AS requests, SUM(total_tokens) AS total_tokens,
+                    SUM(upstream_cost) AS upstream_cost, SUM(downstream_cost) AS downstream_cost,
+                    SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS errors
+             FROM usage_logs
+             WHERE created_at >= ? AND created_at < ?' . $filter . '
+             GROUP BY user_id ORDER BY requests DESC LIMIT ' . max(1, min(100, $limit)),
+            $bindings
+        );
+
+        $result = [];
+        foreach ($rows as $row) {
+            $userId = (int) ($row['user_id'] ?? 0);
+            $user = $userId > 0 ? User::find($userId) : null;
+
+            $result[] = [
+                'userId' => $userId,
+                'email' => $user === null
+                    ? ($userId > 0 ? "（已不存在的编号 {$userId}）" : '（已注销的用户）')
+                    : (string) $user['email'],
+                'requests' => (int) $row['requests'],
+                'total_tokens' => (int) $row['total_tokens'],
+                'upstream_cost' => (float) $row['upstream_cost'],
+                'downstream_cost' => (float) $row['downstream_cost'],
+                'profit' => (float) $row['downstream_cost'] - (float) $row['upstream_cost'],
+                'errors' => (int) $row['errors'],
+            ];
+        }
+
+        return $result;
     }
 
     /**

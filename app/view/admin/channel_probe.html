@@ -35,9 +35,7 @@ $statusLabel = $statusLabels[$status] ?? $status;
     <?php include __DIR__ . '/_style.html'; ?>
     <style>
         .probe-current { min-height: 24px; overflow-wrap: anywhere; }
-        .probe-list { margin: 0; padding: 0; list-style: none; }
-        .probe-list li { padding: 8px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
-        .probe-list li:last-child { border-bottom: 0; }
+        /* .probe-list 的定义已移到 admin/_style.html（多个页面共用） */
         .probe-group { min-width: 0; }
         @media (max-width: 560px) { body { padding-left: 12px; padding-right: 12px; } section { padding: 16px; } }
     </style>

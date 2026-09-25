@@ -1,0 +1,430 @@
+<?php
+/**
+ * 后台 · 用量与报表
+ *
+ * 一页回答四个问题：这几天涨还是跌、哪个模型赚哪个赔、谁在用量、失败都是什么原因。
+ * 四块内容共用同一个时间窗与同一个模型过滤条件（见 AdminUsageController 的说明）——
+ * 所以任何一块的数字都能和明细对上。
+ *
+ * @var string $csrf
+ * @var string $siteName
+ * @var string $siteMode
+ * @var string $range
+ * @var string $rangeLabel
+ * @var array<string, array{label:string, days:int}> $ranges
+ * @var int    $days
+ * @var int    $fromTs
+ * @var int    $toTs
+ * @var string $fromText
+ * @var string $toText
+ * @var string $model
+ * @var array<string, mixed> $summary
+ * @var array<int, array<string, mixed>> $series
+ * @var int    $peak
+ * @var array<int, array<string, mixed>> $byModel
+ * @var array<int, array<string, mixed>> $byUser
+ * @var array<int, array{message:string, count:int}> $topErrors
+ * @var array<int, array<string, mixed>> $rows
+ * @var int    $page
+ * @var int    $pages
+ * @var int    $total
+ * @var string $currency
+ * @var int    $logRetentionDays
+ */
+$money = static function (mixed $value): string {
+    $float = (float) $value;
+    if ($float === 0.0) {
+        return '0';
+    }
+
+    return rtrim(rtrim(number_format($float, 6, '.', ''), '0'), '.');
+};
+
+/** 大数字用「万 / 亿」压缩，报表里一行放得下才有意义 */
+$compact = static function (int $value): string {
+    if ($value >= 100000000) {
+        return rtrim(rtrim(number_format($value / 100000000, 2, '.', ''), '0'), '.') . ' 亿';
+    }
+    if ($value >= 10000) {
+        return rtrim(rtrim(number_format($value / 10000, 2, '.', ''), '0'), '.') . ' 万';
+    }
+
+    return number_format($value);
+};
+
+$successRate = (int) $summary['requests'] > 0
+    ? (int) round(((int) $summary['requests'] - (int) $summary['errors']) * 100 / (int) $summary['requests'])
+    : 100;
+$peakRequests = max(1, (int) $peak);
+
+/** 保留 query 的链接构造：换档、翻页、过滤都不该丢掉别的条件 */
+$link = static function (array $override) use ($range, $model, $page): string {
+    $params = array_merge([
+        'range' => $range,
+        'model' => $model,
+        'page' => $page,
+    ], $override);
+
+    $params = array_filter($params, static fn (mixed $v): bool => $v !== '' && $v !== null && $v !== 1);
+
+    return '/admin/usage' . ($params === [] ? '' : '?' . http_build_query($params));
+};
+?>
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title><?= htmlspecialchars((string) $siteName, ENT_QUOTES, 'UTF-8') ?> · 用量与报表</title>
+    <?php include __DIR__ . '/_style.html'; ?>
+    <style>
+        /* ── 趋势柱状图 ────────────────────────────────────
+           刻意不用图表库：这一个图只需要「高矮对比」，
+           引一个几百 KB 的库来画它，代价远大于收益 */
+        .spark { display: flex; align-items: flex-end; gap: 3px; height: 132px; padding: 0 2px; }
+        .spark .bar { flex: 1 1 0; min-width: 4px; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; }
+        .spark .bar i {
+            display: block; border-radius: 4px 4px 0 0; min-height: 2px;
+            background: linear-gradient(180deg, #37b6d6, #0d9dbf);
+            transform-origin: bottom; animation: bar-grow .5s ease-out both;
+        }
+        .spark .bar.err i { background: linear-gradient(180deg, #f0858a, #e5484d); }
+        .spark .bar:hover i { filter: brightness(1.08); }
+        .spark-axis { display: flex; gap: 3px; margin-top: 6px; font-size: 10.5px; color: var(--muted); }
+        .spark-axis span { flex: 1 1 0; min-width: 4px; text-align: center; overflow: hidden; }
+        .spark-axis span.hide { visibility: hidden; }
+        @keyframes bar-grow { from { transform: scaleY(.02); opacity: .35; } to { transform: scaleY(1); opacity: 1; } }
+        @media (prefers-reduced-motion: reduce) { .spark .bar i { animation: none; } }
+
+        .range-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+        .range-tabs a {
+            padding: 6px 13px; border: 1px solid var(--border); border-radius: 999px;
+            font-size: 13px; color: var(--muted); text-decoration: none; background: #fff;
+            transition: background .15s, color .15s, border-color .15s;
+        }
+        .range-tabs a:hover { border-color: var(--border-strong); color: var(--text); }
+        .range-tabs a.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-dark); font-weight: 600; }
+
+        .filter-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 14px; }
+        .filter-row input[type=text] { max-width: 280px; }
+
+        /* 明细里的耗时/状态，色块比数字更快被眼睛扫到 */
+        .rate { font-variant-numeric: tabular-nums; }
+        .bar-mini { display: inline-block; height: 6px; border-radius: 3px; background: var(--accent); vertical-align: middle; }
+        .bar-mini.warn { background: var(--warn); }
+        .bar-mini.danger { background: var(--danger); }
+        .err-msg { max-width: 380px; overflow-wrap: anywhere; }
+    </style>
+</head>
+<body>
+<div class="wrap">
+    <?php $active = 'usage'; include __DIR__ . '/_header.html'; ?>
+
+    <div class="page-head">
+        <div class="ph-main">
+            <div class="crumb">后台<span class="sep">/</span>用量与报表</div>
+            <h1><?= icon('chart', 19) ?>用量与报表</h1>
+            <p class="ph-desc">
+                <?= htmlspecialchars((string) $rangeLabel, ENT_QUOTES, 'UTF-8') ?>
+                （<?= htmlspecialchars((string) $fromText, ENT_QUOTES, 'UTF-8') ?>
+                 ~ <?= htmlspecialchars((string) $toText, ENT_QUOTES, 'UTF-8') ?>）
+                <?php if ($model !== ''): ?>
+                    · 只统计模型名含「<?= htmlspecialchars($model, ENT_QUOTES, 'UTF-8') ?>」的记录
+                <?php endif; ?>
+            </p>
+        </div>
+        <div class="ph-actions">
+            <div class="range-tabs">
+                <?php foreach ($ranges as $key => $item): ?>
+                    <a class="<?= $key === $range ? 'on' : '' ?>" href="<?= htmlspecialchars($link(['range' => $key, 'page' => 1]), ENT_QUOTES, 'UTF-8') ?>">
+                        <?= htmlspecialchars((string) $item['label'], ENT_QUOTES, 'UTF-8') ?>
+                    </a>
+                <?php endforeach; ?>
+            </div>
+        </div>
+    </div>
+
+    <section>
+        <h2><?= icon('pulse', 18) ?>总览</h2>
+        <div class="stats">
+            <div class="stat accent">
+                <div class="n"><?= $compact((int) $summary['requests']) ?></div>
+                <div class="l">请求数</div>
+            </div>
+            <div class="stat <?= $successRate >= 99 ? 'ok' : ($successRate >= 90 ? '' : 'danger') ?>">
+                <div class="n"><?= $successRate ?>%</div>
+                <div class="l">成功率（失败 <?= (int) $summary['errors'] ?> 次）</div>
+            </div>
+            <div class="stat">
+                <div class="n"><?= $compact((int) $summary['prompt_tokens'] + (int) $summary['completion_tokens']) ?></div>
+                <div class="l">总 Token（入 <?= $compact((int) $summary['prompt_tokens']) ?> / 出 <?= $compact((int) $summary['completion_tokens']) ?>）</div>
+            </div>
+            <div class="stat">
+                <div class="n" style="font-size:20px"><?= $money($summary['downstream_cost']) ?></div>
+                <div class="l">用户消费（<?= htmlspecialchars((string) $currency, ENT_QUOTES, 'UTF-8') ?>）</div>
+            </div>
+            <div class="stat">
+                <div class="n" style="font-size:20px"><?= $money($summary['upstream_cost']) ?></div>
+                <div class="l">上游成本</div>
+            </div>
+            <div class="stat <?= (float) $summary['profit'] >= 0 ? 'ok' : 'danger' ?>">
+                <div class="n" style="font-size:20px"><?= $money($summary['profit']) ?></div>
+                <div class="l">毛利（消费 − 成本）</div>
+            </div>
+            <div class="stat">
+                <div class="n"><?= (int) $summary['avg_latency_ms'] > 0 ? number_format((int) $summary['avg_latency_ms']) : '—' ?></div>
+                <div class="l">平均耗时（毫秒）</div>
+            </div>
+            <div class="stat">
+                <div class="n"><?= $compact((int) $summary['streams']) ?></div>
+                <div class="l">其中流式请求</div>
+            </div>
+        </div>
+
+        <?php if ((int) $summary['estimated'] > 0): ?>
+            <p class="note">
+                有 <b><?= $compact((int) $summary['estimated']) ?></b> 条记录的 token 数是按文本<b>估算</b>的
+                （上游没返回用量）。估算值会计入统计，但不要拿它去和上游对账。
+            </p>
+        <?php endif; ?>
+    </section>
+
+    <section>
+        <h2><?= icon('chart', 18) ?>每日趋势（请求数）</h2>
+        <?php if ((int) $summary['requests'] === 0): ?>
+            <div class="empty">
+                <?= icon('chart', 28) ?>
+                <div>这段时间还没有任何调用记录。</div>
+            </div>
+        <?php else: ?>
+            <div class="spark">
+                <?php foreach ($series as $day): ?>
+                    <?php
+                    $requests = (int) $day['requests'];
+                    $height = $requests > 0 ? max(2, (int) round($requests * 100 / $peakRequests)) : 0;
+                    $fails = (int) $day['errors'];
+                    ?>
+                    <div class="bar<?= $fails > 0 ? ' err' : '' ?>"
+                         title="<?= htmlspecialchars((string) $day['date'] . '：' . $requests . ' 次请求，失败 ' . $fails . ' 次，消费 ' . $money($day['downstream_cost']), ENT_QUOTES, 'UTF-8') ?>">
+                        <i style="height:<?= $height ?>%"></i>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+            <div class="spark-axis">
+                <?php foreach ($series as $index => $day): ?>
+                    <?php /* 30 天时标签会挤在一起，隔一个显示一个 */ ?>
+                    <span class="<?= $days > 14 && $index % 3 !== 0 ? 'hide' : '' ?>"><?= htmlspecialchars((string) $day['label'], ENT_QUOTES, 'UTF-8') ?></span>
+                <?php endforeach; ?>
+            </div>
+            <p class="note">
+                柱子越高表示当天请求越多，<b>红色</b>表示当天有失败请求。
+                鼠标停在柱子上可以看当天详情。
+            </p>
+        <?php endif; ?>
+    </section>
+
+    <section>
+        <div class="between" style="margin-bottom:14px">
+            <h2 class="mb-0"><?= icon('coin', 18) ?>模型汇总（按请求数排序）</h2>
+            <a class="ghost sm" href="/admin/pricing"><?= icon('edit', 14) ?>去调价格</a>
+        </div>
+        <?php if ($byModel === []): ?>
+            <div class="empty">这段时间没有模型调用记录。</div>
+        <?php else: ?>
+            <div class="table-scroll">
+                <table class="compact">
+                    <thead>
+                    <tr>
+                        <th style="width:26%">模型</th>
+                        <th class="num" style="width:9%">请求</th>
+                        <th class="num" style="width:11%">Token</th>
+                        <th class="num" style="width:9%">成功率</th>
+                        <th class="num" style="width:11%">平均耗时</th>
+                        <th class="num" style="width:11%">用户消费</th>
+                        <th class="num" style="width:11%">上游成本</th>
+                        <th class="num" style="width:12%">毛利</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($byModel as $row): ?>
+                        <tr>
+                            <td class="mono" style="word-break:break-all">
+                                <?= htmlspecialchars((string) $row['model'], ENT_QUOTES, 'UTF-8') ?>
+                                <a class="ghost sm" href="<?= htmlspecialchars($link(['model' => (string) $row['model'], 'page' => 1]), ENT_QUOTES, 'UTF-8') ?>"
+                                   title="只看这个模型的记录">筛</a>
+                            </td>
+                            <td class="num"><?= $compact((int) $row['requests']) ?></td>
+                            <td class="num"><?= $compact((int) $row['total_tokens']) ?></td>
+                            <td class="num <?= (int) $row['success_rate'] < 90 ? 'text-danger' : '' ?>"><?= (int) $row['success_rate'] ?>%</td>
+                            <td class="num"><?= (int) $row['avg_latency_ms'] > 0 ? number_format((int) $row['avg_latency_ms']) . ' ms' : '—' ?></td>
+                            <td class="num"><?= $money($row['downstream_cost']) ?></td>
+                            <td class="num"><?= $money($row['upstream_cost']) ?></td>
+                            <td class="num <?= (float) $row['profit'] < 0 ? 'text-danger' : '' ?>"><?= $money($row['profit']) ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+            <p class="note">
+                <b>毛利为负</b>表示这个模型卖得比买得便宜（定价配置或上游涨价导致），值得调价；
+                免费模型没有消费也没有成本，毛利自然是 0。
+            </p>
+        <?php endif; ?>
+    </section>
+
+    <div class="grid">
+        <section>
+            <h2><?= icon('user', 18) ?>用户用量排行</h2>
+            <?php if ($byUser === []): ?>
+                <div class="empty">这段时间没有用户调用记录。</div>
+            <?php else: ?>
+                <div class="table-scroll">
+                    <table class="compact">
+                        <thead>
+                        <tr>
+                            <th style="width:38%">用户</th>
+                            <th class="num" style="width:14%">请求</th>
+                            <th class="num" style="width:18%">Token</th>
+                            <th class="num" style="width:15%">消费</th>
+                            <th class="num" style="width:15%">失败</th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        <?php foreach ($byUser as $row): ?>
+                            <tr>
+                                <td class="mono" style="word-break:break-all">
+                                    <?php if ((int) $row['userId'] > 0): ?>
+                                        <a href="/admin/users">#<?= (int) $row['userId'] ?></a>
+                                    <?php endif; ?>
+                                    <?= htmlspecialchars((string) $row['email'], ENT_QUOTES, 'UTF-8') ?>
+                                </td>
+                                <td class="num"><?= $compact((int) $row['requests']) ?></td>
+                                <td class="num"><?= $compact((int) $row['total_tokens']) ?></td>
+                                <td class="num"><?= $money($row['downstream_cost']) ?></td>
+                                <td class="num <?= (int) $row['errors'] > 0 ? 'text-danger' : '' ?>"><?= (int) $row['errors'] ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            <?php endif; ?>
+        </section>
+
+        <section>
+            <h2><?= icon('alert', 18) ?>失败原因排行</h2>
+            <?php if ($topErrors === []): ?>
+                <div class="empty">
+                    <?= icon('check', 26) ?>
+                    <div>这段时间没有失败请求，很好。</div>
+                </div>
+            <?php else: ?>
+                <ul class="probe-list">
+                    <?php foreach ($topErrors as $row): ?>
+                        <li>
+                            <div class="err-msg mono"><?= htmlspecialchars(mb_substr((string) $row['message'], 0, 160), ENT_QUOTES, 'UTF-8') ?></div>
+                            <div class="src">
+                                <span class="bar-mini danger" style="width:<?= max(6, min(160, (int) $row['count'] * 6)) ?>px"></span>
+                                <?= (int) $row['count'] ?> 次
+                            </div>
+                        </li>
+                    <?php endforeach; ?>
+                </ul>
+                <p class="note">
+                    按上游返回的原文分组。看到某一条突然变多，通常意味着某条上游出了问题
+                    —— 去<a href="/admin/channels">渠道管理</a>看它的失败次数与最近错误。
+                </p>
+            <?php endif; ?>
+        </section>
+    </div>
+
+    <section>
+        <h2><?= icon('database', 18) ?>调用明细（<?= number_format((int) $total) ?> 条）</h2>
+
+        <form method="get" action="/admin/usage" class="filter-row">
+            <input type="hidden" name="range" value="<?= htmlspecialchars((string) $range, ENT_QUOTES, 'UTF-8') ?>">
+            <input type="text" name="model" value="<?= htmlspecialchars((string) $model, ENT_QUOTES, 'UTF-8') ?>"
+                   placeholder="按模型名筛选，例如 llama">
+            <button class="ghost" type="submit">筛选</button>
+            <?php if ($model !== ''): ?>
+                <a class="ghost" href="<?= htmlspecialchars($link(['model' => '', 'page' => 1]), ENT_QUOTES, 'UTF-8') ?>">清除筛选</a>
+            <?php endif; ?>
+        </form>
+
+        <?php if ($rows === []): ?>
+            <div class="empty">
+                <?= icon('chart', 26) ?>
+                <div>没有符合条件的记录。</div>
+            </div>
+        <?php else: ?>
+            <div class="table-scroll">
+                <table class="compact">
+                    <thead>
+                    <tr>
+                        <th style="width:12%">时间</th>
+                        <th style="width:20%">模型</th>
+                        <th style="width:12%">渠道</th>
+                        <th style="width:7%">用户</th>
+                        <th class="num" style="width:9%">Token</th>
+                        <th class="num" style="width:8%">耗时</th>
+                        <th class="num" style="width:10%">消费</th>
+                        <th style="width:8%">状态</th>
+                        <th style="width:14%">说明</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($rows as $row): ?>
+                        <tr>
+                            <td class="src"><?= htmlspecialchars((string) $row['time'], ENT_QUOTES, 'UTF-8') ?></td>
+                            <td class="mono" style="word-break:break-all">
+                                <?= htmlspecialchars((string) $row['model'], ENT_QUOTES, 'UTF-8') ?>
+                                <?php if ($row['stream']): ?><span class="pill">流式</span><?php endif; ?>
+                            </td>
+                            <td class="src"><?= htmlspecialchars((string) $row['channel'], ENT_QUOTES, 'UTF-8') ?></td>
+                            <td class="src"><?= (int) $row['userId'] > 0 ? '#' . (int) $row['userId'] : '—' ?></td>
+                            <td class="num">
+                                <?= $compact((int) $row['tokens']) ?>
+                                <?php if ($row['estimated']): ?>
+                                    <span class="pill warn" title="上游未返回用量，此数字是按文本估算的">估算</span>
+                                <?php endif; ?>
+                            </td>
+                            <td class="num rate"><?= (int) $row['latency'] > 0 ? number_format((int) $row['latency']) . ' ms' : '—' ?></td>
+                            <td class="num"><?= $money($row['downstreamCost']) ?></td>
+                            <td>
+                                <?php if ((string) $row['status'] === 'ok'): ?>
+                                    <span class="pill ok">成功</span>
+                                <?php else: ?>
+                                    <span class="pill danger">失败</span>
+                                <?php endif; ?>
+                            </td>
+                            <td class="src err-msg" title="<?= htmlspecialchars((string) $row['error'], ENT_QUOTES, 'UTF-8') ?>">
+                                <?= htmlspecialchars(mb_substr((string) $row['error'], 0, 60), ENT_QUOTES, 'UTF-8') ?>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+
+            <?php if ($pages > 1): ?>
+                <div class="actions-bar">
+                    <?php if ($page > 1): ?>
+                        <a class="ghost" href="<?= htmlspecialchars($link(['page' => $page - 1]), ENT_QUOTES, 'UTF-8') ?>">上一页</a>
+                    <?php endif; ?>
+                    <span class="src">第 <?= $page ?> / <?= $pages ?> 页</span>
+                    <?php if ($page < $pages): ?>
+                        <a class="ghost" href="<?= htmlspecialchars($link(['page' => $page + 1]), ENT_QUOTES, 'UTF-8') ?>">下一页</a>
+                    <?php endif; ?>
+                </div>
+            <?php endif; ?>
+        <?php endif; ?>
+
+        <p class="note">
+            明细保留 <b><?= (int) $logRetentionDays ?> 天</b>（配置管理 → 计费 → 用量日志保留天数），
+            超期由 <code>scripts/purge-usage-logs.php</code> 清理。<br>
+            想长期留档的话，加快捷方式：把保留天数调大，或定期导出明细。
+        </p>
+    </section>
+</div>
+</body>
+</html>

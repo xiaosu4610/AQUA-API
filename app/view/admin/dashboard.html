@@ -62,6 +62,7 @@ $money = static function (mixed $value): string {
                 <span class="pill">渠道 <?= (int) $channelCount ?></span>
                 <span class="pill accent">模型定价 <?= (int) $pricingCount ?></span>
                 <a class="ghost" href="/admin/pricing"><?= icon('coin', 14) ?>去定价</a>
+                <a class="ghost" href="/admin/usage"><?= icon('chart', 14) ?>用量报表</a>
             </div>
         </div>
 
@@ -101,8 +102,8 @@ $money = static function (mixed $value): string {
         <p class="note">
             「上游成本」是我们付给上游的钱，「下游收入」是向用户收的钱，两者分开记才能看出真实毛利。<br>
             数据由转发引擎在每次请求后写入用量日志。
-            <b>转发引擎（M1 流式）尚未落地，因此现在全是 0 —— 这不是故障</b>；
-            定价与计算逻辑已就绪，接口开放后会自动开始记账。
+            想看趋势、各模型/各用户的明细毛利、以及失败原因排行，去
+            <a href="/admin/usage">用量报表</a>。
             <?php if ((int) $costToday['estimated'] > 0 || (int) $costWeek['estimated'] > 0): ?>
                 <br>注意：其中部分用量的 token 数是<b>按文本估算</b>的（上游未返回 usage），
                 估算值不适合用于对账级结算。

@@ -257,6 +257,13 @@
         font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12.5px;
     }
 
+    /* ── 带分隔线的条目列表（检测结果、失败原因、注销后果清单都用它）
+       放在共用样式里而不是某一页内联：同一个观感在三处出现，
+       各写一份迟早会变成「这一页行距 8px、那一页 12px」 */
+    .probe-list { margin: 0; padding: 0; list-style: none; }
+    .probe-list li { padding: 8px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+    .probe-list li:last-child { border-bottom: 0; }
+
     /* ── 折叠区（用于「高级配置」这类不必每次看的字段）────── */
     /* 折叠而不隐藏：默认收起能保持主表单清爽，但高级功能仍然可发现，
        不用去翻文档才知道有这些选项 */

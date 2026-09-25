@@ -11,6 +11,7 @@
  */
 
 use app\controller\AdminController;
+use app\controller\AdminUsageController;
 use app\controller\AdminUserController;
 use app\controller\AuthController;
 use app\controller\ChannelController;
@@ -139,6 +140,9 @@ Route::group('/admin', function () {
     Route::post('/pricing/delete', [PricingController::class, 'delete']);
     Route::post('/pricing/free', [PricingController::class, 'setFree']);
     Route::post('/pricing/sync', [PricingController::class, 'sync']);
+
+    // 用量与报表（趋势 / 模型汇总 / 用户排行 / 失败原因 / 明细）
+    Route::get('/usage', [AdminUsageController::class, 'index']);
 
     // 下游用户与订单
     Route::get('/users', [AdminUserController::class, 'index']);
