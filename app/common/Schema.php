@@ -37,7 +37,7 @@ use Throwable;
 final class Schema
 {
     /** 当前期望的表结构版本。新增迁移时递增。 */
-    public const VERSION = 9;
+    public const VERSION = 10;
 
     /**
      * 确保表结构存在且为最新版本。
@@ -88,6 +88,10 @@ final class Schema
 
         if ($current < 9) {
             self::createV9();
+        }
+
+        if ($current < 10) {
+            self::createV10();
         }
 
         Settings::put('schema_version', (string) self::VERSION);
@@ -527,6 +531,57 @@ final class Schema
     {
         self::addColumnIfMissing('users', 'failed_attempts', 'INTEGER NOT NULL DEFAULT 0');
         self::addColumnIfMissing('users', 'locked_until', 'INTEGER NULL');
+    }
+
+    /**
+     * v10：渠道模型探测任务与逐项结果。
+     */
+    private static function createV10(): void
+    {
+        $pdo = Db::pdo();
+        $autoId = self::autoId();
+
+        $pdo->exec(<<<SQL
+            CREATE TABLE IF NOT EXISTS channel_model_probe_tasks (
+                id                 {$autoId},
+                channel_id         INTEGER      NOT NULL,
+                status             VARCHAR(16)  NOT NULL,
+                total_count        INTEGER      NOT NULL DEFAULT 0,
+                completed_count    INTEGER      NOT NULL DEFAULT 0,
+                current_model      VARCHAR(191) NULL,
+                ok_count           INTEGER      NOT NULL DEFAULT 0,
+                no_access_count    INTEGER      NOT NULL DEFAULT 0,
+                unroutable_count   INTEGER      NOT NULL DEFAULT 0,
+                inconclusive_count INTEGER      NOT NULL DEFAULT 0,
+                error_message      VARCHAR(500) NULL,
+                created_at         INTEGER      NOT NULL,
+                started_at         INTEGER      NULL,
+                heartbeat_at       INTEGER      NULL,
+                finished_at        INTEGER      NULL,
+                applied_at         INTEGER      NULL,
+                applied_by         VARCHAR(64)  NULL,
+                removed_count      INTEGER      NOT NULL DEFAULT 0,
+                backup_path        VARCHAR(500) NULL
+            )
+        SQL);
+
+        $pdo->exec(<<<SQL
+            CREATE TABLE IF NOT EXISTS channel_model_probe_results (
+                id             {$autoId},
+                task_id        INTEGER      NOT NULL,
+                model          VARCHAR(191) NOT NULL,
+                upstream_model VARCHAR(191) NOT NULL,
+                classification VARCHAR(16)  NOT NULL,
+                http_status    INTEGER      NOT NULL DEFAULT 0,
+                response_summary VARCHAR(500) NULL,
+                completed_at   INTEGER      NOT NULL,
+                CONSTRAINT uq_probe_task_model UNIQUE (task_id, model)
+            )
+        SQL);
+
+        self::createIndexIfMissing('channel_model_probe_tasks', 'idx_probe_tasks_channel', ['channel_id']);
+        self::createIndexIfMissing('channel_model_probe_tasks', 'idx_probe_tasks_status', ['status']);
+        self::createIndexIfMissing('channel_model_probe_results', 'idx_probe_results_task', ['task_id']);
     }
 
     /**

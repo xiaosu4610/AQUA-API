@@ -24,11 +24,15 @@ declare(strict_types=1);
 
 namespace app\controller;
 
+use app\common\BackgroundProcess;
 use app\common\Channel;
 use app\common\ChannelKey;
 use app\common\Crypto;
 use app\common\Csrf;
+use app\common\ModelProbe;
+use app\common\ModelProbeTask;
 use app\common\Settings;
+use RuntimeException;
 use support\Request;
 use support\Response;
 
@@ -234,6 +238,118 @@ class ChannelController
         $result = Channel::test($id);
 
         return $this->back($result['message'], $result['ok'] ? 'ok' : 'err');
+    }
+
+    /**
+     * POST /admin/channels/probe —— 创建模型探测任务。
+     */
+    public function probeCreate(Request $request): Response
+    {
+        if (!Csrf::check($request->post('_csrf'))) {
+            return $this->back('页面已过期，请重新提交', 'err');
+        }
+
+        $channelId = (int) $request->post('id', 0);
+        $channel = Channel::find($channelId);
+        if ($channel === null) {
+            return $this->back('渠道不存在', 'err');
+        }
+        $models = Channel::modelsOf($channel);
+        if ($models === []) {
+            return $this->back('该渠道没有模型清单，请先编辑渠道添加模型', 'err');
+        }
+        if (!$this->hasProbeCredential($channel)) {
+            return $this->back('该渠道没有可用凭据，请先添加或启用 Key', 'err');
+        }
+
+        try {
+            $created = ModelProbeTask::create($channelId, $models);
+            $taskId = (int) $created['task']['id'];
+            if ($created['created']) {
+                try {
+                    BackgroundProcess::startModelProbe($taskId);
+                } catch (RuntimeException $e) {
+                    ModelProbeTask::fail($taskId, $e->getMessage());
+                    return $this->back($e->getMessage() . '；可手工运行任务 CLI', 'err');
+                }
+            }
+
+            return response('', 302, ['Location' => '/admin/channels/probe?id=' . $taskId]);
+        } catch (RuntimeException $e) {
+            return $this->back($e->getMessage(), 'err');
+        }
+    }
+
+    /**
+     * GET /admin/channels/probe?id=N —— 任务进度与结果页。
+     */
+    public function probePage(Request $request): Response
+    {
+        $task = ModelProbeTask::find((int) $request->get('id', 0));
+        if ($task === null || Channel::find((int) $task['channel_id']) === null) {
+            return response('任务不存在', 404);
+        }
+        ModelProbeTask::failStale();
+        $task = ModelProbeTask::find((int) $task['id']);
+        $channel = Channel::find((int) $task['channel_id']);
+
+        return view('admin/channel_probe', [
+            'csrf' => Csrf::token(),
+            'siteName' => Settings::siteName(),
+            'siteMode' => Settings::siteModeLabel(),
+            'channelName' => (string) $channel['name'],
+            'task' => $task,
+            'results' => ModelProbeTask::results((int) $task['id']),
+            'modelCount' => count(Channel::modelsOf($channel)),
+            // 下架失败会带着 flash 跳回本页；这一页不读它的话，
+            // 用户只会看到「点了按钮、页面刷新了、什么都没变」，完全不知道为什么
+            'notice' => (string) session()->pull(self::FLASH_NOTICE, ''),
+            'noticeType' => (string) session()->pull(self::FLASH_TYPE, 'info'),
+        ], '');
+    }
+
+    /**
+     * GET /admin/channels/probe/status?id=N —— 脱敏任务状态。
+     */
+    public function probeStatus(Request $request): Response
+    {
+        ModelProbeTask::failStale();
+        $task = ModelProbeTask::find((int) $request->get('id', 0));
+        if ($task === null || Channel::find((int) $task['channel_id']) === null) {
+            return response('{"error":"任务不存在"}', 404, ['Content-Type' => 'application/json; charset=utf-8']);
+        }
+
+        $payload = ['task' => $task, 'results' => ModelProbeTask::results((int) $task['id'])];
+        unset($payload['task']['backup_path'], $payload['task']['applied_by']);
+
+        return response(
+            (string) json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            200,
+            ['Content-Type' => 'application/json; charset=utf-8', 'Cache-Control' => 'no-store']
+        );
+    }
+
+    /**
+     * POST /admin/channels/probe/apply —— 确认下架。
+     */
+    public function probeApply(Request $request): Response
+    {
+        if (!Csrf::check($request->post('_csrf'))) {
+            return $this->back('页面已过期，请重新提交', 'err');
+        }
+        $taskId = (int) $request->post('id', 0);
+        $selected = $request->post('models', []);
+        $selected = is_array($selected) ? array_values($selected) : [];
+
+        try {
+            $result = ModelProbeTask::apply($taskId, $selected);
+            return $this->back(
+                "已下架 {$result['removed']} 个模型，模型总数 {$result['before']} → {$result['after']}，原始清单已备份",
+                'ok'
+            );
+        } catch (RuntimeException $e) {
+            return $this->back($e->getMessage(), 'err', '/admin/channels/probe?id=' . $taskId);
+        }
     }
 
     /**
@@ -554,6 +670,18 @@ class ChannelController
     private function backToKeys(int $channelId, string $message, string $type): Response
     {
         return $this->back($message, $type, '/admin/channels/keys?id=' . $channelId);
+    }
+
+    /** @param array<string, mixed> $channel */
+    private function hasProbeCredential(array $channel): bool
+    {
+        foreach (ChannelKey::allForChannel((int) $channel['id']) as $row) {
+            if ((int) $row['status'] === ChannelKey::STATUS_ENABLED && ChannelKey::plainKey($row) !== '') {
+                return true;
+            }
+        }
+
+        return Channel::plainKey($channel) !== '';
     }
 
     private static function typeLabel(string $type): string

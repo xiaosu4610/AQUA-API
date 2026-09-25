@@ -109,6 +109,10 @@ Route::group('/admin', function () {
     Route::post('/channels/save', [ChannelController::class, 'save']);
     Route::post('/channels/delete', [ChannelController::class, 'delete']);
     Route::post('/channels/test', [ChannelController::class, 'test']);
+    Route::post('/channels/probe', [ChannelController::class, 'probeCreate']);
+    Route::get('/channels/probe', [ChannelController::class, 'probePage']);
+    Route::get('/channels/probe/status', [ChannelController::class, 'probeStatus']);
+    Route::post('/channels/probe/apply', [ChannelController::class, 'probeApply']);
 
     // 渠道密钥池（一个渠道下可挂多把 Key，轮换使用）
     Route::get('/channels/keys', [ChannelController::class, 'keys']);

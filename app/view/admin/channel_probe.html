@@ -1,0 +1,173 @@
+<?php
+/** 后台 · 渠道模型检测任务 */
+$groups = ['ok' => [], 'no_access' => [], 'unroutable' => [], 'inconclusive' => []];
+foreach ($results as $row) {
+    $groups[$row['classification']][] = $row;
+}
+$labels = [
+    'ok' => '可用',
+    'no_access' => '无权限',
+    'unroutable' => '当前协议不可用',
+    'inconclusive' => '无法判定（保留）',
+];
+$status = (string) $task['status'];
+$done = $status === 'completed';
+$removable = count($groups['no_access']) + count($groups['unroutable']);
+$statusLabels = [
+    'pending' => '等待执行',
+    'running' => '检测中',
+    'completed' => '已完成',
+    'aborted' => '已中止',
+    'failed' => '已失败',
+];
+$statusLabel = $statusLabels[$status] ?? $status;
+?>
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title><?= htmlspecialchars((string) $siteName, ENT_QUOTES, 'UTF-8') ?> · 模型检测</title>
+    <?php include __DIR__ . '/_style.html'; ?>
+    <style>
+        .probe-current { min-height: 24px; overflow-wrap: anywhere; }
+        .probe-list { margin: 0; padding: 0; list-style: none; }
+        .probe-list li { padding: 8px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+        .probe-list li:last-child { border-bottom: 0; }
+        .probe-group { min-width: 0; }
+        @media (max-width: 560px) { body { padding-left: 12px; padding-right: 12px; } section { padding: 16px; } }
+    </style>
+</head>
+<body>
+<div class="wrap">
+    <?php $active = 'channels'; include __DIR__ . '/_header.html'; ?>
+
+    <div class="page-head">
+        <div class="ph-main">
+            <div class="crumb"><a href="/admin/channels">渠道管理</a><span class="sep">/</span>模型检测</div>
+            <h1><?= htmlspecialchars((string) $channelName, ENT_QUOTES, 'UTF-8') ?></h1>
+            <p class="ph-desc">任务 #<?= (int) $task['id'] ?> · <span id="status-text"><?= htmlspecialchars($statusLabel, ENT_QUOTES, 'UTF-8') ?></span></p>
+        </div>
+        <div class="ph-actions"><a class="ghost" href="/admin/channels">返回渠道列表</a></div>
+    </div>
+
+    <?php if (($notice ?? '') !== ''): ?>
+        <div class="alert <?= htmlspecialchars((string) ($noticeType ?? 'info'), ENT_QUOTES, 'UTF-8') ?>">
+            <?= icon(($noticeType ?? '') === 'ok' ? 'check' : (($noticeType ?? '') === 'err' ? 'alert' : 'info'), 16) ?>
+            <div><?= htmlspecialchars((string) $notice, ENT_QUOTES, 'UTF-8') ?></div>
+        </div>
+    <?php endif; ?>
+
+    <?php if ($status === 'aborted'): ?>
+        <div class="alert err">鉴权失败，检测已中止。请检查渠道 Key、鉴权方式和字段名后重新发起。</div>
+    <?php elseif ($status === 'failed'): ?>
+        <div class="alert err"><?= htmlspecialchars((string) $task['error_message'], ENT_QUOTES, 'UTF-8') ?></div>
+    <?php endif; ?>
+
+    <section id="progress-section"<?= $done ? ' style="display:none"' : '' ?>>
+        <h2><?= icon('pulse', 17) ?>检测进度</h2>
+        <?php $percent = (int) $task['total_count'] > 0 ? min(100, (int) floor((int) $task['completed_count'] * 100 / (int) $task['total_count'])) : 0; ?>
+        <div class="progress-row">
+            <div class="progress"><i id="progress-bar" style="width:<?= $percent ?>%"></i></div>
+            <span class="pv" id="progress-value"><?= (int) $task['completed_count'] ?>/<?= (int) $task['total_count'] ?></span>
+        </div>
+        <div class="grid" style="margin-top:18px">
+            <div class="kv"><div class="k">当前模型</div><div class="v probe-current" id="current-model"><?= htmlspecialchars((string) ($task['current_model'] ?: '等待执行'), ENT_QUOTES, 'UTF-8') ?></div></div>
+            <div class="kv"><div class="k">已耗时</div><div class="v" id="elapsed"><?= max(0, time() - (int) $task['created_at']) ?> 秒</div></div>
+        </div>
+    </section>
+
+    <div class="stats" style="margin-bottom:20px">
+        <div class="stat ok"><div class="n" id="count-ok"><?= (int) $task['ok_count'] ?></div><div class="l">可用</div></div>
+        <div class="stat danger"><div class="n" id="count-no_access"><?= (int) $task['no_access_count'] ?></div><div class="l">无权限</div></div>
+        <div class="stat danger"><div class="n" id="count-unroutable"><?= (int) $task['unroutable_count'] ?></div><div class="l">当前协议不可用</div></div>
+        <div class="stat"><div class="n" id="count-inconclusive"><?= (int) $task['inconclusive_count'] ?></div><div class="l">无法判定</div></div>
+    </div>
+
+    <div id="completed-results"<?= $done ? '' : ' style="display:none"' ?>>
+        <div class="grid">
+            <?php foreach ($labels as $key => $label): ?>
+                <section class="probe-group">
+                    <h2><?= htmlspecialchars($label, ENT_QUOTES, 'UTF-8') ?>（<?= count($groups[$key]) ?>）</h2>
+                    <?php if ($groups[$key] === []): ?>
+                        <div class="empty">没有模型</div>
+                    <?php else: ?>
+                        <ul class="probe-list">
+                            <?php foreach ($groups[$key] as $row): ?>
+                                <li>
+                                    <?php if (in_array($key, ['no_access', 'unroutable'], true) && empty($task['applied_at'])): ?>
+                                        <label class="check">
+                                            <input form="apply-form" type="checkbox" name="models[]" value="<?= htmlspecialchars((string) $row['model'], ENT_QUOTES, 'UTF-8') ?>" checked>
+                                            <span><?= htmlspecialchars((string) $row['model'], ENT_QUOTES, 'UTF-8') ?></span>
+                                        </label>
+                                    <?php else: ?>
+                                        <div><?= htmlspecialchars((string) $row['model'], ENT_QUOTES, 'UTF-8') ?></div>
+                                    <?php endif; ?>
+                                    <div class="src">HTTP <?= (int) $row['http_status'] ?><?= $row['response_summary'] !== '' ? ' · ' . htmlspecialchars((string) $row['response_summary'], ENT_QUOTES, 'UTF-8') : '' ?></div>
+                                </li>
+                            <?php endforeach; ?>
+                        </ul>
+                    <?php endif; ?>
+                </section>
+            <?php endforeach; ?>
+        </div>
+
+        <?php if ($removable > 0 && empty($task['applied_at'])): ?>
+            <section class="danger-zone">
+                <div class="dz-head">确认下架</div>
+                <div class="dz-body">
+                    <p class="dz-conseq">只允许下架上方已确认的无权限或当前协议不可用模型。当前模型总数 <b><?= (int) $modelCount ?> → <span id="after-count"><?= max(0, (int) $modelCount - $removable) ?></span></b>，将移除 <b id="remove-count"><?= $removable ?></b> 个。</p>
+                    <form id="apply-form" method="post" action="/admin/channels/probe/apply" onsubmit="return confirm('确定下架选中的模型？原始模型清单会先备份。');">
+                        <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
+                        <input type="hidden" name="id" value="<?= (int) $task['id'] ?>">
+                        <button class="ghost danger" type="submit"><?= icon('trash', 14) ?>下架选中模型</button>
+                    </form>
+                </div>
+            </section>
+        <?php elseif (!empty($task['applied_at'])): ?>
+            <div class="alert ok">该任务已执行下架，共移除 <?= (int) $task['removed_count'] ?> 个模型。</div>
+        <?php endif; ?>
+    </div>
+</div>
+<script>
+(() => {
+    const taskId = <?= (int) $task['id'] ?>;
+    const initialStatus = <?= json_encode($status, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+    const createdAt = <?= (int) $task['created_at'] ?>;
+    const totalModels = <?= (int) $modelCount ?>;
+    const terminal = ['completed', 'aborted', 'failed'];
+    const statusLabels = {pending: '等待执行', running: '检测中', completed: '已完成', aborted: '已中止', failed: '已失败'};
+    const updateSelection = () => {
+        const count = document.querySelectorAll('input[name="models[]"]:checked').length;
+        const remove = document.getElementById('remove-count');
+        const after = document.getElementById('after-count');
+        if (remove) remove.textContent = String(count);
+        if (after) after.textContent = String(Math.max(0, totalModels - count));
+    };
+    document.querySelectorAll('input[name="models[]"]').forEach(el => el.addEventListener('change', updateSelection));
+
+    if (terminal.includes(initialStatus)) return;
+    const poll = async () => {
+        try {
+            const response = await fetch('/admin/channels/probe/status?id=' + taskId, {cache: 'no-store'});
+            if (!response.ok) return;
+            const data = await response.json();
+            const task = data.task;
+            document.getElementById('status-text').textContent = statusLabels[task.status] || task.status;
+            document.getElementById('current-model').textContent = task.current_model || '等待执行';
+            document.getElementById('progress-value').textContent = task.completed_count + '/' + task.total_count;
+            document.getElementById('progress-bar').style.width = (task.total_count > 0 ? Math.floor(task.completed_count * 100 / task.total_count) : 0) + '%';
+            ['ok', 'no_access', 'unroutable', 'inconclusive'].forEach(key => {
+                document.getElementById('count-' + key).textContent = task[key + '_count'];
+            });
+            document.getElementById('elapsed').textContent = Math.max(0, Math.floor(Date.now() / 1000) - createdAt) + ' 秒';
+            if (terminal.includes(task.status)) location.reload();
+        } catch (_) {}
+    };
+    setInterval(poll, 2000);
+    poll();
+})();
+</script>
+</body>
+</html>
