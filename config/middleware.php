@@ -16,9 +16,13 @@
 declare(strict_types=1);
 
 use app\middleware\InstallGuard;
+use app\middleware\SecurityHeaders;
 
 return [
     '@' => [
+        // 安全响应头放最外层：它要能包住所有响应，
+        // 包括 InstallGuard 产生的重定向
+        SecurityHeaders::class,
         InstallGuard::class,
     ],
 ];
