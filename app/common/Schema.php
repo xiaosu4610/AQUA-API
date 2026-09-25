@@ -895,36 +895,75 @@ final class Schema
         $pdo = Db::pdo();
 
         try {
-            if (Db::isSqlite()) {
-                $exists = false;
-                foreach ($pdo->query("PRAGMA index_list({$table})") as $row) {
-                    if (($row['name'] ?? '') === $index) {
-                        $exists = true;
-                        break;
-                    }
-                }
-            } else {
-                $row = Db::selectOne(
-                    'SELECT COUNT(*) AS c FROM information_schema.statistics
-                     WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?',
-                    [$table, $index]
-                );
-                $exists = ((int) ($row['c'] ?? 0)) > 0;
-            }
-
-            if ($exists) {
+            if (self::indexExists($table, $index)) {
                 return;
             }
         } catch (Throwable) {
             return;
         }
 
-        $pdo->exec(sprintf(
-            'CREATE INDEX %s ON %s (%s)',
-            $index,
-            $table,
-            implode(', ', $columns)
-        ));
+        try {
+            $pdo->exec(sprintf(
+                'CREATE INDEX %s ON %s (%s)',
+                $index,
+                $table,
+                implode(', ', $columns)
+            ));
+        } catch (Throwable $e) {
+            // 与 addColumnIfMissing 同一个理由：多个工作进程同时启动时会抢着建同一个索引，
+            // 抢输的那个收到「Duplicate key name」。复查一次再决定是抢输了还是 SQL 写错了
+            if (!self::indexExists($table, $index)) {
+                throw $e;
+            }
+        }
+    }
+
+    /** 这个索引在不在 */
+    private static function indexExists(string $table, string $index): bool
+    {
+        $pdo = Db::pdo();
+
+        if (Db::isSqlite()) {
+            foreach ($pdo->query("PRAGMA index_list({$table})") as $row) {
+                if (($row['name'] ?? '') === $index) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        $row = Db::selectOne(
+            'SELECT COUNT(*) AS c FROM information_schema.statistics
+             WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?',
+            [$table, $index]
+        );
+
+        return ((int) ($row['c'] ?? 0)) > 0;
+    }
+
+    /** 这一列在不在 */
+    private static function columnExists(string $table, string $column): bool
+    {
+        $pdo = Db::pdo();
+
+        if (Db::isSqlite()) {
+            foreach ($pdo->query("PRAGMA table_info({$table})") as $row) {
+                if (($row['name'] ?? '') === $column) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        $row = Db::selectOne(
+            'SELECT COUNT(*) AS c FROM information_schema.columns
+             WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?',
+            [$table, $column]
+        );
+
+        return ((int) ($row['c'] ?? 0)) > 0;
     }
 
     /**
@@ -946,24 +985,7 @@ final class Schema
         $pdo = Db::pdo();
 
         try {
-            if (Db::isSqlite()) {
-                $exists = false;
-                foreach ($pdo->query("PRAGMA table_info({$table})") as $row) {
-                    if (($row['name'] ?? '') === $column) {
-                        $exists = true;
-                        break;
-                    }
-                }
-            } else {
-                $row = Db::selectOne(
-                    'SELECT COUNT(*) AS c FROM information_schema.columns
-                     WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?',
-                    [$table, $column]
-                );
-                $exists = ((int) ($row['c'] ?? 0)) > 0;
-            }
-
-            if ($exists) {
+            if (self::columnExists($table, $column)) {
                 return;
             }
         } catch (Throwable) {
@@ -971,7 +993,20 @@ final class Schema
             return;
         }
 
-        $pdo->exec("ALTER TABLE {$table} ADD COLUMN {$column} {$definition}");
+        try {
+            $pdo->exec("ALTER TABLE {$table} ADD COLUMN {$column} {$definition}");
+        } catch (Throwable $e) {
+            // 多个工作进程（生产是 8 个）同时启动时，会有进程「慢半拍」走到这里，
+            // 而列已经被别的进程加好了 —— 数据库回的是 Duplicate column。
+            // 这种情况**必须当成功**：否则这个进程会中断整段迁移，
+            // 版本号也不会写（生产上真的出现过，日志里一片 Duplicate column name）。
+            //
+            // 但也不能一律吞掉 —— 万一是我自己把类型名写错了（那也是这个异常），
+            // 复查一次就能分辨：列已存在 = 抢输了；列仍不存在 = 真错了，照抛
+            if (!self::columnExists($table, $column)) {
+                throw $e;
+            }
+        }
     }
 
     /**
