@@ -58,6 +58,13 @@ class HomeController
         $models = array_keys($all);
         sort($models, SORT_NATURAL | SORT_FLAG_CASE);
 
+        // 示例代码用哪个模型：优先用站长在后台指定的「验证过能跑通」的那个，
+        // 没指定才退回按字母序的第一个（那不一定真能用）
+        $demoModel = trim((string) Settings::get('site.demo_model', ''));
+        if ($demoModel === '') {
+            $demoModel = (string) ($models[0] ?? '');
+        }
+
         return view('home', [
             'siteName' => (string) Settings::get('site.name', 'aqua-api-php'),
             'modeLabel' => $mode === 'public_welfare' ? '公益站' : '商业站',
@@ -72,6 +79,7 @@ class HomeController
             'showModels' => $showModels,
             'models' => $showModels ? array_slice($models, 0, self::MAX_MODELS_ON_HOME) : [],
             'modelTotal' => count($models),
+            'demoModel' => $demoModel !== '' ? $demoModel : 'your-model',
             // 有已启用渠道就认为转发通道可用。这里不做真实探测 ——
             // 首页每次访问都去连一次上游是不可接受的
             'relayReady' => $hasUsableChannel,
