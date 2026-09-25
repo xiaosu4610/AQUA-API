@@ -467,9 +467,14 @@ class ChannelController
             'advDefaults' => Channel::advFormText([]),
             // 各适配器的默认高级配置，交给前端在切换协议时自动带出。
             // 传 JSON 而不是让前端自己拼，是为了让默认值只有一处定义
+            //
+            // ⚠️ 必须带上 JSON_HEX_* 这几个标志：这段 JSON 是直接写进 <script> 的，
+            //    而 HTML 转义对 `</script>` 无效 —— 一旦值里出现它，标签会被提前闭合，
+            //    后面的内容就变成了可注入的位置。转成十六进制实体是最省事且彻底的挡法。
+            //    （数据源是代码里的适配器常量，当前不含危险字符，但规范不该靠「当前恰好没有」）
             'adapterDefaults' => (string) json_encode(
                 array_map(static fn (array $a): array => (array) ($a['defaults'] ?? []), Channel::ADAPTERS),
-                JSON_UNESCAPED_UNICODE
+                JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT
             ),
             // 解密失败时给出提示，避免站长面对一个「Key 明明存了却报没权限」的谜题
             'keyBroken' => $isEdit && (string) ($channel['api_key_enc'] ?? '') !== '' && Channel::plainKey($channel) === '',
