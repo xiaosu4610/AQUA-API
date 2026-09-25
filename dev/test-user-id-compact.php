@@ -248,7 +248,25 @@ check('首页可访问', $home['status'] === 200, (string) $home['status']);
 check('首页有 API 文档入口', str_contains($home['body'], '/docs'));
 check('首页首屏有接入地址复制', str_contains($home['body'], 'data-copy='));
 
-echo "\n九、重排后旧登录态作废（后台手动补位）\n";
+// ⚠️ 冷启动检查：上面的断言是在「同一个进程已经渲染过很多页面」的前提下做的。
+// 常驻内存模型里，模板 include 进来的函数（icon 之类）会**留在进程里**，
+// 于是「本页忘了引入图标集」这种错在开发机上完全测不出来 ——
+// 只有在全新进程里第一次请求这一页时才 500。生产就是这样炸过一次，
+// 所以这里为每个公开页各起一个全新服务，专测「第一个请求」。
+echo "\n九、冷启动：每个公开页在全新进程里都能独立渲染\n";
+
+foreach (['/' => '首页', '/docs' => '接口文档', '/models' => '模型广场'] as $path => $label) {
+    $cold = probe_app_start();
+    $coldPort = $cold['port'];
+    $first = probe_http($coldPort, 'GET', $path);
+    check(
+        "全新进程的第一个请求 {$label}（{$path}）返回 200",
+        $first['status'] === 200,
+        '实际 ' . $first['status'] . '（很可能是模板少引入了图标集）'
+    );
+}
+
+echo "\n十、重排后旧登录态作废（后台手动补位）\n";
 
 // HTTP 用户的令牌必须真的建出来了（注册流程会自动建一把默认令牌）
 $tokenRow = Db::selectOne('SELECT key_mask FROM tokens WHERE user_id = ?', [$httpUserId]);

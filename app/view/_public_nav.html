@@ -18,6 +18,12 @@
  * @var string $active    当前高亮的导航项
  */
 
+// 图标集必须在**每个公开页**自己引入，不能指望「别的页面先跑过、函数已经存在」：
+// 常驻内存模型下函数定义会留在进程里，于是「本页忘了引图标集」这个 bug
+// 在开发机上（同一个进程跑过很多页面）完全看不出来，
+// 只有在全新进程里第一次请求这一页时才 500 —— 生产实测就是这样暴露的
+require_once __DIR__ . '/admin/_icons.html';
+
 $active = $active ?? '';
 $siteName = $siteName ?? '';
 $modeLabel = $modeLabel ?? '';
