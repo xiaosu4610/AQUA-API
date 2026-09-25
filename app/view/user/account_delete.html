@@ -1,0 +1,101 @@
+<?php
+/**
+ * 用户侧 · 注销账号（二次确认）
+ *
+ * 这一页存在的唯一理由是「让人在看清代价之后再动手」：
+ * 注销会删掉账号与**全部令牌**，用户正在跑的脚本会立刻开始报 401，
+ * 而那通常是在半夜或无人值守的时候才被发现。所以：
+ *   · 必须离开列表页、单独走到这一页
+ *   · 必须重输密码（证明是本人）
+ *   · 必须亲手打出自己的邮箱（证明他想清楚了，而不是手滑）
+ *
+ * @var string $csrf
+ * @var string $siteName
+ * @var string $siteMode
+ * @var array<string, mixed> $user
+ * @var int    $tokenCount  将被删除的令牌数量
+ * @var string $notice
+ * @var string $noticeType
+ */
+$noticeType = $noticeType ?? 'info';
+?>
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title>注销账号 · <?= htmlspecialchars((string) $siteName, ENT_QUOTES, 'UTF-8') ?>
+    </title>
+    <?php include __DIR__ . '/../admin/_style.html'; ?>
+</head>
+<body>
+<div class="wrap">
+    <?php $active = 'console'; include __DIR__ . '/_header.html'; ?>
+
+    <div class="page-head">
+        <div class="ph-main">
+            <div class="crumb"><a href="/console">用户控制台</a><span class="sep">/</span>注销账号</div>
+            <h1><?= icon('alert', 19) ?>注销账号</h1>
+            <p class="ph-desc">
+                这一步<b>不可撤销</b>。请先读完下面的后果，再决定要不要继续。
+            </p>
+        </div>
+        <div class="ph-actions">
+            <a class="ghost" href="/console"><?= icon('home', 15) ?>返回控制台</a>
+        </div>
+    </div>
+
+    <?php if (($notice ?? '') !== ''): ?>
+        <div class="alert <?= htmlspecialchars((string) $noticeType, ENT_QUOTES, 'UTF-8') ?>">
+            <?= icon($noticeType === 'ok' ? 'check' : 'alert', 16) ?>
+            <div><?= htmlspecialchars((string) $notice, ENT_QUOTES, 'UTF-8') ?></div>
+        </div>
+    <?php endif; ?>
+
+    <section>
+        <h2><?= icon('alert', 17) ?>注销后会发生什么</h2>
+        <ul class="probe-list">
+            <li>账号 <b><?= htmlspecialchars((string) $user['email'], ENT_QUOTES, 'UTF-8') ?></b> 会被删除，无法恢复。</li>
+            <li>名下的 <b><?= (int) $tokenCount ?> 把令牌</b>会一起删除 —— 正在使用它们的程序会立刻开始报 401。</li>
+            <li>余额不会退回，也不会转移到别的账号。</li>
+            <li>充值订单与调用记录会保留（对账与审计需要），但不再与你的账号关联。</li>
+            <li>重新注册会得到一个<b>全新的账号</b>，历史余额与记录都不会回来。</li>
+        </ul>
+        <p class="tip">
+            如果你只是想停用一段时间：其实不必注销 —— 把令牌停用即可，
+            余额与记录都会留着。
+        </p>
+    </section>
+
+    <section class="danger-zone">
+        <div class="dz-head">确认注销</div>
+        <div class="dz-body">
+            <p class="dz-conseq">
+                需要两步确认：输入<b>登录密码</b>，并<b>手动输入你的邮箱地址</b>。
+            </p>
+
+            <form method="post" action="/console/delete"
+                  onsubmit="return confirm('最后确认：真的要注销账号吗？这一步不可撤销。');">
+                <input type="hidden" name="_csrf" value="<?= htmlspecialchars((string) $csrf, ENT_QUOTES, 'UTF-8') ?>">
+
+                <div class="field">
+                    <div class="lbl">登录密码</div>
+                    <input type="password" name="password" required autocomplete="current-password"
+                           placeholder="证明是本人操作">
+                </div>
+
+                <div class="field">
+                    <div class="lbl">把你的邮箱再输一遍</div>
+                    <input type="text" name="confirm_email" required autocomplete="off"
+                           placeholder="<?= htmlspecialchars((string) $user['email'], ENT_QUOTES, 'UTF-8') ?>">
+                    <div class="tip">必须与账号邮箱完全一致，否则不会执行。</div>
+                </div>
+
+                <button class="ghost danger" type="submit"><?= icon('trash', 14) ?>确认注销我的账号</button>
+            </form>
+        </div>
+    </section>
+</div>
+</body>
+</html>

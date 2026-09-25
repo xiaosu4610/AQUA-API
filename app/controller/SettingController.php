@@ -63,6 +63,7 @@ class SettingController
         'payment' => ['label' => '支付', 'hint' => '易支付 V1 / V2，用于用户在线充值'],
         'billing' => ['label' => '计费', 'hint' => '上游成本与下游售价的计算口径；逐个模型的价格在「模型定价」页配置'],
         'security' => ['label' => '安全', 'hint' => '后台登录防爆破与登录态有效期'],
+        'users' => ['label' => '用户编号', 'hint' => '注销后把编号空位补齐，让编号始终连续（1、2、3…）'],
         'session' => ['label' => '会话', 'hint' => '会话 Cookie 的安全属性'],
     ];
 
@@ -182,6 +183,10 @@ class SettingController
         'security.user_login_max_attempts' => ['用户密码连续错几次锁定', '用户是一个群体，阈值比后台宽松些，避免把记错密码的正常人挡在门外'],
         'security.user_login_lock_minutes' => ['用户锁定时长（分钟）', '锁满这么久后自动解锁'],
         'security.admin_session_minutes' => ['后台登录态有效期（分钟）', '超过后需要重新输密码。改完立即生效，不用重启'],
+
+        // ── 用户编号 ──
+        'users.auto_compact_ids' => ['自动补齐用户编号', '用户注销后编号会空出一位（1、3、5…）。开着就自动补齐成连续的 1..N。注意：补齐时所有人需重新登录一次'],
+        'users.compact_interval_days' => ['每隔几天检查一次', '每次检查若发现空位才动手，没有空位就不打扰任何人'],
 
         // ── 会话 ──
         'session.secure' => ['会话 Cookie 仅走 HTTPS', '生产必须是「是」。本地用 http://127.0.0.1 调试时设为「否」，否则登录后会立刻掉线'],

@@ -52,11 +52,16 @@ final class Settings
     /**
      * 内部保留键 —— 存放在 options 表里、但**不是用户可配置项**。
      *
-     * 目前只有 schema_version（表结构版本号，由程序自己维护）。
+     * 三类：
+     *   · schema_version           表结构版本号，由程序自己维护；
+     *   · users.id_epoch           用户编号代际，每次编号重排 +1；
+     *   · users.last_compacted_at  上次编号重排时间。
+     *
      * 这些键必须从 keys() 里排除掉，否则会出现在后台的配置管理页上，
-     * 站长改一下就可能让迁移逻辑误判，属于「不该给人碰的东西」。
+     * 站长改一下就可能让迁移逻辑误判、或让所有会话莫名失效 ——
+     * 属于「不该给人碰的东西」。
      */
-    private const INTERNAL_KEYS = ['schema_version'];
+    private const INTERNAL_KEYS = ['schema_version', 'users.id_epoch', 'users.last_compacted_at'];
 
     /**
      * **需要加密存储的配置键**。

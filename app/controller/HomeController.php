@@ -71,6 +71,10 @@ class HomeController
             // 但站点模式本身仍决定页面显示哪些入口（isWelfare 用于按模式调整导航）
             'modeLabel' => '',
             'isWelfare' => $mode === 'public_welfare',
+            // 首页示例代码用的「站点基址」（不带 /v1，模板里自己拼端点路径），
+            // 以及完整的接入地址（带 /v1，供首屏一键复制）
+            'apiBase' => rtrim(\app\common\Url::base($request), '/'),
+            'apiBaseUrl' => \app\common\Url::apiBase($request),
             'description' => trim((string) Settings::get('site.description', '')),
             'announcement' => trim((string) Settings::get('site.announcement', '')),
             'icp' => trim((string) Settings::get('site.icp', '')),

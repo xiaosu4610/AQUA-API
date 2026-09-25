@@ -462,6 +462,26 @@
     button.primary.sm, a.primary.sm { padding: 5px 13px; font-size: 13px; }
     .copy { display: inline-flex; align-items: center; gap: 5px; }
     .copy .cp-done { color: var(--ok); }
+    /* 复制成功的反馈：只靠瞬时提示很容易被忽略，所以按钮本身也变色 */
+    .cp-done { color: var(--ok) !important; border-color: #b7e2c9 !important; }
+
+    /* ── 接入信息块（控制台的 BaseURL 复制 + 调用示例）────── */
+    .access-card {
+        display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+        padding: 12px 14px; background: #f7fafd;
+        border: 1px solid var(--border); border-radius: var(--radius);
+    }
+    .access-card .ac-label { font-size: 12.5px; font-weight: 600; color: var(--muted); }
+    .access-card code.ac-url {
+        padding: 5px 10px; background: #fff; border: 1px solid var(--border);
+        border-radius: 6px; color: #33475b; font-size: 13px; user-select: all;
+    }
+    pre.block {
+        margin: 10px 0 0; padding: 12px 14px; overflow-x: auto;
+        background: #1f2a37; color: #e6edf5; border-radius: var(--radius);
+        font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+        font-size: 12.5px; line-height: 1.75; white-space: pre; tab-size: 2;
+    }
 
     /* ── 独立错误页（4xx / 5xx）─────────────────────────── */
     .err-page { min-height: 70vh; display: flex; align-items: center; justify-content: center; }

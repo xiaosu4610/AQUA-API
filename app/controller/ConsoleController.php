@@ -28,6 +28,8 @@ use app\common\Settings;
 use app\common\UsageLog;
 use app\common\User;
 use app\common\UserToken;
+use app\common\Url;
+use support\Log;
 use support\Request;
 use support\Response;
 
@@ -76,7 +78,19 @@ class ConsoleController
             'recent' => $this->recentRows((int) $user['id']),
             'currency' => (string) Settings::get('billing.currency', 'CNY'),
             'rechargeEnabled' => \app\common\Epay::enabled(),
+            // 给页面上的「Base URL 复制」用：用户接入时唯一需要改的就是它
+            'apiBaseUrl' => Url::apiBase(request()),
+            'apiExample' => $this->apiExample(),
         ]);
+    }
+
+    /** 一段可直接抄走的调用示例（把真实地址塞进去，省得用户自己拼） */
+    private function apiExample(): string
+    {
+        return "curl " . Url::apiBase(request()) . "/chat/completions \\\n"
+            . "  -H \"Authorization: Bearer 你的令牌\" \\\n"
+            . "  -H \"Content-Type: application/json\" \\\n"
+            . "  -d '{\"model\":\"模型名\",\"messages\":[{\"role\":\"user\",\"content\":\"你好\"}]}'";
     }
 
     /**
@@ -336,8 +350,87 @@ class ConsoleController
     }
 
     /**
-     * @param array<string, mixed> $vars
+     * 写入提示并回到指定页面。
+     *
+     * 与 back() 分开是因为注销确认页需要「出错后留在原页」——
+     * 把人甩回控制台会让他找不到刚才那个确认入口。
      */
+    private function backTo(string $path, string $message, string $type): Response
+    {
+        session()->set(self::FLASH_NOTICE, $message);
+        session()->set(self::FLASH_TYPE, $type);
+
+        return redirect($path);
+    }
+
+    /**
+     * GET /console/delete —— 注销账号的确认页（第一步）
+     *
+     * 为什么单独一页而不是弹个 confirm：注销会连令牌一起删掉，
+     * 用户的程序会立刻开始报 401。这种后果必须**离开当前页面、看清代价**再点，
+     * 而不是在列表页上被一个弹窗顺手点掉。
+     */
+    public function deleteAccountPage(Request $request): Response
+    {
+        $user = $this->currentUser();
+        if ($user === null) {
+            return redirect('/login');
+        }
+
+        return $this->view('account_delete', [
+            'user' => $user,
+            'tokenCount' => count(UserToken::allForUser((int) $user['id'])),
+        ]);
+    }
+
+    /**
+     * POST /console/delete —— 真正注销（第二步）
+     *
+     * 二次确认的实现方式：这一页要求**重输密码 + 亲手输入自己的邮箱**，
+     * 两个都对才执行。比勾一个「我已确认」的复选框可靠得多 ——
+     * 后者在手机上很容易被误触。
+     */
+    public function deleteAccount(Request $request): Response
+    {
+        $user = $this->currentUser();
+        if ($user === null) {
+            return redirect('/login');
+        }
+
+        if (!Csrf::check($request->post('_csrf'))) {
+            return $this->backTo('/console/delete', '页面已过期，请重新提交', 'err');
+        }
+
+        $password = (string) $request->post('password', '');
+        $emailTyped = trim((string) $request->post('confirm_email', ''));
+
+        // 直接比对密码哈希，**不**走 User::attempt()：后者会累计失败次数，
+        // 在确认页输错一次密码不该让用户被锁号（那是给登录入口用的风控）
+        if (!password_verify($password, (string) ($user['password_hash'] ?? ''))) {
+            return $this->backTo('/console/delete', '密码不正确，注销已取消', 'err');
+        }
+
+        if (mb_strtolower($emailTyped) !== mb_strtolower((string) $user['email'])) {
+            return $this->backTo('/console/delete', '邮箱没对上，注销已取消（请输入你自己的邮箱）', 'err');
+        }
+
+        $email = (string) $user['email'];
+        User::deleteAccount((int) $user['id']);
+
+        // 会话整段清掉：账号已经不存在了，留着登录态只会到处 401
+        session()->flush();
+
+        Log::warning("用户自助注销账号：{$email}（id={$user['id']}），其令牌已删除、订单与用量记录保留但已匿名");
+
+        return $this->view('notice', [
+            'title' => '账号已注销',
+            'message' => "你的账号（{$email}）与全部令牌已删除。"
+                . "\n" . '充值订单与用量记录因对账需要仍然保留，但已不再与该账号关联。'
+                . "\n" . '如果这是误操作，请联系站长；重新注册会是一个全新的账号。',
+            'ok' => true,
+        ]);
+    }
+
     private function view(string $template, array $vars = []): Response
     {
         return view('user/' . $template, array_merge([

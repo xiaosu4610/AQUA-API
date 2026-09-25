@@ -97,6 +97,9 @@ class AuthController
 
         session()->set(self::SESSION_KEY, (int) $result['user']['id']);
         session()->set('user_login_at', time());
+        // 记下登录当时的编号代际：用户编号被重排后（注销补位），
+        // 这个会话必须失效，否则会「登录着却是别人的账号」
+        session()->set(User::SESSION_EPOCH_KEY, User::idEpoch());
 
         // 防「会话固定」：登录是权限变化点，必须换一个新的会话 ID。
         // 顺序要求「先写数据、再换 ID」，理由见 AdminController::login 里的说明
@@ -125,8 +128,20 @@ class AuthController
     public static function currentUserId(): int
     {
         $id = (int) session()->get(self::SESSION_KEY, 0);
+        if ($id <= 0) {
+            return 0;
+        }
 
-        return $id > 0 ? $id : 0;
+        // 编号代际对不上 → 这个会话是重排之前建立的，里面的编号现在属于别人。
+        // 直接当作未登录处理，并顺手把会话里的用户标记清掉
+        if ((int) session()->get(User::SESSION_EPOCH_KEY, -1) !== User::idEpoch()) {
+            session()->forget(self::SESSION_KEY);
+            session()->forget(User::SESSION_EPOCH_KEY);
+
+            return 0;
+        }
+
+        return $id;
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -285,6 +300,7 @@ class AuthController
         // 不需要验证：直接登录进控制台，并在页面上把令牌明文给他看一次
         session()->set(self::SESSION_KEY, $created['id']);
         session()->set('user_login_at', time());
+        session()->set(User::SESSION_EPOCH_KEY, User::idEpoch());
 
         // 注册即登录同样是权限变化点，换会话 ID（顺序要求见 AdminController::login）
         $request->sessionRegenerateId(true);

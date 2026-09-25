@@ -1,0 +1,309 @@
+<?php
+/**
+ * 接口文档（公开页）
+ *
+ * 一份「照着抄就能跑通」的文档，比一份「很全」的文档有用。
+ * 因此每一段示例都写完整（含地址与鉴权头），并在页首给出可直接复制的 Base URL。
+ *
+ * @var string $siteName
+ * @var string $baseUrl     形如 https://站点/v1
+ * @var array<int, string> $models
+ * @var string $currency
+ * @var bool   $loggedIn
+ * @var int    $ttftTimeout
+ * @var int    $totalTimeout
+ */
+?>
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>API 文档 · <?= htmlspecialchars((string) $siteName, ENT_QUOTES, 'UTF-8') ?></title>
+    <meta name="description" content="本站 OpenAI 兼容接口的接入地址、鉴权方式、可用端点、错误码与示例代码。">
+    <?php include __DIR__ . '/_public_style.html'; ?>
+    <style>
+        .doc-grid { display: grid; grid-template-columns: 1fr; gap: var(--sp-4); }
+        .doc-card { border: 1px solid var(--border); border-radius: 12px; background: #fff; padding: 18px 20px; }
+        .doc-card h2 { margin: 0 0 10px; font-size: 16px; }
+        .doc-card h3 { margin: 18px 0 8px; font-size: 14px; }
+        .doc-card p { margin: 0 0 10px; font-size: 13.5px; line-height: 1.9; color: #3c4a58; }
+        .doc-card ul { margin: 0 0 10px; padding-left: 20px; font-size: 13.5px; line-height: 1.95; color: #3c4a58; }
+        .base-line { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+        .base-line code {
+            flex: 1 1 260px; min-width: 0; padding: 10px 12px; background: #f6f9fb;
+            border: 1px solid var(--border); border-radius: 9px; font-size: 13px;
+            overflow-wrap: anywhere;
+        }
+        pre.code {
+            margin: 0 0 12px; padding: 13px 14px; background: #0f1b26; color: #dbe7f2;
+            border-radius: 10px; overflow-x: auto; font-size: 12.5px; line-height: 1.75;
+            font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+        }
+        pre.code .c { color: #7f97ad; }
+        table.doc { width: 100%; border-collapse: collapse; font-size: 13px; }
+        table.doc th, table.doc td { padding: 9px 10px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+        table.doc th { color: var(--muted); font-weight: 500; }
+        .ep { display: inline-block; padding: 1px 8px; border-radius: 6px; font-size: 12px; font-weight: 600; margin-right: 6px; }
+        .ep.get { background: #e7f4ec; color: #0b7c3e; }
+        .ep.post { background: #eaf1fb; color: #1b4b8f; }
+        .model-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+        .model-tags code { font-size: 12px; padding: 2px 8px; background: #f4f7fa; border: 1px solid var(--border); border-radius: 6px; }
+        @media (max-width: 620px) {
+            .doc-card { padding: 15px 15px; }
+            pre.code { font-size: 11.5px; }
+        }
+    </style>
+</head>
+<body>
+
+<?php $active = 'docs'; include __DIR__ . '/_public_nav.html'; ?>
+
+<main class="shell">
+
+    <div class="page-head">
+        <div class="ph-main">
+            <h1><?= icon('channels', 20) ?>API 文档</h1>
+            <p class="ph-desc">
+                本站对外提供 <b>OpenAI 兼容</b>接口：把你代码里的 <code>base_url</code> 换成下面的地址、
+                把 API Key 换成你的令牌，其余不用改。
+            </p>
+        </div>
+        <div class="ph-actions">
+            <?php if ($loggedIn): ?>
+                <a class="ghost" href="/console"><?= icon('dashboard', 15) ?>去控制台拿令牌</a>
+            <?php else: ?>
+                <a class="ghost" href="/login"><?= icon('lock', 15) ?>登录</a>
+            <?php endif; ?>
+        </div>
+    </div>
+
+    <div class="doc-grid">
+
+        <!-- ① 接入地址 -->
+        <section class="doc-card">
+            <h2>接入地址（Base URL）</h2>
+            <div class="base-line">
+                <code id="base-url"><?= htmlspecialchars((string) $baseUrl, ENT_QUOTES, 'UTF-8') ?></code>
+                <button type="button" class="primary sm" data-copy="<?= htmlspecialchars((string) $baseUrl, ENT_QUOTES, 'UTF-8') ?>">
+                    <?= icon('external', 14) ?>复制地址
+                </button>
+            </div>
+            <p class="tip" style="margin-top:10px">
+                注意地址末尾的 <code>/v1</code> 要带上。OpenAI 官方 SDK 里这一项叫
+                <code>base_url</code>（Python）或 <code>baseURL</code>（Node），
+                <b>不要</b>再自己拼 <code>/chat/completions</code>。
+            </p>
+        </section>
+
+        <!-- ② 认证 -->
+        <section class="doc-card">
+            <h2>认证</h2>
+            <p>所有接口都需要带令牌（在 <a href="/console">用户控制台</a> 里创建）：</p>
+<pre class="code">Authorization: Bearer 你的令牌</pre>
+            <p>
+                令牌是<b>你的身份</b>：它决定用哪个账号扣费、能调用哪些模型。
+                不要把它写进前端代码或公开仓库 —— 泄露等于把余额交给别人。
+            </p>
+            <p>
+                缺令牌或令牌无效时返回 <b>401</b>，响应体是 OpenAI 风格的 JSON：
+            </p>
+<pre class="code">{"error":{"message":"...","type":"invalid_request_error","code":"invalid_api_key"}}</pre>
+        </section>
+
+        <!-- ③ 端点 -->
+        <section class="doc-card">
+            <h2>可用端点</h2>
+
+            <h3><span class="ep get">GET</span>/v1/models</h3>
+            <p>列出<b>你这把令牌能用</b>的模型。客户端常用它做模型下拉框。</p>
+<pre class="code">curl <?= htmlspecialchars((string) $baseUrl, ENT_QUOTES, 'UTF-8') ?>/models \
+  -H "Authorization: Bearer 你的令牌"</pre>
+<pre class="code">{
+  "object": "list",
+  "data": [
+    {"id": "模型名", "object": "model", "created": 1737000000, "owned_by": "<?= htmlspecialchars((string) $siteName, ENT_QUOTES, 'UTF-8') ?>", "priced": true}
+  ]
+}</pre>
+            <p class="tip">
+                其中 <code>priced</code> 是本站附加的字段：表示这个模型有没有单独定价，
+                客户端可以忽略它。
+            </p>
+
+            <h3><span class="ep post">POST</span>/v1/chat/completions</h3>
+            <p>对话补全，支持流式与非流式。请求体与 OpenAI 一致：</p>
+            <table class="doc">
+                <tr><th style="width:26%">字段</th><th>说明</th></tr>
+                <tr><td><code>model</code></td><td>模型名，从「模型广场」或 <code>/v1/models</code> 里取</td></tr>
+                <tr><td><code>messages</code></td><td>对话数组，元素形如 <code>{"role":"user","content":"你好"}</code></td></tr>
+                <tr><td><code>stream</code></td><td><code>true</code> 时以 SSE 逐块返回；<code>false</code> 或不传则一次性返回</td></tr>
+                <tr><td><code>max_tokens</code></td><td>可选，限制回答长度</td></tr>
+                <tr><td><code>temperature</code></td><td>可选，采样温度</td></tr>
+            </table>
+            <p class="tip">
+                其余字段会原样透传给上游；本站还可能按站长配置给请求<b>附加</b>参数
+                （例如某些上游要求的版本号），你不需要关心。
+            </p>
+        </section>
+
+        <!-- ④ 示例代码 -->
+        <section class="doc-card">
+            <h2>示例代码</h2>
+
+            <h3>curl</h3>
+<pre class="code">curl <?= htmlspecialchars((string) $baseUrl, ENT_QUOTES, 'UTF-8') ?>/chat/completions \
+  -H "Authorization: Bearer 你的令牌" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "<?= htmlspecialchars((string) ($models[0] ?? '模型名'), ENT_QUOTES, 'UTF-8') ?>",
+    "messages": [{"role": "user", "content": "你好"}],
+    "stream": false
+  }'</pre>
+
+            <h3>Python（openai 官方 SDK）</h3>
+<pre class="code">from openai import OpenAI
+
+client = OpenAI(
+    base_url="<?= htmlspecialchars((string) $baseUrl, ENT_QUOTES, 'UTF-8') ?>",
+    api_key="你的令牌",
+)
+
+resp = client.chat.completions.create(
+    model="<?= htmlspecialchars((string) ($models[0] ?? '模型名'), ENT_QUOTES, 'UTF-8') ?>",
+    messages=[{"role": "user", "content": "你好"}],
+    timeout=<?= (int) max(60, $ttftTimeout * 2) ?>,   <span class="c"># 慢模型要把超时调大，见下方「常见问题」</span>
+)
+print(resp.choices[0].message.content)</pre>
+
+            <h3>Node（openai 官方 SDK）</h3>
+<pre class="code">import OpenAI from 'openai';
+
+const client = new OpenAI({
+  baseURL: '<?= htmlspecialchars((string) $baseUrl, ENT_QUOTES, 'UTF-8') ?>',
+  apiKey: '你的令牌',
+});
+
+const resp = await client.chat.completions.create({
+  model: '<?= htmlspecialchars((string) ($models[0] ?? '模型名'), ENT_QUOTES, 'UTF-8') ?>',
+  messages: [{ role: 'user', content: '你好' }],
+});
+console.log(resp.choices[0].message.content);</pre>
+        </section>
+
+        <!-- ⑤ 流式 -->
+        <section class="doc-card">
+            <h2>流式输出</h2>
+            <p>
+                传 <code>"stream": true</code> 后，服务端按 SSE 逐块推送，
+                每块形如 <code>data: {...}</code>，结束时发一行 <code>data: [DONE]</code>：
+            </p>
+<pre class="code">data: {"choices":[{"delta":{"content":"你"}}]}
+data: {"choices":[{"delta":{"content":"好"}}]}
+data: [DONE]</pre>
+            <p>
+                用官方 SDK 时不需要自己解析 SSE，直接 <code>for chunk in stream:</code> 即可。
+                长回答会由服务端定期发送心跳保活，中途断开通常是客户端超时设置太短。
+            </p>
+        </section>
+
+        <!-- ⑥ 错误码 -->
+        <section class="doc-card">
+            <h2>错误码与处理建议</h2>
+            <table class="doc">
+                <tr><th style="width:18%">状态码</th><th>含义与建议动作</th></tr>
+                <tr><td><b>401</b></td><td>令牌缺失/无效/已停用。检查 <code>Authorization</code> 头与令牌状态。</td></tr>
+                <tr><td><b>402 / 403</b></td><td>余额不足、令牌额度用尽，或该令牌不允许调用这个模型。去控制台看余额与令牌的模型白名单。</td></tr>
+                <tr><td><b>404</b></td><td>模型名不存在或当前渠道不支持。用 <code>/v1/models</code> 取准确名称。</td></tr>
+                <tr><td><b>429</b></td><td>触发上游或本站限流。稍后重试，或降低并发。</td></tr>
+                <tr><td><b>5xx</b></td><td>上游异常。本站会自动换渠道重试；仍失败时请稍后再试。</td></tr>
+                <tr><td><b>超时</b></td><td>模型响应慢（免费渠道常见）。把客户端超时调到 60-120 秒，或换响应更快的模型。</td></tr>
+            </table>
+        </section>
+
+        <!-- ⑦ 计费与限额 -->
+        <section class="doc-card">
+            <h2>计费与限额</h2>
+            <ul>
+                <li>计费单位是 <b><?= htmlspecialchars((string) $currency, ENT_QUOTES, 'UTF-8') ?></b>；按 Token 或按次计价，具体以「模型广场」上标的价格为准。</li>
+                <li>标着「免费」或「未定价」的模型当前<b>不扣费</b>。</li>
+                <li>每次调用的用量与费用都会记进控制台的「最近调用」，可以核对。</li>
+                <li>令牌可以单独设额度，用完之后该令牌会失效 —— 适合给子账号或临时试用。</li>
+                <li>上游可能对单账号限速；本站会把请求分配到渠道下的多把密钥上。</li>
+            </ul>
+        </section>
+
+        <!-- ⑧ 常见问题 -->
+        <section class="doc-card">
+            <h2>常见问题</h2>
+            <ul>
+                <li>
+                    <b>「我应该用哪个模型名？」</b><br>
+                    打开 <a href="/models">模型广场</a>，卡片上写着的就是准确名称，点「复制」即可。
+                    也可以调 <code>/v1/models</code> 拿你自己的可用清单。
+                </li>
+                <li>
+                    <b>「为什么很慢 / 报超时？」</b><br>
+                    免费渠道的模型首包可能要十几秒（模型在冷启动）。把客户端超时调到
+                    <b><?= (int) max(60, $ttftTimeout * 2) ?> 秒以上</b>通常就能解决；
+                    模型广场上的速度色标可以帮你挑快的。
+                    本站单请求总时长上限是 <b><?= (int) $totalTimeout ?> 秒</b>。
+                </li>
+                <li>
+                    <b>「401 了怎么排查？」</b><br>
+                    先确认令牌没被停用、没有写错（复制时别带空格）；再确认请求头是
+                    <code>Authorization: Bearer &lt;令牌&gt;</code>，而不是 <code>api-key</code>。
+                </li>
+                <li>
+                    <b>「同一个账号多人用会互相影响吗？」</b><br>
+                    会共用账号余额。要区分用量就给每个人单独建一把令牌，额度分开设。
+                </li>
+            </ul>
+        </section>
+
+        <!-- ⑨ 模型清单 -->
+        <?php if ($models !== []): ?>
+            <section class="doc-card">
+                <h2>当前可用模型（<?= count($models) ?> 个）</h2>
+                <p class="tip">下面这些是本站此刻支持的模型名，可直接复制使用。完整价格见 <a href="/models">模型广场</a>。</p>
+                <div class="model-tags">
+                    <?php foreach ($models as $model): ?>
+                        <code data-copy="<?= htmlspecialchars($model, ENT_QUOTES, 'UTF-8') ?>" title="点击复制"><?= htmlspecialchars($model, ENT_QUOTES, 'UTF-8') ?></code>
+                    <?php endforeach; ?>
+                </div>
+            </section>
+        <?php endif; ?>
+
+    </div>
+</main>
+
+<?php include __DIR__ . '/_public_foot.html'; ?>
+
+<script>
+    // 复制按钮：拿到地址/模型名就是为了粘贴到代码里，不该让人手动框选
+    document.querySelectorAll('[data-copy]').forEach(function (el) {
+        el.addEventListener('click', function () {
+            var text = el.getAttribute('data-copy') || '';
+            var done = function () {
+                el.classList.add('cp-done');
+                setTimeout(function () { el.classList.remove('cp-done'); }, 1200);
+            };
+
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(text).then(done);
+                return;
+            }
+
+            var ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            try { document.execCommand('copy'); done(); } catch (e) {}
+            document.body.removeChild(ta);
+        });
+    });
+</script>
+
+</body>
+</html>

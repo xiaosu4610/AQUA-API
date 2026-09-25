@@ -54,6 +54,18 @@ final class Url
     }
 
     /**
+     * OpenAI 兼容接口的接入地址（形如 https://站点/v1）。
+     *
+     * 为什么收敛到这一个方法：首页、接口文档、用户控制台三处都要显示它，
+     * 各写一份的话迟早出现「首页显示一个地址、文档显示另一个」这种
+     * 最难排查的不一致 —— 用户会照着一个错的去配。
+     */
+    public static function apiBase(?Request $request = null): string
+    {
+        return rtrim(self::base($request), '/') . '/v1';
+    }
+
+    /**
      * 判断对外协议。
      *
      * 顺序不能反：只要反代透传了 X-Forwarded-Proto，就以它为准 ——

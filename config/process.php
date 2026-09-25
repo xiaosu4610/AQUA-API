@@ -25,6 +25,7 @@
  */
 
 use app\process\Http;
+use app\process\UserIdMaintainer;
 use support\Log;
 use support\Request;
 
@@ -57,6 +58,15 @@ return [
             'appPath' => app_path(),
             'publicPath' => public_path(),
         ],
+    ],
+
+    // 用户编号维护：每 3 天把注销留下的编号空位补上（详见 app/process/UserIdMaintainer.php）
+    // count 固定为 1 —— 重排是搬主键，多进程同时做会互相撞车
+    'user_id_maintainer' => [
+        'handler' => UserIdMaintainer::class,
+        'count' => 1,
+        'reloadable' => false,
+        'constructor' => [],
     ],
 
     // 文件变更检测与自动热重载

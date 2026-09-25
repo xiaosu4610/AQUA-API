@@ -23,6 +23,8 @@ declare(strict_types=1);
 
 namespace app\common;
 
+use Throwable;
+
 final class User
 {
     public const STATUS_ENABLED = 1;
@@ -415,6 +417,189 @@ final class User
         return $float == 0.0
             ? '0'
             : rtrim(rtrim(number_format($float, 8, '.', ''), '0'), '.');
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 用户编号：自助注销、连续编号
+    // ═══════════════════════════════════════════════════════════
+
+    /** 会话中记录「登录时的编号代际」的键 */
+    public const SESSION_EPOCH_KEY = 'user_id_epoch';
+
+    /** 引用了用户编号的表 —— 注销与重排都必须一起处理，少一张就会留下指向空号的脏数据 */
+    private const USER_ID_TABLES = ['tokens', 'payment_orders', 'usage_logs'];
+
+    /**
+     * 当前编号代际。
+     *
+     * 每次重排（compactIds）都会 +1。会话里记着登录当时的代际，
+     * 对不上就视为登录失效 —— 这是「重排」唯一的安全阀：
+     * 编号 5 在重排后可能已经是另一个人，若旧会话继续用它，
+     * 就会出现「你登录着，看到的却是别人的余额与令牌」这种最严重的事故。
+     */
+    public static function idEpoch(): int
+    {
+        return Settings::int('users.id_epoch', 0);
+    }
+
+    /**
+     * 用户自助注销账号。
+     *
+     * 处理策略（每一项都有理由）：
+     *   · **令牌全删**：留着等于给已注销的账号继续开门
+     *   · **订单与用量记录保留**，但把归属清空 —— 这些是账目与审计，
+     *     删掉会让「这个月收了多少」再也对不上；清空归属后不再指向任何人
+     *   · 用户行本身**真删**（而不是标记停用），这样编号会出现空位，
+     *     随后由 compactIds 补齐 —— 用户看到的编号因此保持连续
+     */
+    public static function deleteAccount(int $id): bool
+    {
+        if (self::find($id) === null) {
+            return false;
+        }
+
+        $pdo = Db::pdo();
+        $pdo->beginTransaction();
+        try {
+            Db::execute('DELETE FROM tokens WHERE user_id = ?', [$id]);
+            // user_id 列是 NOT NULL，所以用 0 表示「原主人已注销」
+            Db::execute('UPDATE payment_orders SET user_id = 0 WHERE user_id = ?', [$id]);
+            Db::execute('UPDATE usage_logs SET user_id = NULL WHERE user_id = ?', [$id]);
+            Db::execute('DELETE FROM users WHERE id = ?', [$id]);
+            $pdo->commit();
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $e;
+        }
+
+        return true;
+    }
+
+    /** 用户总数与最大编号（判断「有没有空位」的唯一依据） */
+    public static function selectCountAndMax(): array
+    {
+        $row = Db::selectOne('SELECT COUNT(*) AS c, MAX(id) AS m FROM users');
+
+        return [
+            'total' => (int) ($row['c'] ?? 0),
+            'max' => (int) ($row['m'] ?? 0),
+        ];
+    }
+
+    /** 编号是否需要补位（有空位才需要，没空位就什么都不做） */
+    public static function needsCompact(): bool
+    {
+        $row = self::selectCountAndMax();
+
+        return $row['total'] > 0 && $row['max'] !== $row['total'];
+    }
+
+    /**
+     * 现在适合重排编号吗？
+     *
+     * 为什么需要这个判断：重排会把「编号 5」从 A 变成 B。
+     * 若此刻正好有请求在飞（它已经拿到了编号 5，正要去扣费/写用量），
+     * 这次扣费就会落到 B 的账上 —— 这是钱的问题，不能靠概率赌。
+     *
+     * 判据取「最近一次真实调用距今是否超过 5 分钟」：
+     * 没有在途流量时才动手。判不出来（从未有过调用）视为安全。
+     */
+    public static function canCompactNow(int $quietSeconds = 300): bool
+    {
+        $row = Db::selectOne('SELECT MAX(created_at) AS t FROM usage_logs');
+        $last = (int) ($row['t'] ?? 0);
+
+        return $last === 0 || (time() - $last) > $quietSeconds;
+    }
+
+    /**
+     * 把用户编号重排成连续的 1..N（按现有编号从早到晚）。
+     *
+     * 为什么要做：注销会留下空位（1、3、5…）。空位本身不致命，
+     * 但站长与用户都会拿编号当「第几个用户」看，空位会让人以为系统丢了数据。
+     *
+     * 安全要点：
+     *   · 全程一个事务，失败整体回滚
+     *   · **按编号升序**逐个搬：新编号一定 ≤ 旧编号，且升序处理时
+     *     每次的目标编号刚好是上一步腾出来的，不会撞主键
+     *   · 搬完把自增序列重置到 N，否则下一个新用户又会拿到 N+2 之类的新空位
+     *   · 代际 +1，让所有旧会话失效（见 idEpoch 的说明）
+     *
+     * @return array{changed:bool, total:int, moved:int}
+     */
+    public static function compactIds(): array
+    {
+        $ids = array_map(
+            static fn (array $r): int => (int) $r['id'],
+            Db::select('SELECT id FROM users ORDER BY id ASC')
+        );
+
+        $mapping = [];
+        $changed = false;
+        foreach ($ids as $i => $old) {
+            $new = $i + 1;
+            $mapping[$old] = $new;
+            if ($new !== $old) {
+                $changed = true;
+            }
+        }
+
+        if (!$changed) {
+            return ['changed' => false, 'total' => count($ids), 'moved' => 0];
+        }
+
+        $pdo = Db::pdo();
+        $pdo->beginTransaction();
+        try {
+            $moved = 0;
+            foreach ($mapping as $old => $new) {
+                if ($old === $new) {
+                    continue;
+                }
+                foreach (self::USER_ID_TABLES as $table) {
+                    Db::execute("UPDATE {$table} SET user_id = ? WHERE user_id = ?", [$new, $old]);
+                }
+                Db::execute('UPDATE users SET id = ? WHERE id = ?', [$new, $old]);
+                $moved++;
+            }
+
+            $pdo->commit();
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $e;
+        }
+
+        // 自增序列**必须放在事务之外**：MySQL 里 ALTER TABLE 会隐式提交，
+        // 写在事务内会让上面的搬移失去「要么全成、要么全不成」的保证
+        self::resetIdSequence(count($ids));
+
+        Settings::put('users.id_epoch', self::idEpoch() + 1);
+        Settings::put('users.last_compacted_at', time());
+
+        return ['changed' => true, 'total' => count($ids), 'moved' => $moved];
+    }
+
+    /**
+     * 把用户表的自增计数重置为「当前最大编号」。
+     *
+     * 不重置的话，下一个新用户会从历史上的最大编号继续往后拿（例如 21、22），
+     * 空位又出现了 —— 补位就成了每三天做一次的徒劳动作。
+     */
+    private static function resetIdSequence(int $max): void
+    {
+        if (Db::isSqlite()) {
+            // SQLite 的自增计数在 sqlite_sequence 里，且只有用过 AUTOINCREMENT 的表才有这一行
+            Db::execute("UPDATE sqlite_sequence SET seq = ? WHERE name = 'users'", [$max]);
+
+            return;
+        }
+
+        // MySQL：改表定义里的 AUTO_INCREMENT。值必须内联（不能用占位符）
+        Db::pdo()->exec('ALTER TABLE users AUTO_INCREMENT = ' . max(1, $max + 1));
     }
 
     /**

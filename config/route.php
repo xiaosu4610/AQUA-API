@@ -15,6 +15,7 @@ use app\controller\AdminUserController;
 use app\controller\AuthController;
 use app\controller\ChannelController;
 use app\controller\ConsoleController;
+use app\controller\DocsController;
 use app\controller\HealthController;
 use app\controller\HomeController;
 use app\controller\InstallController;
@@ -44,6 +45,10 @@ Route::get('/', [HomeController::class, 'index']);
 // 这是中转站类产品转化率最高的一个页面。
 // 站长可以在配置里整体关掉它（site.show_models），关掉后本路由返回 404
 Route::get('/models', [MarketController::class, 'index']);
+
+// ── 接口文档（公开）────────────────────────────────────
+// 每个公开页都在导航里有入口：用户注册完第一件事就是找「怎么调」
+Route::get('/docs', [DocsController::class, 'index']);
 
 // ── 探活 ────────────────────────────────────────────────
 // 不做鉴权，供运维 / 负载均衡 / 监控调用
@@ -76,6 +81,9 @@ Route::post('/console/token/delete', [ConsoleController::class, 'deleteToken']);
 Route::post('/console/token/reset', [ConsoleController::class, 'resetTokenQuota']);
 Route::post('/console/profile', [ConsoleController::class, 'updateProfile']);
 Route::post('/console/password', [ConsoleController::class, 'changePassword']);
+// 自助注销账号：GET 是「看清代价」的确认页，POST 才真正执行（要求重输密码 + 邮箱二次确认）
+Route::get('/console/delete', [ConsoleController::class, 'deleteAccountPage']);
+Route::post('/console/delete', [ConsoleController::class, 'deleteAccount']);
 
 // ── 充值 ────────────────────────────────────────────────
 Route::get('/recharge', [RechargeController::class, 'index']);
@@ -136,6 +144,7 @@ Route::group('/admin', function () {
     Route::get('/users', [AdminUserController::class, 'index']);
     Route::post('/users/status', [AdminUserController::class, 'status']);
     Route::post('/users/balance', [AdminUserController::class, 'balance']);
+    Route::post('/users/compact', [AdminUserController::class, 'compact']);
     Route::get('/orders', [AdminUserController::class, 'orders']);
     Route::post('/orders/fail', [AdminUserController::class, 'fail']);
 

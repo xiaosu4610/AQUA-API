@@ -60,6 +60,23 @@ include __DIR__ . '/admin/_style.html';
     .nav .links a { color: var(--muted); text-decoration: none; }
     .nav .links a:hover { color: var(--text); }
     .nav .links a.on { color: var(--accent-dark); font-weight: 600; }
+
+    /* 首屏「接入地址」一行：标签 + 地址 + 复制按钮 + 文档链接。
+       地址用等宽字体并可横向滚动：长域名在手机上会把整行撑破 */
+    .base-quick {
+        display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+        margin: 14px 0 2px; padding: 10px 12px; max-width: 100%;
+        background: #f6f9fb; border: 1px solid var(--border); border-radius: 10px;
+    }
+    .base-quick .bq-label { font-size: 12px; color: var(--muted); }
+    .base-quick code {
+        flex: 1 1 240px; min-width: 0; padding: 6px 10px; background: #fff;
+        border: 1px solid var(--border); border-radius: 8px; font-size: 12.5px;
+        overflow-x: auto; white-space: nowrap;
+    }
+    .base-quick .bq-doc { font-size: 12.5px; color: var(--accent-dark); text-decoration: none; }
+    /* 复制成功的反馈：按钮变绿一下，让人确信「复制到了」 */
+    .cp-done { color: #0b7c3e !important; border-color: #b7e2c9 !important; }
     .nav .links a.cta {
         padding: 7px 15px; border-radius: 8px; font-weight: 600;
         background: var(--accent); color: #fff; display: inline-flex; align-items: center; gap: 6px;

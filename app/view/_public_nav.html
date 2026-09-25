@@ -31,6 +31,8 @@ $showModels = $showModels ?? true;
 $navLinks = [
     'home'   => ['label' => '首页',     'href' => '/'],
     'models' => ['label' => '模型广场', 'href' => '/models', 'requires_models' => true],
+    // 接口文档放导航里，而不是藏在页脚：用户注册完第一件事就是找「怎么调」
+    'docs'   => ['label' => 'API 文档', 'href' => '/docs'],
     'status' => ['label' => '服务状态', 'href' => '/healthz'],
 ];
 

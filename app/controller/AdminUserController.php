@@ -75,9 +75,69 @@ class AdminUserController
             'currency' => (string) Settings::get('billing.currency', 'CNY'),
             'orderSummary' => $orders,
             'registerOpen' => Settings::bool('register.open', false),
+            'idStatus' => $this->idStatus(),
             'notice' => (string) session()->pull(self::FLASH_NOTICE, ''),
             'noticeType' => (string) session()->pull(self::FLASH_TYPE, 'info'),
         ], '');
+    }
+
+    /**
+     * 编号维护的现状（给「编号维护」卡片用）。
+     *
+     * @return array{gap:bool, total:int, maxId:int, auto:bool, intervalDays:int, lastAt:string, epoch:int, quiet:bool}
+     */
+    private function idStatus(): array
+    {
+        $row = User::selectCountAndMax();
+        $last = Settings::int('users.last_compacted_at', 0);
+
+        return [
+            'gap' => $row['total'] > 0 && $row['max'] !== $row['total'],
+            'total' => $row['total'],
+            'maxId' => $row['max'],
+            'auto' => Settings::bool('users.auto_compact_ids', true),
+            'intervalDays' => max(1, Settings::int('users.compact_interval_days', 3)),
+            'lastAt' => $last > 0 ? date('Y-m-d H:i', $last) : '从未补位',
+            'epoch' => User::idEpoch(),
+            'quiet' => User::canCompactNow(),
+        ];
+    }
+
+    /**
+     * POST /admin/users/compact —— 立即把用户编号重排成连续编号
+     *
+     * 与定时任务（app/process/UserIdMaintainer）是同一个实现，
+     * 只是由站长手动触发。有在途流量时**不执行**：
+     * 重排会让编号换人，正在飞的请求可能把扣费记到别人账上。
+     */
+    public function compact(Request $request): Response
+    {
+        if (!Csrf::check($request->post('_csrf'))) {
+            return $this->back('页面已过期，请重新提交', 'err');
+        }
+
+        if (!User::needsCompact()) {
+            return $this->back('当前编号本来就是连续的，无需补位', 'ok');
+        }
+
+        if (!User::canCompactNow()) {
+            return $this->back('近 5 分钟内有调用流量，为避免扣费记错人，本次未执行；请稍后再试', 'err');
+        }
+
+        $result = User::compactIds();
+
+        Log::warning(sprintf(
+            '管理员手动重排用户编号：共 %d 个账号，移动 %d 个',
+            $result['total'],
+            $result['moved']
+        ));
+
+        return $this->back(
+            sprintf('编号已重排：现有 %d 个账号全部连续，移动了 %d 个；所有用户需要重新登录（旧登录态已失效）',
+                $result['total'],
+                $result['moved']),
+            'ok'
+        );
     }
 
     /**
