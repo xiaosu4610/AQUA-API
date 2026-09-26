@@ -34,7 +34,8 @@ import (
 
 // channelKeyColumns 集中定义查询列，顺序必须与 scanChannelKey 的扫描顺序严格一致。
 const channelKeyColumns = `id, channel_id, kind, key_enc, label, status, fail_count, last_used_at, last_error, created_at, ` +
-	`refresh_token_enc, access_token_enc, expires_at, account_hint, provider`
+	`refresh_token_enc, access_token_enc, expires_at, account_hint, provider, ` +
+	`weight, priority, in_flight, cooldown_until, rpm_limit, window_start, window_count`
 
 // channelKeyRepository 是 model.ChannelKeyRepository 的 SQL 实现，并发安全。
 type channelKeyRepository struct {
@@ -375,13 +376,16 @@ func (r *channelKeyRepository) MarkUsed(ctx context.Context, id uint64, at time.
 	return nil
 }
 
-// MarkSuccess 记录一次成功：清零连续失败计数。
+// MarkSuccess 记录一次成功：清零连续失败计数并解除冷却。
 //
 // 注意这里【不】改状态：被手动禁用的密钥不应因一次"恰好被选中并成功"而启用
 // （实际上它根本不会被选中）。保持状态与统计分离，语义更清晰。
+//
+// 冷却必须一并清除：借这次成功已经证明"这把钥匙当前是好的"，
+// 再保留冷却只会让它在冷却期内被白白排除在池外。
 func (r *channelKeyRepository) MarkSuccess(ctx context.Context, id uint64) error {
 	if _, err := r.db.ExecContext(ctx,
-		"UPDATE channel_keys SET fail_count = 0, last_error = '' WHERE id = ?", id); err != nil {
+		"UPDATE channel_keys SET fail_count = 0, last_error = '', cooldown_until = 0 WHERE id = ?", id); err != nil {
 		return fmt.Errorf("store: 重置密钥失败计数失败: %w", err)
 	}
 	return nil
@@ -432,6 +436,196 @@ func (r *channelKeyRepository) UpdateStatus(ctx context.Context, id uint64, stat
 	return nil
 }
 
+// ChannelKeyStrategy 读取渠道的凭据调度策略与轮询游标。
+//
+// 渠道不存在时返回默认策略与游标 0：策略属于"优化项"而非"必需项"，
+// 读不到就退化为默认，避免因一条渠道记录缺失阻断整条转发链路。
+func (r *channelKeyRepository) ChannelKeyStrategy(ctx context.Context, channelID uint64) (model.KeyStrategy, int64, error) {
+	var (
+		raw    string
+		cursor int64
+	)
+	err := r.db.QueryRowContext(ctx,
+		"SELECT key_strategy, key_cursor FROM channels WHERE id = ?", channelID).Scan(&raw, &cursor)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.DefaultKeyStrategy(), 0, nil
+	}
+	if err != nil {
+		return model.DefaultKeyStrategy(), 0, fmt.Errorf("store: 读取渠道 %d 的凭据策略失败: %w", channelID, err)
+	}
+	return model.NormalizeKeyStrategy(raw), cursor, nil
+}
+
+// SetChannelStrategy 设置渠道的凭据调度策略。
+func (r *channelKeyRepository) SetChannelStrategy(ctx context.Context, channelID uint64, strategy model.KeyStrategy) error {
+	if !strategy.IsValid() {
+		return fmt.Errorf("store: 凭据调度策略非法: %q", string(strategy))
+	}
+	res, err := r.db.ExecContext(ctx,
+		"UPDATE channels SET key_strategy = ? WHERE id = ?", string(strategy), channelID)
+	if err != nil {
+		return fmt.Errorf("store: 更新渠道 %d 的凭据策略失败: %w", channelID, err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: 读取影响行数失败: %w", err)
+	}
+	if affected == 0 {
+		return model.ErrChannelNotFound
+	}
+	return nil
+}
+
+// AdvanceKeyCursor 持久化轮询游标。
+func (r *channelKeyRepository) AdvanceKeyCursor(ctx context.Context, channelID uint64, cursor int64) error {
+	if cursor < 0 {
+		cursor = 0
+	}
+	res, err := r.db.ExecContext(ctx,
+		"UPDATE channels SET key_cursor = ? WHERE id = ?", cursor, channelID)
+	if err != nil {
+		return fmt.Errorf("store: 更新渠道 %d 的轮询游标失败: %w", channelID, err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: 读取影响行数失败: %w", err)
+	}
+	if affected == 0 {
+		return model.ErrChannelNotFound
+	}
+	return nil
+}
+
+// Acquire 记录一次在途占用（in_flight + 1）。
+//
+// 用 SQL 自增而非"先读后写"，避免并发下计数丢失。
+func (r *channelKeyRepository) Acquire(ctx context.Context, id uint64) error {
+	if _, err := r.db.ExecContext(ctx,
+		"UPDATE channel_keys SET in_flight = in_flight + 1 WHERE id = ?", id); err != nil {
+		return fmt.Errorf("store: 增加凭据 %d 的在途计数失败: %w", id, err)
+	}
+	return nil
+}
+
+// Release 释放在途占用（in_flight - 1）。
+//
+// 关键点：计数【不会降到 0 以下】。进程崩溃后 in_flight 可能是残留值，
+// 而调用方在重试/异常分支上可能重复释放；若简单自减会出现负数，
+// 进而让 least_in_flight 策略长期偏好这把凭据（负数最小），造成流量倾斜。
+func (r *channelKeyRepository) Release(ctx context.Context, id uint64) error {
+	if _, err := r.db.ExecContext(ctx,
+		"UPDATE channel_keys SET in_flight = CASE WHEN in_flight > 0 THEN in_flight - 1 ELSE 0 END WHERE id = ?", id); err != nil {
+		return fmt.Errorf("store: 减少凭据 %d 的在途计数失败: %w", id, err)
+	}
+	return nil
+}
+
+// SetCooldown 设置冷却截止时间与失败原因，并累加连续失败计数。
+//
+// until 为零值时仅清除冷却而不计失败（用于人工/成功路径）。
+func (r *channelKeyRepository) SetCooldown(ctx context.Context, id uint64, until time.Time, reason string) error {
+	if len(reason) > 200 {
+		reason = reason[:200]
+	}
+
+	var res sql.Result
+	var err error
+	if until.IsZero() {
+		res, err = r.db.ExecContext(ctx,
+			"UPDATE channel_keys SET cooldown_until = 0, last_error = ? WHERE id = ?", reason, id)
+	} else {
+		res, err = r.db.ExecContext(ctx, `
+			UPDATE channel_keys SET
+				cooldown_until = ?, fail_count = fail_count + 1, last_error = ?
+			WHERE id = ?`,
+			until.Unix(), reason, id)
+	}
+	if err != nil {
+		return fmt.Errorf("store: 设置凭据 %d 冷却失败: %w", id, err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: 读取影响行数失败: %w", err)
+	}
+	if affected == 0 {
+		return model.ErrChannelKeyNotFound
+	}
+	return nil
+}
+
+// MarkPermanentFailure 把凭据置为自动摘除状态（永久语义）。
+//
+// 与 SetCooldown 的区别：冷却会到期自动恢复，摘除不会。
+// 仅在上游明确表示该凭据永久无效（如密钥被吊销）时调用。
+func (r *channelKeyRepository) MarkPermanentFailure(ctx context.Context, id uint64, reason string) error {
+	if len(reason) > 200 {
+		reason = reason[:200]
+	}
+	if _, err := r.db.ExecContext(ctx, `
+		UPDATE channel_keys SET
+			status = ?, fail_count = fail_count + 1, last_error = ?
+		WHERE id = ?`,
+		int(model.ChannelKeyStatusAutoRemoved), reason, id); err != nil {
+		return fmt.Errorf("store: 摘除凭据 %d 失败: %w", id, err)
+	}
+	return nil
+}
+
+// RecordRequest 记录一次请求以统计 RPM 固定窗口。
+//
+// 窗口语义：window_start 起算，超过 window 即开新窗口（计数重置为 1），
+// 否则窗口内计数自增。用固定窗口而非滑动窗口，是为了能用一条 UPDATE
+// 完成"判断 + 重置 + 自增"，避免并发下的计数错乱。
+func (r *channelKeyRepository) RecordRequest(ctx context.Context, id uint64, at time.Time, window time.Duration) error {
+	seconds := int64(window.Seconds())
+	if seconds <= 0 {
+		seconds = 60
+	}
+	now := at.Unix()
+	if _, err := r.db.ExecContext(ctx, `
+		UPDATE channel_keys SET
+			window_count = CASE
+				WHEN window_start = 0 OR ? - window_start >= ? THEN 1
+				ELSE window_count + 1 END,
+			window_start = CASE
+				WHEN window_start = 0 OR ? - window_start >= ? THEN ?
+				ELSE window_start END
+		WHERE id = ?`,
+		now, seconds, now, seconds, now, id); err != nil {
+		return fmt.Errorf("store: 记录凭据 %d 的请求计数失败: %w", id, err)
+	}
+	return nil
+}
+
+// UpdateScheduling 更新凭据的调度参数。
+//
+// 负值一律归一为 0（weight 为 0 在加权随机里等价于"不选它"，语义自洽）。
+func (r *channelKeyRepository) UpdateScheduling(ctx context.Context, id uint64, weight, priority, rpmLimit int) error {
+	if weight < 0 {
+		weight = 0
+	}
+	if priority < 0 {
+		priority = 0
+	}
+	if rpmLimit < 0 {
+		rpmLimit = 0
+	}
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE channel_keys SET weight = ?, priority = ?, rpm_limit = ? WHERE id = ?`,
+		weight, priority, rpmLimit, id)
+	if err != nil {
+		return fmt.Errorf("store: 更新凭据 %d 的调度参数失败: %w", id, err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: 读取影响行数失败: %w", err)
+	}
+	if affected == 0 {
+		return model.ErrChannelKeyNotFound
+	}
+	return nil
+}
+
 // scanChannelKey 把一行数据映射为凭据对象，并完成解密。
 func (r *channelKeyRepository) scanChannelKey(sc rowScanner) (*model.ChannelKey, error) {
 	var (
@@ -450,11 +644,19 @@ func (r *channelKeyRepository) scanChannelKey(sc rowScanner) (*model.ChannelKey,
 		expiresAt    int64
 		accountHint  string
 		provider     string
+		weight       int
+		priority     int
+		inFlight     int
+		cooldownEnd  int64
+		rpmLimit     int
+		windowStart  int64
+		windowCount  int
 	)
 
 	if err := sc.Scan(&id, &channelID, &kind, &encryptedKey, &label, &status,
 		&failCount, &lastUsedAt, &lastError, &createdAt,
-		&refreshEnc, &accessEnc, &expiresAt, &accountHint, &provider); err != nil {
+		&refreshEnc, &accessEnc, &expiresAt, &accountHint, &provider,
+		&weight, &priority, &inFlight, &cooldownEnd, &rpmLimit, &windowStart, &windowCount); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, err
 		}
@@ -497,6 +699,14 @@ func (r *channelKeyRepository) scanChannelKey(sc rowScanner) (*model.ChannelKey,
 		LastUsedAt:   unixToExpiresAt(lastUsedAt),
 		LastError:    lastError,
 		CreatedAt:    time.Unix(createdAt, 0),
+
+		Weight:        weight,
+		Priority:      priority,
+		InFlight:      inFlight,
+		CooldownUntil: unixToExpiresAt(cooldownEnd),
+		RPMLimit:      rpmLimit,
+		WindowStart:   unixToExpiresAt(windowStart),
+		WindowCount:   windowCount,
 	}, nil
 }
 

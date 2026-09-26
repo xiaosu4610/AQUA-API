@@ -82,6 +82,75 @@ func (s ChannelKeyStatus) IsValid() bool {
 	}
 }
 
+// KeyStrategy 表示渠道级凭据调度策略（落库于 channels.key_strategy）。
+//
+// 为什么把它做成"渠道级"而不是"凭据级"：运维关心的是
+// "这个上游的一池钥匙整体怎么用"，而不是逐把钥匙配置挑选方式；
+// 逐把配置既繁琐又难以解释（同一池里两种策略会互相打架）。
+type KeyStrategy string
+
+const (
+	// KeyStrategySequential 顺序：永远取优先级最高、id 最小的可用凭据。
+	// 适用：希望固定主用某几把钥匙、其余作为备份的场景。
+	KeyStrategySequential KeyStrategy = "sequential"
+	// KeyStrategyRoundRobin 轮询：环形游标依次取，游标持久化在渠道上。
+	// 适用：希望把请求严格均摊到每把钥匙（如按账号均分免费额度）。
+	KeyStrategyRoundRobin KeyStrategy = "round_robin"
+	// KeyStrategyWeightedRandom 加权随机：按 weight 倾斜。
+	// 适用：想让额度大/质量好的钥匙承担更多流量。
+	KeyStrategyWeightedRandom KeyStrategy = "weighted_random"
+	// KeyStrategyLeastRecent 最久未用：优先取最长时间没被用过的（从未用过最优先）。
+	// 适用：让池内每把钥匙都轮流"热身"，避免长期闲置的钥匙一直不被发现失效。
+	KeyStrategyLeastRecent KeyStrategy = "least_recent"
+	// KeyStrategyLeastInFlight 最少在途：优先取当前在途请求数最少的（默认）。
+	// 适用：高并发场景，尽量把流量分散到未被占用的钥匙上，降低单把被限流的概率。
+	KeyStrategyLeastInFlight KeyStrategy = "least_in_flight"
+)
+
+// IsValid 判断策略取值是否合法（用于校验外部输入）。
+func (s KeyStrategy) IsValid() bool {
+	switch s {
+	case KeyStrategySequential, KeyStrategyRoundRobin, KeyStrategyWeightedRandom,
+		KeyStrategyLeastRecent, KeyStrategyLeastInFlight:
+		return true
+	default:
+		return false
+	}
+}
+
+// String 返回策略的中文名，便于日志与界面展示。
+func (s KeyStrategy) String() string {
+	switch s {
+	case KeyStrategySequential:
+		return "顺序"
+	case KeyStrategyRoundRobin:
+		return "轮询"
+	case KeyStrategyWeightedRandom:
+		return "加权随机"
+	case KeyStrategyLeastRecent:
+		return "最久未用"
+	case KeyStrategyLeastInFlight:
+		return "最少在途"
+	default:
+		return string(s)
+	}
+}
+
+// NormalizeKeyStrategy 把库中读到的原始字符串归一为合法策略。
+//
+// 空值或未知值一律退回默认策略（least_in_flight）：
+// 策略只影响"挑哪一把"，不应因为一个拼错的配置让整条渠道不可用。
+func NormalizeKeyStrategy(raw string) KeyStrategy {
+	s := KeyStrategy(strings.TrimSpace(raw))
+	if s.IsValid() {
+		return s
+	}
+	return KeyStrategyLeastInFlight
+}
+
+// DefaultKeyStrategy 返回渠道未显式配置时使用的默认策略。
+func DefaultKeyStrategy() KeyStrategy { return KeyStrategyLeastInFlight }
+
 // CredentialKind 表示凭据类型。
 //
 // 两类凭据的调度语义完全一致（池内轮询、失败摘除、记录最近使用），
@@ -119,6 +188,19 @@ type ChannelKey struct {
 	Status    ChannelKeyStatus // 可用状态
 	FailCount int              // 连续失败次数（成功即清零）
 
+	// 以下为「调度维度」字段（迁移 0013 新增）。
+	//
+	// 它们只影响"从池里挑哪一把"与"何时暂时不用它"，不改变凭据的持久状态：
+	//   - 权重/优先级只作用于选择顺序；
+	//   - 在途/限速/冷却是运行态，随时间或请求数自动变化。
+	Weight        int       // 权重（weighted_random 使用；全为 0 时退化为等概率）
+	Priority      int       // 优先级（sequential 使用；数值越大越优先）
+	InFlight      int       // 当前在途请求数（least_in_flight 使用）
+	CooldownUntil time.Time // 冷却截止时间；零值表示无冷却
+	RPMLimit      int       // 每分钟请求上限；0 表示不限速
+	WindowStart   time.Time // 限速窗口起点；零值表示尚未开始计数
+	WindowCount   int       // 限速窗口内已用请求数
+
 	// 以下字段仅 OAuth 类型使用。
 	//
 	// RefreshToken / AccessToken 均为明文，仅在内存中流转，落库由仓储加密。
@@ -139,8 +221,18 @@ type ChannelKey struct {
 }
 
 // IsUsable 判断该凭据当前是否可参与轮询。
+//
+// 注意：本方法只反映持久状态（是否启用），不含冷却与限速——
+// 后者随时间自动变化，需要传入当前时间，因此由调度器在挑选前单独判断。
 func (k *ChannelKey) IsUsable() bool {
 	return k.Status == ChannelKeyStatusEnabled
+}
+
+// CoolingDown 判断凭据是否处于冷却期（时间语义的临时停用）。
+//
+// 冷却到期即自动可用，无需任何后台动作；这与 status 的人工摘除语义完全不同。
+func (k *ChannelKey) CoolingDown(now time.Time) bool {
+	return !k.CooldownUntil.IsZero() && k.CooldownUntil.After(now)
 }
 
 // IsOAuth 判断是否为 OAuth 凭据。
@@ -359,6 +451,48 @@ type ChannelKeyRepository interface {
 
 	// UpdateStatus 手动修改密钥状态（启用 / 禁用 / 重新启用被摘除的密钥）。
 	UpdateStatus(ctx context.Context, id uint64, status ChannelKeyStatus) error
+
+	// ---- 以下为调度维度（迁移 0013）的方法 ----
+
+	// ChannelKeyStrategy 读取渠道的凭据调度策略与轮询游标。
+	//
+	// 渠道不存在时返回默认策略与游标 0（不报错）：策略只影响"挑哪一把"，
+	// 读不到就退化为默认，不应成为转发链路的单点故障。
+	ChannelKeyStrategy(ctx context.Context, channelID uint64) (KeyStrategy, int64, error)
+
+	// SetChannelStrategy 设置渠道的凭据调度策略（校验失败返回错误）。
+	SetChannelStrategy(ctx context.Context, channelID uint64, strategy KeyStrategy) error
+
+	// AdvanceKeyCursor 持久化轮询游标（round_robin 每次选中后自增写回）。
+	//
+	// 持久化而非只放内存：进程重启后轮询位置不归零，
+	// 否则每次重启都会反复压在前几把凭据上。
+	AdvanceKeyCursor(ctx context.Context, channelID uint64, cursor int64) error
+
+	// Acquire 记录一次在途占用（in_flight + 1）。
+	Acquire(ctx context.Context, id uint64) error
+
+	// Release 释放在途占用（in_flight - 1）。
+	//
+	// 必须可【安全重复调用】：调用方在重试与异常分支上可能重复释放，
+	// 实现需保证计数不会被减到负数。
+	Release(ctx context.Context, id uint64) error
+
+	// SetCooldown 设置冷却截止时间与失败原因，并累加连续失败计数。
+	//
+	// until 为零值时表示清除冷却。冷却到期即自动恢复，无需额外动作。
+	SetCooldown(ctx context.Context, id uint64, until time.Time, reason string) error
+
+	// MarkPermanentFailure 记录一次"凭据被明确判定为永久无效"：置为自动摘除状态。
+	//
+	// 只有在上游明确表示该凭据永久不可用时才调用，不要用它表达临时失败。
+	MarkPermanentFailure(ctx context.Context, id uint64, reason string) error
+
+	// RecordRequest 记录一次请求，用于 RPM 固定窗口计数（window 为窗口时长）。
+	RecordRequest(ctx context.Context, id uint64, at time.Time, window time.Duration) error
+
+	// UpdateScheduling 更新凭据的调度参数（权重 / 优先级 / RPM 上限）。
+	UpdateScheduling(ctx context.Context, id uint64, weight, priority, rpmLimit int) error
 }
 
 // ErrChannelKeyNotFound 表示密钥不存在。

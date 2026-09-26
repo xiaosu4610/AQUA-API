@@ -110,7 +110,7 @@ func TestResolveChatKey_密钥池优先于渠道单密钥(t *testing.T) {
 
 	// 渠道同时存在"单密钥"与"池中密钥"时，应优先用池里的
 	// （这是配置者的显式意图：把密钥放进池子就是要走池化轮询）
-	key, keyID, ok, _ := r.resolveChatKey(ctx, ch, map[uint64]struct{}{})
+	key, keyID, _, ok, _ := r.resolveChatKey(ctx, ch, map[uint64]struct{}{})
 	if !ok {
 		t.Fatal("应能解析出密钥")
 	}
@@ -131,7 +131,7 @@ func TestResolveChatKey_无池时回退单密钥(t *testing.T) {
 
 	r := New(channels, Options{Keys: keys})
 
-	key, keyID, ok, _ := r.resolveChatKey(ctx, ch, map[uint64]struct{}{})
+	key, keyID, _, ok, _ := r.resolveChatKey(ctx, ch, map[uint64]struct{}{})
 	if !ok || key != "sk-legacy-key" || keyID != 0 {
 		t.Fatalf("应回退为单密钥模式，实际 key=%q keyID=%d ok=%v", key, keyID, ok)
 	}
@@ -150,7 +150,7 @@ func TestResolveChatKey_本次已用过的密钥不再返回(t *testing.T) {
 	used := make(map[uint64]struct{})
 
 	// 连续两次应拿到不同的密钥（池内只有两把）
-	_, id1, ok1, spare1 := r.resolveChatKey(ctx, ch, used)
+	_, id1, _, ok1, spare1 := r.resolveChatKey(ctx, ch, used)
 	if !ok1 {
 		t.Fatal("第一次应能解析出密钥")
 	}
@@ -159,7 +159,7 @@ func TestResolveChatKey_本次已用过的密钥不再返回(t *testing.T) {
 	}
 	used[id1] = struct{}{}
 
-	_, id2, ok2, spare2 := r.resolveChatKey(ctx, ch, used)
+	_, id2, _, ok2, spare2 := r.resolveChatKey(ctx, ch, used)
 	if !ok2 {
 		t.Fatal("第二次应能解析出密钥")
 	}
@@ -172,7 +172,7 @@ func TestResolveChatKey_本次已用过的密钥不再返回(t *testing.T) {
 	used[id2] = struct{}{}
 
 	// 第三次：池内密钥已全部用过，应返回 ok=false（让上层换渠道）
-	_, _, ok3, _ := r.resolveChatKey(ctx, ch, used)
+	_, _, _, ok3, _ := r.resolveChatKey(ctx, ch, used)
 	if ok3 {
 		t.Fatal("池内密钥全部用过后应返回 ok=false")
 	}

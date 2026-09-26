@@ -456,7 +456,7 @@ func (s *TaskService) pickTarget(ctx context.Context, modelName string) (*model.
 		if ch == nil {
 			break
 		}
-		apiKey, keyID, ok, _ := s.relay.resolveChatKey(ctx, ch, nil)
+		apiKey, keyID, _, ok, _ := s.relay.resolveChatKey(ctx, ch, nil)
 		if !ok {
 			excluded[ch.ID] = struct{}{}
 			continue
@@ -475,7 +475,7 @@ func (s *TaskService) channelForTask(ctx context.Context, task *model.Task) (*mo
 	if err != nil {
 		return nil, "", 0, err
 	}
-	apiKey, keyID, ok, _ := s.relay.resolveChatKey(ctx, ch, nil)
+	apiKey, keyID, _, ok, _ := s.relay.resolveChatKey(ctx, ch, nil)
 	if !ok {
 		return nil, "", 0, ErrTaskUnavailable
 	}

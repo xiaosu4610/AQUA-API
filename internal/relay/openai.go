@@ -132,6 +132,8 @@ type forwardTarget struct {
 	apiKey string
 	// keyID 是密钥池内的记录 ID；0 表示单密钥模式（渠道没有密钥池）。
 	keyID uint64
+	// keyFailCount 是该凭据此前的连续失败次数，用于计算冷却的指数退避。
+	keyFailCount int
 	// hasSpareKey 表示同渠道池内还有本次未用过的备用密钥，可用于密钥级重试。
 	hasSpareKey bool
 	// hasSpareChannel 表示除本渠道外还有其他候选渠道，可用于渠道级重试。
@@ -196,6 +198,11 @@ func (r *Relay) forwardWithFallback(w http.ResponseWriter, req *http.Request, mo
 	excludedChannels := make(map[uint64]struct{}) // 本次请求已放弃的渠道
 	usedKeys := make(map[uint64]struct{})         // 本次请求已用过的密钥（避免重复撞同一把）
 
+	// 会话标识：客户端若带约定请求头，则整轮重试都尝试粘在同一把凭据上；
+	// 未携带时为空串，调度退化为无粘性（不做任何猜测）。
+	sessionHash := stickySessionKey(req)
+	keyCtx := withCredentialSession(req.Context(), sessionHash)
+
 	// 两套独立的尝试预算（重要，别合并成一个）：
 	//
 	//   · channelAttempts：渠道级失败（连不上、5xx）的预算 = maxAttempts。
@@ -218,9 +225,9 @@ retryLoop:
 			break
 		}
 
-		apiKey, keyID, ok, hasSpareKey := r.resolveChatKey(req.Context(), ch, usedKeys)
+		apiKey, keyID, keyFailCount, ok, hasSpareKey := r.resolveChatKey(keyCtx, ch, usedKeys)
 		if !ok {
-			// 该渠道当前没有可用密钥（池内全部被禁用或自动摘除）：
+			// 该渠道当前没有可用密钥（池内全部被禁用、冷却中或限速用满）：
 			// 直接放弃这个渠道，避免白白消耗一次尝试预算。
 			excludedChannels[ch.ID] = struct{}{}
 			continue
@@ -233,11 +240,19 @@ retryLoop:
 			channel:         ch,
 			apiKey:          apiKey,
 			keyID:           keyID,
+			keyFailCount:    keyFailCount,
 			hasSpareKey:     hasSpareKey,
 			hasSpareChannel: r.hasOtherChannel(candidates, excludedChannels, ch.ID),
 		}
 
-		switch r.forwardChat(w, req, target, modelName, body, adapter, upstreamPath, &lastFailure) {
+		// 占用在途计数（供 least_in_flight 使用）：与下方的 releaseKey 成对，
+		// 覆盖本轮从"选定凭据"到"响应结束"的整个区间。
+		r.acquireKey(keyCtx, target.keyID)
+		outcome := r.forwardChat(w, req, target, modelName, body, adapter, upstreamPath, &lastFailure)
+		// 归还本轮的在途占用：无论成功、换密钥还是换渠道，都必须释放，
+		// 否则 in_flight 只增不减，least_in_flight 会逐步失去参考价值。
+		r.releaseKey(target.keyID)
+		switch outcome {
 		case forwardResponded:
 			return
 		case forwardRetryKey:
@@ -306,19 +321,20 @@ retryLoop:
 // resolveChatKey 为一次转发解析出要使用的上游凭据。
 //
 // 返回：凭据值（API Key 或 OAuth access_token）、池内 ID（单密钥模式为 0）、
-// 是否解析成功、同渠道是否还有备用凭据。
+// 该凭据当前的连续失败次数（供冷却退避使用）、是否解析成功、同渠道是否还有备用凭据。
 //
 // 四种情形：
-//  1. 渠道配置了凭据池 → 从"启用且本次未用过"的凭据中随机挑一条；
+//  1. 渠道配置了凭据池 → 按渠道策略从"启用且本次未用过"的凭据中挑一条；
 //  2. 挑中的是 OAuth 凭据且即将过期 → 先刷新再使用；
 //  3. 渠道没有凭据池（历史数据） → 使用渠道自带的单密钥，保持向后兼容；
-//  4. 池内凭据本次已全部试过或全部被摘除 → 返回 ok=false，让上层换渠道。
+//  4. 池内凭据本次已全部试过或当前全部不可用 → 返回 ok=false，让上层换渠道。
 //
 // 容错：凭据池查询失败时不阻断转发，而是退回单密钥——
 // 统计能力不应该成为转发链路上的单点故障。
-func (r *Relay) resolveChatKey(ctx context.Context, ch *model.Channel, used map[uint64]struct{}) (string, uint64, bool, bool) {
+func (r *Relay) resolveChatKey(ctx context.Context, ch *model.Channel, used map[uint64]struct{}) (string, uint64, int, bool, bool) {
 	if r.keys != nil {
 		if pool, err := r.keys.ListUsable(ctx, ch.ID); err == nil && len(pool) > 0 {
+			sessionHash := credentialSessionFrom(ctx)
 			// 循环而非单次挑选：OAuth 凭据可能因刷新失败而不可用，
 			// 此时应换池内下一条，而不是让整个请求失败。
 			for attempt := 0; attempt < maxCredentialAttempts; attempt++ {
@@ -330,20 +346,27 @@ func (r *Relay) resolveChatKey(ctx context.Context, ch *model.Channel, used map[
 					available = append(available, k)
 				}
 				if len(available) == 0 {
-					return "", 0, false, false
+					return "", 0, 0, false, false
 				}
 
-				picked := model.PickKey(available)
+				// 策略选择：过滤（状态/冷却/限速）+ 五策略择优 + 会话粘性。
+				picked, err := r.SelectKey(ctx, ch, available, sessionHash)
+				if err != nil {
+					// 过滤后无可用凭据（全部冷却/限速/禁用）：让上层换渠道
+					return "", 0, 0, false, false
+				}
+
+				now := time.Now()
 				// 记录使用时间：失败不影响本次转发（这是展示性数据，不是控制流）
-				_ = r.keys.MarkUsed(ctx, picked.ID, time.Now())
+				_ = r.keys.MarkUsed(ctx, picked.ID, now)
 
 				value := picked.CredentialValue()
-				if r.oauth != nil && picked.NeedsRefresh(time.Now()) {
-					fresh, err := r.oauth.EnsureFresh(ctx, picked)
-					if err != nil {
+				if r.oauth != nil && picked.NeedsRefresh(now) {
+					fresh, refreshErr := r.oauth.EnsureFresh(ctx, picked)
+					if refreshErr != nil {
 						// 刷新失败：计入连续失败（达阈值会被自动摘除），
 						// 标记为本次已用过并换下一条凭据
-						_ = r.keys.MarkFailure(ctx, picked.ID, truncateReason("刷新令牌失败: "+err.Error()))
+						_ = r.keys.MarkFailure(ctx, picked.ID, truncateReason("刷新令牌失败: "+refreshErr.Error()))
 						used[picked.ID] = struct{}{}
 						continue
 					}
@@ -357,16 +380,21 @@ func (r *Relay) resolveChatKey(ctx context.Context, ch *model.Channel, used map[
 					used[picked.ID] = struct{}{}
 					continue
 				}
-				return value, picked.ID, true, len(available) > 1
+
+				// 按需记录 RPM 用量（写库失败不影响转发）。
+				if picked.RPMLimit > 0 {
+					_ = r.keys.RecordRequest(ctx, picked.ID, now, rpmWindow)
+				}
+				return value, picked.ID, picked.FailCount, true, len(available) > 1
 			}
-			return "", 0, false, false
+			return "", 0, 0, false, false
 		}
 	}
 
 	if ch.APIKey == "" {
-		return "", 0, false, false
+		return "", 0, 0, false, false
 	}
-	return ch.APIKey, 0, true, false
+	return ch.APIKey, 0, 0, true, false
 }
 
 // maxCredentialAttempts 是单次请求内最多尝试的凭据条数。
@@ -517,13 +545,17 @@ func extractUpstreamErrorMessage(raw []byte) string {
 //     → 属于授权范围问题，同质账号池里换密钥无意义；
 //  3. 其余（请求体有误、5xx 等）→ 与凭据无关。
 //
-// 返回 snippet 供"所有重试都用尽"时透传上游真实原因。
+// 返回 snippet 供"所有重试都用尽"时透传上游真实原因，以及供失败处置
+// （冷却 / 摘除）判断响应体是否明确表示凭据永久无效。
 func (r *Relay) classifyKeyFailure(resp *http.Response) (keyFailureKind, string, []byte) {
 	if resp == nil {
 		return keyFailureNone, "", nil
 	}
 	if isKeyLevelFailure(resp.StatusCode) {
-		return keyFailureCredential, fmt.Sprintf("上游返回 HTTP %d", resp.StatusCode), nil
+		// 需要读取响应体：仅凭状态码无法区分"临时封禁"与"永久吊销"，
+		// 二者对应"冷却"与"摘除"两种完全不同的处置（见 classifyCredentialFailure）。
+		peek, _ := peekBody(resp, keyLevelPeekBytes)
+		return keyFailureCredential, fmt.Sprintf("上游返回 HTTP %d", resp.StatusCode), peek
 	}
 	if resp.StatusCode != http.StatusBadRequest && resp.StatusCode != http.StatusNotFound {
 		return keyFailureNone, "", nil
@@ -582,17 +614,29 @@ func (r *Relay) hasOtherChannel(candidates []*model.Channel, excluded map[uint64
 	return pickCandidate(candidates, probe) != nil
 }
 
-// markKeyFailure 记录一次密钥失败（连续失败达阈值时由仓储自动摘除该密钥）。
-//
-// 刻意忽略错误：这是统计与自愈用途，失败不应影响对客户端的响应。
-func (r *Relay) markKeyFailure(ctx context.Context, keyID uint64, reason string) {
+// acquireKey 记录在途占用（in_flight + 1）。刻意忽略错误：属调度统计用途。
+func (r *Relay) acquireKey(ctx context.Context, keyID uint64) {
 	if r.keys == nil || keyID == 0 {
 		return
 	}
-	_ = r.keys.MarkFailure(ctx, keyID, reason)
+	_ = r.keys.Acquire(ctx, keyID)
 }
 
-// markKeySuccess 记录一次密钥成功（清零连续失败计数）。
+// releaseKey 释放在途占用（in_flight - 1）。
+//
+// 刻意忽略错误：这是调度统计用途，失败不应影响对客户端的响应。
+// 实现保证重复释放安全（不会把计数减到负数），因此调用方无需担心重复调用。
+//
+// 使用独立 context 而非请求 context：响应写完后请求可能已被取消（客户端断开），
+// 若沿用请求 context，这次释放会失败并让 in_flight 残留。
+func (r *Relay) releaseKey(keyID uint64) {
+	if r.keys == nil || keyID == 0 {
+		return
+	}
+	_ = r.keys.Release(context.Background(), keyID)
+}
+
+// markKeySuccess 记录一次密钥成功（清零连续失败计数并解除冷却）。
 func (r *Relay) markKeySuccess(ctx context.Context, keyID uint64) {
 	if r.keys == nil || keyID == 0 {
 		return
@@ -666,12 +710,13 @@ func (r *Relay) forwardChat(w http.ResponseWriter, req *http.Request, target for
 	defer func() { _ = resp.Body.Close() }()
 
 	// ── 失败分流（关键：决定"换密钥"、"换渠道"还是直接透传）────
-	switch kind, reason, snippet := r.classifyKeyFailure(resp); kind {
+	switch kind, _, snippet := r.classifyKeyFailure(resp); kind {
 	case keyFailureCredential:
-		// 凭据不可用（失效/受限/被限流）：记一次失败，达阈值会被自动摘除
-		if target.keyID != 0 {
-			r.markKeyFailure(req.Context(), target.keyID, truncateReason(reason))
-		}
+		// 凭据不可用（失效/受限/被限流）：按失败类型决定"冷却"还是"摘除"。
+		//   - 429 走冷却、401/403/402 走长冷却（都【不】摘除，等待自动恢复）；
+		//   - 仅当上游明确表示凭据永久无效（如已吊销）才摘除。
+		// 注意：升级为 channel_keys 的临时状态，绝不因一次 429 把好凭据移出池子。
+		r.applyCredentialFailure(req.Context(), target.keyID, target.keyFailCount, resp.StatusCode, snippet)
 		// 留存响应，供后续所有重试都失败时透传真实原因
 		saveFailure(lastFailure, resp, snippet)
 
@@ -702,6 +747,11 @@ func (r *Relay) forwardChat(w http.ResponseWriter, req *http.Request, target for
 		// 无退路：透传（保持上游原文，含它的 status 与 detail）
 
 	default:
+		if isRetryableStatus(resp.StatusCode) {
+			// 上游 5xx / 超时属渠道级故障，但也给本次使用的凭据一个短冷却：
+			// 故障期间不要反复把同一把凭据推到上游。冷却会自动到期，不改变凭据状态。
+			r.applyCredentialFailure(req.Context(), target.keyID, target.keyFailCount, resp.StatusCode, nil)
+		}
 		if isRetryableStatus(resp.StatusCode) && target.hasSpareChannel {
 			// 上游故障/过载，且还有别的渠道可试
 			drainAndClose(resp)

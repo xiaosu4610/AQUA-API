@@ -332,3 +332,171 @@ func TestChannelKey_DeleteByChannel(t *testing.T) {
 		t.Fatalf("删除后应为 0 条，实际 %d", total)
 	}
 }
+
+// insertTestChannel 插入一条测试渠道（用于游标/策略相关断言）。
+//
+// 显式指定 id：游标与策略按 channel_id 读写，固定 id 便于断言。
+func insertTestChannel(t *testing.T, db *sql.DB, id uint64) {
+	t.Helper()
+	if _, err := db.Exec(`
+		INSERT INTO channels
+			(id, name, type, base_url, api_key_enc, models, group_name, priority, weight, status, created_at, updated_at)
+		VALUES (?, '测试渠道', 1, 'https://example.com', '', 'm', 'default', 0, 1, 1, 0, 0)`, id); err != nil {
+		t.Fatalf("写入测试渠道失败: %v", err)
+	}
+}
+
+// TestChannelKey_调度列_默认值与读写 验证迁移 0013 新增列的默认值与更新。
+func TestChannelKey_调度列_默认值与读写(t *testing.T) {
+	repo, _ := newTestKeyRepo(t)
+	ctx := context.Background()
+
+	if _, _, err := repo.ReplaceAll(ctx, 1, []string{"nvapi-sched"}, nil); err != nil {
+		t.Fatalf("导入失败: %v", err)
+	}
+	keys, err := repo.ListByChannel(ctx, 1)
+	if err != nil || len(keys) != 1 {
+		t.Fatalf("读取密钥失败: %v", err)
+	}
+	k := keys[0]
+
+	// 默认值：weight=1，其余为 0 / 零值
+	if k.Weight != 1 || k.Priority != 0 || k.InFlight != 0 || k.RPMLimit != 0 || k.WindowCount != 0 {
+		t.Fatalf("调度列默认值不符: %+v", k)
+	}
+	if !k.CooldownUntil.IsZero() || !k.WindowStart.IsZero() {
+		t.Fatalf("时间类调度列默认应为零值: cooldown=%v window=%v", k.CooldownUntil, k.WindowStart)
+	}
+
+	if err := repo.UpdateScheduling(ctx, k.ID, 7, 3, 120); err != nil {
+		t.Fatalf("更新调度参数失败: %v", err)
+	}
+	got, _ := repo.ListByChannel(ctx, 1)
+	if got[0].Weight != 7 || got[0].Priority != 3 || got[0].RPMLimit != 120 {
+		t.Fatalf("调度参数未正确写回: %+v", got[0])
+	}
+}
+
+// TestChannelKey_在途计数_增减与重复释放 验证 Acquire/Release 的计数语义。
+//
+// 重点：Release 必须可安全重复调用，且计数不会降到 0 以下
+// （否则 least_in_flight 会长期偏好负计数的凭据，造成流量倾斜）。
+func TestChannelKey_在途计数_增减与重复释放(t *testing.T) {
+	repo, _ := newTestKeyRepo(t)
+	ctx := context.Background()
+
+	if _, _, err := repo.ReplaceAll(ctx, 1, []string{"nvapi-inflight"}, nil); err != nil {
+		t.Fatalf("导入失败: %v", err)
+	}
+	keys, _ := repo.ListByChannel(ctx, 1)
+	id := keys[0].ID
+
+	for i := 0; i < 2; i++ {
+		if err := repo.Acquire(ctx, id); err != nil {
+			t.Fatalf("Acquire 失败: %v", err)
+		}
+	}
+	if got, _ := repo.ListByChannel(ctx, 1); got[0].InFlight != 2 {
+		t.Fatalf("两次 Acquire 后在途应为 2，实际 %d", got[0].InFlight)
+	}
+
+	if err := repo.Release(ctx, id); err != nil {
+		t.Fatalf("Release 失败: %v", err)
+	}
+	if got, _ := repo.ListByChannel(ctx, 1); got[0].InFlight != 1 {
+		t.Fatalf("Release 一次后在途应为 1，实际 %d", got[0].InFlight)
+	}
+
+	// 重复释放：不应降到负数
+	for i := 0; i < 3; i++ {
+		if err := repo.Release(ctx, id); err != nil {
+			t.Fatalf("重复 Release 失败: %v", err)
+		}
+	}
+	if got, _ := repo.ListByChannel(ctx, 1); got[0].InFlight != 0 {
+		t.Fatalf("重复释放后在途应恒为 0，实际 %d", got[0].InFlight)
+	}
+}
+
+// TestChannelKey_冷却_读写与成功清除 验证冷却截止时间的读写与移除。
+func TestChannelKey_冷却_读写与成功清除(t *testing.T) {
+	repo, _ := newTestKeyRepo(t)
+	ctx := context.Background()
+
+	if _, _, err := repo.ReplaceAll(ctx, 1, []string{"nvapi-cooldown"}, nil); err != nil {
+		t.Fatalf("导入失败: %v", err)
+	}
+	keys, _ := repo.ListByChannel(ctx, 1)
+	id := keys[0].ID
+
+	until := time.Now().Add(10 * time.Minute).Truncate(time.Second)
+	if err := repo.SetCooldown(ctx, id, until, "429 too many requests"); err != nil {
+		t.Fatalf("设置冷却失败: %v", err)
+	}
+	got, _ := repo.ListByChannel(ctx, 1)
+	if got[0].CooldownUntil.Unix() != until.Unix() {
+		t.Fatalf("冷却截止时间应为 %v，实际 %v", until, got[0].CooldownUntil)
+	}
+	if got[0].FailCount != 1 {
+		t.Fatalf("冷却应累加一次失败计数，实际 %d", got[0].FailCount)
+	}
+	if got[0].LastError == "" {
+		t.Fatal("冷却应记录失败原因")
+	}
+
+	// 成功即解除冷却
+	if err := repo.MarkSuccess(ctx, id); err != nil {
+		t.Fatalf("MarkSuccess 失败: %v", err)
+	}
+	got, _ = repo.ListByChannel(ctx, 1)
+	if !got[0].CooldownUntil.IsZero() || got[0].FailCount != 0 {
+		t.Fatalf("成功后应清除冷却与失败计数: %+v", got[0])
+	}
+
+	// 显式清除（until 为零值）
+	if err := repo.SetCooldown(ctx, id, time.Time{}, ""); err != nil {
+		t.Fatalf("清除冷却失败: %v", err)
+	}
+	got, _ = repo.ListByChannel(ctx, 1)
+	if !got[0].CooldownUntil.IsZero() {
+		t.Fatal("until 为零值时应清除冷却")
+	}
+}
+
+// TestChannelKey_轮询游标与策略_持久化 验证渠道级策略与游标的读写。
+func TestChannelKey_轮询游标与策略_持久化(t *testing.T) {
+	repo, db := newTestKeyRepo(t)
+	ctx := context.Background()
+	insertTestChannel(t, db, 1)
+
+	// 默认：最少在途 + 游标 0
+	strategy, cursor, err := repo.ChannelKeyStrategy(ctx, 1)
+	if err != nil {
+		t.Fatalf("读取策略失败: %v", err)
+	}
+	if strategy != model.DefaultKeyStrategy() || cursor != 0 {
+		t.Fatalf("默认策略/游标不符: strategy=%s cursor=%d", strategy, cursor)
+	}
+
+	if err := repo.SetChannelStrategy(ctx, 1, model.KeyStrategyRoundRobin); err != nil {
+		t.Fatalf("设置策略失败: %v", err)
+	}
+	if err := repo.AdvanceKeyCursor(ctx, 1, 5); err != nil {
+		t.Fatalf("推进游标失败: %v", err)
+	}
+	strategy, cursor, _ = repo.ChannelKeyStrategy(ctx, 1)
+	if strategy != model.KeyStrategyRoundRobin || cursor != 5 {
+		t.Fatalf("策略/游标未持久化: strategy=%s cursor=%d", strategy, cursor)
+	}
+
+	// 非法策略应被拒绝
+	if err := repo.SetChannelStrategy(ctx, 1, model.KeyStrategy("nope")); err == nil {
+		t.Fatal("非法策略应被拒绝")
+	}
+
+	// 渠道不存在：返回默认策略与游标 0，不报错
+	strategy, cursor, err = repo.ChannelKeyStrategy(ctx, 999)
+	if err != nil || strategy != model.DefaultKeyStrategy() || cursor != 0 {
+		t.Fatalf("渠道不存在时应返回默认策略: strategy=%s cursor=%d err=%v", strategy, cursor, err)
+	}
+}
