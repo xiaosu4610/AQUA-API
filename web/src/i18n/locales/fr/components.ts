@@ -242,6 +242,8 @@ export default {
       oauth: 'Comptes d’abonnement',
       maintenance: 'Maintenance',
       logs: 'Journaux d’appels',
+      audit: 'Journal d’administration',
+      announcements: 'Annonces',
       settings: 'Paramètres',
     },
     console: {
@@ -256,6 +258,7 @@ export default {
       billing: 'Facturation et historique',
       recharge: 'Recharger',
       logs: 'Journaux d’appels',
+      referral: 'Parrainage et pointage',
     },
   },
 }

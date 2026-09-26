@@ -240,6 +240,8 @@ export default {
       oauth: 'Cuentas de suscripción',
       maintenance: 'Mantenimiento',
       logs: 'Registros de uso',
+      audit: 'Auditoría de administración',
+      announcements: 'Anuncios',
       settings: 'Ajustes',
     },
     console: {
@@ -254,6 +256,7 @@ export default {
       billing: 'Facturación y registros',
       recharge: 'Recargar',
       logs: 'Registros de uso',
+      referral: 'Referidos y registro diario',
     },
   },
 }

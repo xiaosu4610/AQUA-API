@@ -20,6 +20,7 @@ import { computed, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 
 import AppIcon from '@/components/AppIcon.vue'
+import AnnouncementBanner from '@/components/AnnouncementBanner.vue'
 import CopyButton from '@/components/CopyButton.vue'
 import { type IconName } from '@/components/icons'
 import { useAuthStore } from '@/stores/auth'
@@ -139,6 +140,8 @@ const consoleTarget = computed(() => (auth.isAdmin ? '/admin' : '/console'))
 
 <template>
   <div class="min-h-screen bg-ink-950">
+    <!-- 站点公告横幅：落地页也要能看到运营通知（自包含组件，无公告时不渲染）。 -->
+    <AnnouncementBanner />
     <!-- ── 顶部导航 ───────────────────────────────────────── -->
     <header class="sticky top-0 z-30 border-b border-ink-800/80 bg-white/90">
       <div class="mx-auto flex max-w-6xl items-center gap-4 px-5 py-3.5 lg:px-8">

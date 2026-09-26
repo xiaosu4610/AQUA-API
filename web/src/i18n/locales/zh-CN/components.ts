@@ -236,6 +236,8 @@ export default {
       oauth: '订阅账号',
       maintenance: '运维',
       logs: '调用日志',
+      audit: '操作审计',
+      announcements: '站点公告',
       settings: '系统设置',
     },
     console: {
@@ -250,6 +252,7 @@ export default {
       billing: '账务与记录',
       recharge: '账户充值',
       logs: '调用日志',
+      referral: '邀请返利',
     },
   },
 }

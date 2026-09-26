@@ -123,6 +123,14 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/console/RechargeView.vue'),
         meta: { title: '账户充值' },
       },
+      {
+        // 邀请返利 + 每日签到：把"推广"和"回访"两个增长动作收敛在一页，
+        // 用户不必在多个入口之间找自己的邀请码与签到状态。
+        path: 'referral',
+        name: 'console-referral',
+        component: () => import('@/views/console/ReferralView.vue'),
+        meta: { title: '邀请返利' },
+      },
     ],
   },
 
@@ -206,6 +214,20 @@ const routes: RouteRecordRaw[] = [
         name: 'admin-logs',
         component: () => import('@/views/admin/LogsView.vue'),
         meta: { title: '调用日志' },
+      },
+      {
+        // 操作审计：与"调用日志"是两件事——前者记的是管理员改了什么配置，
+        // 后者记的是用户调了哪个模型，排查"配置什么时候被谁改了"只能查这张表。
+        path: 'audit-logs',
+        name: 'admin-audit-logs',
+        component: () => import('@/views/admin/AuditView.vue'),
+        meta: { title: '操作审计' },
+      },
+      {
+        path: 'announcements',
+        name: 'admin-announcements',
+        component: () => import('@/views/admin/AnnouncementsView.vue'),
+        meta: { title: '站点公告' },
       },
       {
         path: 'settings',

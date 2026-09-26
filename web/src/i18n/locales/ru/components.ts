@@ -242,6 +242,8 @@ export default {
       oauth: 'Аккаунты подписки',
       maintenance: 'Обслуживание',
       logs: 'Журнал вызовов',
+      audit: 'Журнал действий администратора',
+      announcements: 'Объявления',
       settings: 'Настройки',
     },
     console: {
@@ -256,6 +258,7 @@ export default {
       billing: 'Платежи и история',
       recharge: 'Пополнение',
       logs: 'Журнал вызовов',
+      referral: 'Приглашения и отметки',
     },
   },
 }

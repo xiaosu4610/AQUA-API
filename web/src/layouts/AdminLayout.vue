@@ -53,6 +53,8 @@ const groups = computed<NavGroup[]>(() => [
     title: t('components.nav.admin.maintenance'),
     items: [
       { label: t('components.nav.admin.logs'), to: '/admin/logs', icon: 'list' },
+      { label: t('components.nav.admin.audit'), to: '/admin/audit-logs', icon: 'shield' },
+      { label: t('components.nav.admin.announcements'), to: '/admin/announcements', icon: 'book' },
       { label: t('components.nav.admin.settings'), to: '/admin/settings', icon: 'sliders' },
     ],
   },

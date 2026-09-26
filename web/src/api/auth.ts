@@ -26,11 +26,16 @@ export function login(payload: LoginPayload): Promise<AuthResult> {
  *
  * 站点开启"注册必须邮箱验证码"时，后端会强制校验 email + code；
  * 未开启时二者可选（留空则不发送，避免后端把空字符串当成显式空值）。
+ *
+ * invite_code 为可选邀请码（来自邀请链接 ?invite=CODE）：
+ * 用交叉类型在本函数局部扩展，避免改动共享的 RegisterPayload 定义；
+ * 后端对非法邀请码会忽略并照常注册，因此这里只在有值时透传。
  */
-export function register(payload: RegisterPayload): Promise<AuthResult> {
-  const body: RegisterPayload = { username: payload.username, password: payload.password }
+export function register(payload: RegisterPayload & { invite_code?: string }): Promise<AuthResult> {
+  const body: RegisterPayload & { invite_code?: string } = { username: payload.username, password: payload.password }
   if (payload.email) body.email = payload.email
   if (payload.code) body.code = payload.code
+  if (payload.invite_code) body.invite_code = payload.invite_code
   return api.post<AuthResult>('/auth/register', body)
 }
 

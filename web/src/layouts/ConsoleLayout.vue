@@ -48,6 +48,7 @@ const groups = computed<NavGroup[]>(() => [
     title: t('components.nav.console.billing'),
     items: [
       { label: t('components.nav.console.recharge'), to: '/console/recharge', icon: 'wallet' },
+      { label: t('components.nav.console.referral'), to: '/console/referral', icon: 'users' },
       { label: t('components.nav.console.logs'), to: '/console/logs', icon: 'list' },
     ],
   },

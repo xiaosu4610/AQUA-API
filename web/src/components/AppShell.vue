@@ -26,6 +26,7 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 
 import AppIcon from './AppIcon.vue'
+import AnnouncementBanner from './AnnouncementBanner.vue'
 import LocaleSwitcher from './LocaleSwitcher.vue'
 import type { NavGroup } from './nav'
 import { confirmDialog } from '@/composables/useConfirm'
@@ -239,6 +240,9 @@ async function handleSignOut(): Promise<void> {
       </header>
 
       <main class="main-offset">
+        <!-- 站点公告横幅：自包含组件（自行拉取、自行记忆"已读"），
+             放在页面内容之前，让运营通知在所有后台/门户页都能被看到。 -->
+        <AnnouncementBanner />
         <slot />
       </main>
     </div>

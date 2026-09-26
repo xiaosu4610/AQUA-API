@@ -233,6 +233,8 @@ export default {
       oauth: 'حسابات الاشتراك',
       maintenance: 'الصيانة',
       logs: 'سجلات الاستخدام',
+      audit: 'سجل عمليات الإدارة',
+      announcements: 'الإعلانات',
       settings: 'الإعدادات',
     },
     console: {
@@ -247,6 +249,7 @@ export default {
       billing: 'الفواتير والسجلات',
       recharge: 'شحن الرصيد',
       logs: 'سجلات الاستخدام',
+      referral: 'الدعوات والتحقق اليومي',
     },
   },
 }

@@ -235,6 +235,8 @@ export default {
       oauth: 'Subscription Accounts',
       maintenance: 'Maintenance',
       logs: 'Usage Logs',
+      audit: 'Admin Audit',
+      announcements: 'Announcements',
       settings: 'Settings',
     },
     console: {
@@ -249,6 +251,7 @@ export default {
       billing: 'Billing & Records',
       recharge: 'Top Up',
       logs: 'Usage Logs',
+      referral: 'Referrals & Check-in',
     },
   },
 }

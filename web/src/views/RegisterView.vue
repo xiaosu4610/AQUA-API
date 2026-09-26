@@ -19,11 +19,12 @@
  *   若后端新增其他校验（如手机号），沿用同样模式：站点信息暴露开关 → 本页条件渲染。
  */
 import { computed, onUnmounted, ref } from 'vue'
-import { RouterLink, useRouter } from 'vue-router'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import AppIcon from '@/components/AppIcon.vue'
 import { ApiError } from '@/api/client'
 import { sendEmailCode } from '@/api/auth'
+import type { RegisterPayload } from '@/api/types'
 import { toastSuccess } from '@/composables/useToast'
 import { useAuthStore } from '@/stores/auth'
 import { useSiteStore } from '@/stores/site'
@@ -31,6 +32,7 @@ import { useSiteStore } from '@/stores/site'
 const auth = useAuthStore()
 const site = useSiteStore()
 const router = useRouter()
+const route = useRoute()
 
 const username = ref('')
 const password = ref('')
@@ -42,6 +44,14 @@ const submitting = ref(false)
 const errorMessage = ref('')
 const codeError = ref('')
 const sendingCode = ref(false)
+
+/**
+ * 邀请码：从邀请链接 ?invite=CODE 读取并随注册提交。
+ *
+ * 说明：邀请码是可选字段——填错或过期时后端会忽略并照常注册成功，
+ * 因此这里不对其做任何格式校验，原样透传即可。
+ */
+const inviteCode = ref(typeof route.query.invite === 'string' ? route.query.invite.trim() : '')
 
 /** 重发倒计时（秒）。0 表示可以发送。 */
 const countdown = ref(0)
@@ -139,12 +149,17 @@ async function handleSubmit(): Promise<void> {
 
   submitting.value = true
   try {
-    const user = await auth.signUp({
+    // 邀请码通过扩展出一层可选字段传递：types.ts 的 RegisterPayload 由主协调者维护，
+    // 这里不修改共享类型，仅在本页构造带 invite_code 的请求体。
+    const payload: RegisterPayload & { invite_code?: string } = {
       username: username.value.trim(),
       password: password.value,
       email: email.value.trim() || undefined,
       code: emailCode.value.trim() || undefined,
-    })
+    }
+    if (inviteCode.value) payload.invite_code = inviteCode.value
+
+    const user = await auth.signUp(payload)
     toastSuccess(`注册成功，欢迎 ${user.username}`)
     await router.replace('/console')
   } catch (error) {
@@ -222,6 +237,15 @@ async function handleSubmit(): Promise<void> {
         <div v-else class="card card-pad shadow-pop">
           <h1 class="text-xl font-semibold tracking-tight text-ink-50">注册 {{ site.siteName }}</h1>
           <p class="mt-1.5 text-sm text-ink-400">注册后即可登录控制台，创建访问令牌并查看调用用量。</p>
+
+          <!-- 通过邀请链接进入时提示邀请码已带入（无需用户手动填写） -->
+          <p
+            v-if="inviteCode"
+            class="mt-4 flex items-center gap-2 rounded-lg border border-brand-500/25 bg-brand-500/10 px-3 py-2 text-xs text-brand-700"
+          >
+            <AppIcon name="users" :size="14" />
+            已带入邀请码 <code class="font-mono">{{ inviteCode }}</code>，注册成功后邀请人将获得奖励。
+          </p>
 
           <form class="mt-6 space-y-4" @submit.prevent="handleSubmit">
             <div>
