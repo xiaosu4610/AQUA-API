@@ -47,11 +47,14 @@ const usageLogColumns = `id, user_id, token_id, channel_id, model, prompt_tokens
 // usageLogRepository 是 model.UsageLogRepository 的 SQL 实现，并发安全。
 type usageLogRepository struct {
 	db *sql.DB
+	// dialect：本仓储里「按天分桶」的表达式与数据库方言相关，故需要它。
+	// 其余仓储的语句是通用 SQL，不需要方言，构造时也就不传 —— 只让真正有差异的地方拿到方言。
+	dialect Dialect
 }
 
 // NewUsageLogRepository 创建调用日志仓储。
-func NewUsageLogRepository(db *sql.DB) model.UsageLogRepository {
-	return &usageLogRepository{db: db}
+func NewUsageLogRepository(db *sql.DB, dialect Dialect) model.UsageLogRepository {
+	return &usageLogRepository{db: db, dialect: dialect}
 }
 
 // Create 写入一条调用日志。
@@ -179,9 +182,10 @@ func (r *usageLogRepository) DailySeries(ctx context.Context, q model.UsageLogQu
 
 	// 按本地日期分组：使用者关心的是"我这边几号用了多少"，
 	// 若按 UTC 分组，东八区凌晨的用量会被算到前一天。
+	// 具体表达式由方言提供（SQLite 用 strftime，其他库各不相同）。
 	sb := strings.Builder{}
 	sb.WriteString(`SELECT
-			strftime('%Y-%m-%d', created_at, 'unixepoch', 'localtime') AS day,
+			` + r.dialect.DayBucket("created_at") + ` AS day,
 			COUNT(1),
 			COALESCE(SUM(total_tokens), 0),
 			COALESCE(SUM(quota), 0)
@@ -396,11 +400,13 @@ func scanUsageLog(sc rowScanner) (*model.UsageLog, error) {
 // settingRepository 是 model.SettingRepository 的 SQL 实现。
 type settingRepository struct {
 	db *sql.DB
+	// dialect：设置表的 UPSERT 语法各方言不同（ON CONFLICT / ON DUPLICATE KEY），故需要它。
+	dialect Dialect
 }
 
 // NewSettingRepository 创建设置仓储。
-func NewSettingRepository(db *sql.DB) model.SettingRepository {
-	return &settingRepository{db: db}
+func NewSettingRepository(db *sql.DB, dialect Dialect) model.SettingRepository {
+	return &settingRepository{db: db, dialect: dialect}
 }
 
 // Get 读取单个设置；不存在时返回空字符串与 nil。
@@ -457,12 +463,11 @@ func (r *settingRepository) SetMany(ctx context.Context, values map[string]strin
 	defer func() { _ = tx.Rollback() }()
 
 	now := time.Now().Unix()
+	upsert := r.dialect.UpsertSettingSQL()
 	for key, value := range values {
-		// UPSERT：SQLite 支持 ON CONFLICT，用一个语句同时覆盖插入与更新
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
-			ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-			key, value, now); err != nil {
+		// UPSERT：一条语句同时覆盖「插入」与「已存在则更新」，
+		// 避免"先查再写"带来的并发窗口（两个请求同时插同一个键会有一个失败）。
+		if _, err := tx.ExecContext(ctx, upsert, key, value, now); err != nil {
 			return fmt.Errorf("store: 写入设置 %s 失败: %w", key, err)
 		}
 	}

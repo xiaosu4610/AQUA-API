@@ -43,9 +43,12 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// migrationsFS 把迁移脚本目录嵌入二进制，避免运行期依赖外部文件。
+// migrationsFS 把迁移脚本目录（含各数据库方言的子目录）嵌入二进制，
+// 避免运行期依赖外部文件。
 //
-//go:embed migrations/*.sql
+// 使用 all: 前缀是为了把子目录一并纳入嵌入（默认规则不递归包含目录内容）。
+//
+//go:embed all:migrations
 var migrationsFS embed.FS
 
 // migration 描述一次结构变更。
@@ -58,38 +61,44 @@ type migration struct {
 	SQL     string // 该版本的 SQL 语句集
 }
 
-// migrations 是按版本升序排列的迁移清单，由 init() 在包初始化时构建。
+// canonicalMigrationsDir 是所有数据库方言共用的「版本号基准目录」。
 //
-// 命名约定：migrations/NNNN_名称.sql，NNNN 为四位版本号（从 0001 起）。
-//
-// 铁律：
-//   - 只允许【新增】脚本文件，禁止修改或删除已发布的脚本——
-//     线上库可能已执行过旧版本，改动会导致新旧数据库结构不一致；
-//   - 新增表/字段请新建一个更大版本号的文件，不要往旧文件里追加。
-var migrations []migration
+// 为什么需要基准：迁移版本号跨方言一致（同一个 0011 对应同一个结构变更），
+// 因此「二进制内置的最高版本号」与方言无关。这里固定取一个目录作为基准，
+// 并由 TestMigrationDirs_AllDialectsShareSameVersions 保证各目录的版本号集合一致。
+const canonicalMigrationsDir = "migrations/" + DriverSQLite
 
-// init 在包初始化阶段加载并校验迁移脚本。
+// canonicalMigrations 是基准目录下的迁移清单，供 SupportedSchemaVersion 使用。
+//
+// 各 Store 实例会用各自方言的目录重新加载（见 Open）。
+var canonicalMigrations []migration
+
+// init 在包初始化阶段加载并校验基准迁移脚本。
 //
 // 这里使用 panic 是刻意的：脚本已在编译期嵌入，运行期读不到说明二进制损坏，
 // 属于不可恢复的编程错误，应尽早暴露，而不是带着错误的迁移集启动。
 func init() {
-	var err error
-	if migrations, err = loadMigrations(); err != nil {
+	loaded, err := loadMigrations(canonicalMigrationsDir)
+	if err != nil {
 		panic(fmt.Sprintf("store: 加载迁移脚本失败: %v", err))
 	}
+	canonicalMigrations = loaded
 }
 
-// loadMigrations 读取全部嵌入的迁移脚本，校验后按版本号升序返回。
-func loadMigrations() ([]migration, error) {
-	entries, err := fs.ReadDir(migrationsFS, "migrations")
+// loadMigrations 读取指定目录下全部嵌入的迁移脚本，校验后按版本号升序返回。
+//
+// dir 由 Dialect.MigrationsDir() 提供，形如 "migrations/sqlite"。
+func loadMigrations(dir string) ([]migration, error) {
+	entries, err := fs.ReadDir(migrationsFS, dir)
 	if err != nil {
-		return nil, fmt.Errorf("读取迁移目录失败: %w", err)
+		return nil, fmt.Errorf("读取迁移目录 %s 失败: %w", dir, err)
 	}
 
 	result := make([]migration, 0, len(entries))
 	seen := make(map[int]string, len(entries)) // 版本号 → 文件名，用于查重
 
 	for _, entry := range entries {
+		// 子目录（其他方言的迁移）不属于本方言，跳过
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
 			continue
 		}
@@ -104,7 +113,7 @@ func loadMigrations() ([]migration, error) {
 		}
 		seen[version] = entry.Name()
 
-		raw, err := migrationsFS.ReadFile("migrations/" + entry.Name())
+		raw, err := migrationsFS.ReadFile(dir + "/" + entry.Name())
 		if err != nil {
 			return nil, fmt.Errorf("读取迁移脚本 %s 失败: %w", entry.Name(), err)
 		}
@@ -112,7 +121,7 @@ func loadMigrations() ([]migration, error) {
 	}
 
 	if len(result) == 0 {
-		return nil, errors.New("未找到任何迁移脚本（migrations 目录为空？）")
+		return nil, fmt.Errorf("未在 %s 找到任何迁移脚本（目录为空？）", dir)
 	}
 
 	sort.Slice(result, func(i, j int) bool { return result[i].Version < result[j].Version })
@@ -143,7 +152,17 @@ func parseMigrationFileName(fileName string) (int, string, error) {
 type Store struct {
 	db     *sql.DB
 	driver string
+	// dialect 是本次连接的方言实现：迁移执行与少数方言相关语句都经由它。
+	dialect Dialect
+	// migrations 是本方言的迁移清单（Open 时按 dialect.MigrationsDir() 加载）。
+	migrations []migration
 }
+
+// ErrNotConfigured 表示数据库尚未配置。
+//
+// 典型场景：全新部署还没走安装向导。上层识别到该错误后应转入「安装模式」
+// （只提供安装接口与安装页面），而不是把它当成连接失败去重试。
+var ErrNotConfigured = errors.New("store: 数据库尚未配置（请先访问 /install 完成安装）")
 
 // sqlitePragmas 是 SQLite 的关键运行参数。
 //
@@ -163,19 +182,47 @@ const sqlitePragmas = "_pragma=journal_mode(WAL)" +
 // Open 建立数据库连接并完成基础校验。
 //
 // 参数：
-//   - driver：数据库类型，当前仅支持 "sqlite"；
+//   - driver：数据库类型，取值见 driver.go 的驱动常量；
 //   - dsn：数据源。SQLite 为文件路径（如 ./data/aqua.db），
 //     目录不存在时会自动创建，保证「零准备启动」。
 //
 // 返回的 *Store 已可直接使用；调用方应在退出前调用 Close。
 func Open(driver, dsn string) (*Store, error) {
-	switch driver {
-	case "sqlite":
-		return openSQLite(dsn)
-	default:
-		// M1 只实现 SQLite；postgres/mysql 作为后续里程碑预留
-		return nil, fmt.Errorf("store: 暂不支持的数据库驱动 %q（当前版本仅支持 sqlite）", driver)
+	// 未配置：全新部署还没走安装向导时会走到这里，
+	// 返回可识别的哨兵错误，让上层转入安装模式，而不是抛一个看不懂的连接错误。
+	if strings.TrimSpace(driver) == "" {
+		return nil, ErrNotConfigured
 	}
+
+	switch driver {
+	case DriverSQLite:
+		return openSQLite(dsn)
+	case DriverMySQL, DriverPostgres:
+		// 元数据已在 driver.go 登记（安装向导不会提供该选项），但连接实现尚未落地。
+		// 这里给出明确提示，避免使用者按元数据填了配置却得到一个模糊的连接失败。
+		return nil, fmt.Errorf("store: 驱动 %q 的接入尚未完成，当前可用：%s", driver, AvailableDriverNames())
+	default:
+		return nil, fmt.Errorf("store: 未知的数据库驱动 %q（可用：%s）", driver, strings.Join(DriverKeys(), "、"))
+	}
+}
+
+// newStore 装配 Store：选定方言实现并加载该方言的迁移脚本。
+//
+// 失败时会关闭已建立的连接，避免调用方拿到「既报错又漏连接」的半成品。
+func newStore(db *sql.DB, driver string) (*Store, error) {
+	dialect, err := dialectFor(driver)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
+	list, err := loadMigrations(dialect.MigrationsDir())
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
+	return &Store{db: db, driver: driver, dialect: dialect, migrations: list}, nil
 }
 
 // openSQLite 打开 SQLite 数据库（含目录自动创建与连接池配置）。
@@ -208,7 +255,7 @@ func openSQLite(dsn string) (*Store, error) {
 		return nil, fmt.Errorf("store: 连接 SQLite 失败（请检查文件路径与读写权限）: %w", err)
 	}
 
-	return &Store{db: db, driver: "sqlite"}, nil
+	return newStore(db, DriverSQLite)
 }
 
 // prepareSQLiteDSN 规范化 SQLite 的 DSN，并在必要时创建数据目录。
@@ -245,6 +292,14 @@ func (s *Store) Driver() string {
 	return s.driver
 }
 
+// Dialect 返回当前的方言实现。
+//
+// 为什么暴露它：极少数仓储里存在与方言相关的语句（按天分桶、UPSERT），
+// 这些仓储构造时需要方言；只写通用 SQL 的仓储不需要，也就不传。
+func (s *Store) Dialect() Dialect {
+	return s.dialect
+}
+
 // Close 关闭连接池。进程退出前应调用。
 func (s *Store) Close() error {
 	if s.db == nil {
@@ -277,7 +332,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 		return fmt.Errorf("store: 创建迁移记录表失败: %w", err)
 	}
 
-	for _, m := range migrations {
+	for _, m := range s.migrations {
 		applied, err := s.isMigrationApplied(ctx, m.Version)
 		if err != nil {
 			return err
@@ -313,7 +368,9 @@ func (s *Store) applyMigration(ctx context.Context, m migration) error {
 	// 失败时回滚；成功时 Commit 后此调用为无操作
 	defer func() { _ = tx.Rollback() }()
 
-	if _, err := tx.ExecContext(ctx, m.SQL); err != nil {
+	// 语句先过方言改写：SQLite / MySQL 是恒等变换，
+	// PostgreSQL 需要把 ? 变成 $1..$n（见 dialect.go 的扩展说明）。
+	if _, err := tx.ExecContext(ctx, s.dialect.Rewrite(m.SQL)); err != nil {
 		return fmt.Errorf("store: 执行迁移 %s（版本 %d）失败: %w", m.Name, m.Version, err)
 	}
 
@@ -336,21 +393,20 @@ func (s *Store) applyMigration(ctx context.Context, m migration) error {
 //
 // 注意：迁移清单在 init() 中加载，因此本函数在包加载完成后始终可用。
 func SupportedSchemaVersion() int {
-	if len(migrations) == 0 {
+	if len(canonicalMigrations) == 0 {
 		return 0
 	}
-	return migrations[len(migrations)-1].Version
+	return canonicalMigrations[len(canonicalMigrations)-1].Version
 }
 
 // LatestMigrationVersion 返回已登记的最高迁移版本号，供健康检查展示。
 //
 // 说明：全新数据库在 Migrate 之前调用会返回 0。
 func (s *Store) LatestMigrationVersion(ctx context.Context) (int, error) {
-	// 表可能尚未创建，此时视为版本 0（不是错误）
+	// 表可能尚未创建，此时视为版本 0（不是错误）。
+	// 判断表是否存在必须走方言：SQLite 查 sqlite_master，其他库查各自的系统表。
 	var exists int
-	err := s.db.QueryRowContext(ctx,
-		"SELECT COUNT(1) FROM sqlite_master WHERE type='table' AND name='schema_migrations'").Scan(&exists)
-	if err != nil {
+	if err := s.db.QueryRowContext(ctx, s.dialect.TableExistsSQL("schema_migrations")).Scan(&exists); err != nil {
 		return 0, fmt.Errorf("store: 检查迁移表是否存在失败: %w", err)
 	}
 	if exists == 0 {
@@ -358,8 +414,7 @@ func (s *Store) LatestMigrationVersion(ctx context.Context) (int, error) {
 	}
 
 	var version sql.NullInt64
-	if err := s.db.QueryRowContext(ctx,
-		"SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil {
+	if err := s.db.QueryRowContext(ctx, s.dialect.MaxMigrationVersionSQL()).Scan(&version); err != nil {
 		return 0, fmt.Errorf("store: 查询最高迁移版本失败: %w", err)
 	}
 	if !version.Valid {

@@ -75,8 +75,8 @@ func newTestServer(t *testing.T) (*Server, *store.Store) {
 		Tokens:    store.NewTokenRepository(st.DB(), cipher),
 		Users:     store.NewUserRepository(st.DB()),
 		Sessions:  store.NewSessionRepository(st.DB()),
-		UsageLogs: store.NewUsageLogRepository(st.DB()),
-		Settings:  store.NewSettingRepository(st.DB()),
+		UsageLogs: store.NewUsageLogRepository(st.DB(), st.Dialect()),
+		Settings:  store.NewSettingRepository(st.DB(), st.Dialect()),
 		Relay:     relay.New(channels, relay.Options{}),
 		// 测试不注入前端产物：静态托管由 e2e 冒烟验证覆盖
 	})

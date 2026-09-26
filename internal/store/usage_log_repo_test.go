@@ -28,7 +28,7 @@ import (
 func newTestLogRepo(t *testing.T) model.UsageLogRepository {
 	t.Helper()
 	st := newTestStore(t)
-	return NewUsageLogRepository(st.DB())
+	return NewUsageLogRepository(st.DB(), st.Dialect())
 }
 
 // insertLog 写入一条指定时间与状态的日志。
@@ -236,7 +236,7 @@ func TestTopModels_ExcludesEmptyModel(t *testing.T) {
 // TestSettingRepository_SetAndGet 验证设置读写与未配置时的回退语义。
 func TestSettingRepository_SetAndGet(t *testing.T) {
 	st := newTestStore(t)
-	repo := NewSettingRepository(st.DB())
+	repo := NewSettingRepository(st.DB(), st.Dialect())
 	ctx := context.Background()
 
 	// 未配置时应返回空串且不报错（调用方据此回退默认值）

@@ -113,7 +113,7 @@ func newPlazaFixture(t *testing.T) *plazaFixture {
 		Channels:    channels,
 		Groups:      groups,
 		ModelPrices: priceRepo,
-		Settings:    store.NewSettingRepository(st.DB()),
+		Settings:    store.NewSettingRepository(st.DB(), st.Dialect()),
 		Tokens:      tokenRepo,
 		Users:       userRepo,
 		Relay:       relay.New(channels, relay.Options{}),

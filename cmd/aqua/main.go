@@ -168,8 +168,10 @@ func run() error {
 	tokens := store.NewTokenRepository(st.DB(), cipher)
 	users := store.NewUserRepository(st.DB())
 	sessions := store.NewSessionRepository(st.DB())
-	usageLogs := store.NewUsageLogRepository(st.DB())
-	settings := store.NewSettingRepository(st.DB())
+	// 这两个仓储内含与数据库方言相关的语句（按天分桶、UPSERT），因此额外注入方言；
+	// 其余仓储只写通用 SQL，不需要方言。
+	usageLogs := store.NewUsageLogRepository(st.DB(), st.Dialect())
+	settings := store.NewSettingRepository(st.DB(), st.Dialect())
 	emailCodes := store.NewEmailCodeRepository(st.DB())
 	modelPrices := store.NewModelPriceRepository(st.DB())
 	oauthProviders := store.NewOAuthProviderRepository(st.DB(), cipher)

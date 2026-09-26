@@ -135,8 +135,8 @@ func TestMigrate_Idempotent(t *testing.T) {
 	if err := st.DB().QueryRowContext(ctx, "SELECT COUNT(1) FROM schema_migrations").Scan(&count); err != nil {
 		t.Fatalf("统计数据失败: %v", err)
 	}
-	if count != len(migrations) {
-		t.Errorf("schema_migrations 记录数 = %d，期望 %d（不应重复登记）", count, len(migrations))
+	if count != len(canonicalMigrations) {
+		t.Errorf("schema_migrations 记录数 = %d，期望 %d（不应重复登记）", count, len(canonicalMigrations))
 	}
 }
 
