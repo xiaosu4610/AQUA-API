@@ -11,6 +11,10 @@
 Official API keys · Cloud vendors · Resellers · Subscription accounts · Self-hosted models
 Unified protocols · Smart routing · Precise billing · A ready-to-use admin console
 
+## 🌐 Official website `https://aqua.ltzy.top`
+
+> If the domain ever changes, **this repository is the source of truth** (updated here first).
+
 [![License](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.27-00ADD8.svg?logo=go&logoColor=white)](https://go.dev)
 [![CGO](https://img.shields.io/badge/CGO-free-success.svg)](#why-aqua-api)
@@ -23,8 +27,42 @@ Unified protocols · Smart routing · Precise billing · A ready-to-use admin co
 
 ---
 
+## 🔗 Official links
+
+| | Address |
+|---|---|
+| **Official website (live demo)** | **`https://aqua.ltzy.top`** |
+| **Primary repository** | `https://gitee.com/xiaosu4610/AQUA-API` |
+| **Mirror** | GitHub, synced automatically from Gitee |
+
+**This repository is the authoritative source for the official address.** If the domain changes,
+it is updated **here first** and only then mirrored anywhere else. Bookmarking this repository
+is more reliable than bookmarking a domain.
+
+### 🛡 Watch out for imposters
+
+- This project offers and authorises **no** "top-up agent", "managed hosting" or "official shared
+  account" services. The server code is fully open source (AGPL-3.0), so anyone can self-host it —
+  **being able to run it does not make a site official.**
+- Only the addresses above are official. Any other domain is unrelated to this project, even if the
+  UI looks identical.
+- We will never DM you asking for passwords, payment credentials or verification codes.
+
+### Link blocked or unreachable?
+
+These domains are frequently **flagged by social platforms** (QQ / WeChat and similar) — we have
+experienced mass reporting ourselves. If a link will not open:
+
+1. Try another browser, or switch networks (mobile data ↔ home broadband);
+2. **Share this repository link instead of the bare domain** — code-hosting links are far less
+   likely to be blocked, and anyone can confirm the current official address from the repo itself;
+3. If you are sure it is a false positive, file an appeal through the platform's own process.
+
+---
+
 ## 📖 Table of contents
 
+- [🔗 Official links](#-official-links)
 - [⚠️ Disclaimer](#-disclaimer)
 - [What is this](#what-is-this)
 - [Why AQUA-API](#why-aqua-api)
