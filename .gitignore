@@ -1,0 +1,27 @@
+# 隐私与内部资料 —— 绝不入开源仓库
+.private/
+.tmp/
+# 开源参考项目（含嵌套仓库，属调研资料）
+opensource/
+# 工程文档（含内部战略与调研结论，属隐私）
+docs/
+# AI 工具本地记忆（含内部工作规则，按需自行决定是否公开）
+.trae/
+
+# 构建产物与本地数据
+bin/
+*.exe
+*.test
+*.out
+*.db
+*.db-shm
+*.db-wal
+data/
+logs/
+coverage.out
+
+# 编辑器与系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

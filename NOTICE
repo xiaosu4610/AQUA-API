@@ -1,0 +1,14 @@
+AQUA-API
+Copyright 2026 小涑 (xiaosu4610)
+
+This product includes software developed as an original implementation.
+
+Brand assets (including favicon.ico and the "AQUA-API" name/logo) are the
+property of the project owner and are NOT covered by the Apache-2.0 license
+grant for source code. See the "Trademarks" section of the LICENSE file.
+
+----
+
+本产品为原创实现。开发过程中仅参考了同类开源项目（one-api / new-api /
+sub2api 等）的公开功能与算法思想（思想与算法不受著作权保护），未复制其
+任何源代码、注释、常量表或品牌标识。详见内部文档《开发约束规范》。

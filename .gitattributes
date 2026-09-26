@@ -1,0 +1,23 @@
+# 统一换行符策略
+#
+# 背景：开发在 Windows，部署在 Linux。若不统一，容易在服务端出现
+# "bad interpreter: /bin/sh^M" 之类的换行符问题。
+# 规则：仓库内文本一律存为 LF；Windows 批处理例外保留 CRLF；二进制文件不转换。
+
+* text=auto eol=lf
+
+# Windows 批处理必须 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制文件不做换行转换
+*.ico binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.exe binary
+*.db binary
+*.woff binary
+*.woff2 binary
