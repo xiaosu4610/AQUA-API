@@ -282,7 +282,7 @@ function priceRowClass(price: ModelPrice): string {
       </p>
     </section>
 
-    <div class="table-wrap">
+    <div class="table-wrap table-cards">
       <table class="data-table">
         <thead>
           <tr>
@@ -310,23 +310,23 @@ function priceRowClass(price: ModelPrice): string {
           />
 
           <tr v-for="price in prices" :key="price.id">
-            <td>
+            <td data-label="模型 / 模式">
               <code class="font-mono text-[13px] text-ink-100" :class="priceRowClass(price)">{{ price.model }}</code>
             </td>
-            <td class="cell-muted">{{ patternHint(price) }}</td>
-            <td class="cell-muted">{{ groupLabels[price.group] || price.group }}</td>
-            <td class="cell-num">{{ price.prompt_price > 0 ? formatNumber(price.prompt_price) : '—' }}</td>
-            <td class="cell-num">{{ price.completion_price > 0 ? formatNumber(price.completion_price) : '—' }}</td>
-            <td class="cell-num">{{ price.per_call_price > 0 ? formatNumber(price.per_call_price) : '—' }}</td>
-            <td>
+            <td class="cell-muted" data-label="匹配方式">{{ patternHint(price) }}</td>
+            <td class="cell-muted" data-label="分组">{{ groupLabels[price.group] || price.group }}</td>
+            <td class="cell-num" data-label="输入 / 1M">{{ price.prompt_price > 0 ? formatNumber(price.prompt_price) : '—' }}</td>
+            <td class="cell-num" data-label="输出 / 1M">{{ price.completion_price > 0 ? formatNumber(price.completion_price) : '—' }}</td>
+            <td class="cell-num" data-label="每次">{{ price.per_call_price > 0 ? formatNumber(price.per_call_price) : '—' }}</td>
+            <td data-label="状态">
               <span class="badge" :class="price.enabled ? 'badge-ok' : 'badge-off'">
                 {{ price.enabled ? '启用' : '停用' }}
               </span>
             </td>
-            <td class="cell-muted max-w-[14rem]">
+            <td class="cell-muted max-w-[14rem]" data-label="备注">
               <span class="line-clamp-1">{{ price.remark || '—' }}</span>
             </td>
-            <td class="cell-actions">
+            <td class="cell-actions" data-label="操作">
               <div class="flex items-center justify-end gap-1">
                 <button type="button" class="btn-row" title="编辑" @click="openEdit(price)">
                   <AppIcon name="edit" :size="14" />

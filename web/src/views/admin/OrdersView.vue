@@ -241,7 +241,7 @@ const emptyHint = computed(() =>
       </div>
     </div>
 
-    <div class="table-wrap">
+    <div class="table-wrap table-cards">
       <table class="data-table">
         <thead>
           <tr>
@@ -269,14 +269,14 @@ const emptyHint = computed(() =>
           />
 
           <tr v-for="order in orders" :key="order.trade_no">
-            <td><code class="font-mono text-[12px] text-ink-200">{{ order.trade_no }}</code></td>
-            <td class="cell-muted">#{{ order.user_id }}</td>
-            <td class="cell-num">¥{{ order.amount_text }}</td>
-            <td class="cell-num">{{ formatNumber(order.quota) }}</td>
-            <td class="cell-muted">
+            <td data-label="订单号"><code class="font-mono text-[12px] text-ink-200">{{ order.trade_no }}</code></td>
+            <td class="cell-muted" data-label="用户">#{{ order.user_id }}</td>
+            <td class="cell-num" data-label="金额">¥{{ order.amount_text }}</td>
+            <td class="cell-num" data-label="额度">{{ formatNumber(order.quota) }}</td>
+            <td class="cell-muted" data-label="方式">
               {{ order.method }}<span v-if="order.sub_method"> / {{ order.sub_method }}</span>
             </td>
-            <td>
+            <td data-label="状态">
               <span :class="orderBadgeClass(order)">{{ order.status_text }}</span>
               <span
                 v-if="order.status === ORDER_STATUS_PAID && !order.credited"
@@ -286,9 +286,9 @@ const emptyHint = computed(() =>
                 待入账
               </span>
             </td>
-            <td class="cell-muted">{{ formatDateTime(order.created_at) }}</td>
-            <td class="cell-muted">{{ order.paid_at ? formatDateTime(order.paid_at) : '—' }}</td>
-            <td class="cell-actions">
+            <td class="cell-muted" data-label="创建时间">{{ formatDateTime(order.created_at) }}</td>
+            <td class="cell-muted" data-label="支付时间">{{ order.paid_at ? formatDateTime(order.paid_at) : '—' }}</td>
+            <td class="cell-actions" data-label="操作">
               <div class="flex items-center justify-end gap-1">
                 <button
                   v-if="order.status === ORDER_STATUS_PENDING || (order.status === ORDER_STATUS_PAID && !order.credited)"

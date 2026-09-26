@@ -875,3 +875,73 @@ export interface OAuthProviderPayload {
   enabled?: boolean
 }
 
+/* ────────────────────────── 兑换码（后台） ────────────────────────── */
+
+/** 兑换码状态：与后端 model.RedeemStatus 一一对应（1 未使用 / 2 已使用 / 3 已作废） */
+export const REDEEM_STATUS_UNUSED = 1
+export const REDEEM_STATUS_USED = 2
+export const REDEEM_STATUS_VOID = 3
+
+/**
+ * 兑换码对象（GET /api/admin/redeem-codes 的 items 项）。
+ *
+ * 与令牌不同，兑换码明文对后台是可见的——管理员的下一步操作必然是"把码导出分发"，
+ * 因此后端返回明文 code（这也是它必须靠状态与有效期来约束使用的原因）。
+ */
+export interface RedeemCode {
+  id: number
+  /** 兑换码明文（大写字母数字） */
+  code: string
+  /** 可兑换额度 */
+  quota: number
+  status: number
+  status_text: string
+  /** Unix 秒；0 表示永不过期 */
+  expires_at: number
+  /** 后端按当前时刻判定的过期状态（不依赖前端时钟），与 status 正交 */
+  expired: boolean
+  /** 领取用户 id；未使用为 0 */
+  used_by: number
+  /** Unix 秒；0 表示未使用 */
+  used_at: number
+  batch_no: string
+  remark: string
+  created_at: number
+}
+
+/** GET /api/admin/redeem-codes 查询参数（空值由 client 自动剔除） */
+export interface RedeemCodeQuery {
+  page?: number
+  size?: number
+  /** 状态过滤（不传表示全部） */
+  status?: number
+  /** 按兑换码或备注模糊匹配 */
+  keyword?: string
+  /** 仅返回该批次 */
+  batch_no?: string
+}
+
+/** POST /api/admin/redeem-codes 请求体（批量生成） */
+export interface CreateRedeemCodesPayload {
+  count: number
+  quota: number
+  /** 有效期（天）；0 表示永不过期 */
+  expires_days: number
+  remark?: string
+  /** 批次号；留空由服务端按时间自动生成 */
+  batch_no?: string
+}
+
+/** POST /api/admin/redeem-codes 响应：本批生成的全部兑换码（供导出分发） */
+export interface CreateRedeemCodesResult {
+  batch_no: string
+  count: number
+  items: RedeemCode[]
+}
+
+/** PUT /api/admin/redeem-codes/{id} 请求体：只提交需要变更的字段 */
+export interface UpdateRedeemCodePayload {
+  status?: number
+  remark?: string
+}
+

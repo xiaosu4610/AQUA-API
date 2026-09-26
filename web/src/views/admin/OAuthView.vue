@@ -190,7 +190,7 @@ async function remove(provider: OAuthProvider): Promise<void> {
       </div>
     </div>
 
-    <div class="table-wrap">
+    <div class="table-wrap table-cards">
       <table class="data-table">
         <thead>
           <tr>
@@ -217,27 +217,27 @@ async function remove(provider: OAuthProvider): Promise<void> {
           />
 
           <tr v-for="provider in providers" :key="provider.id">
-            <td>
+            <td data-label="名称">
               <div class="flex items-center gap-2">
                 <span class="font-medium text-ink-100">{{ provider.name }}</span>
                 <span v-if="provider.remark" class="cell-muted" :title="provider.remark">…</span>
               </div>
             </td>
-            <td class="cell-muted max-w-[18rem]">
+            <td class="cell-muted max-w-[18rem]" data-label="令牌端点">
               <span class="line-clamp-1 font-mono text-[12px]">{{ provider.token_url }}</span>
             </td>
-            <td class="cell-muted"><code class="chip">{{ provider.client_id || '—' }}</code></td>
-            <td class="cell-muted"><code class="chip">{{ provider.masked_client_secret || '未设置' }}</code></td>
-            <td class="cell-muted max-w-[10rem]">
+            <td class="cell-muted" data-label="客户端 ID"><code class="chip">{{ provider.client_id || '—' }}</code></td>
+            <td class="cell-muted" data-label="客户端密钥"><code class="chip">{{ provider.masked_client_secret || '未设置' }}</code></td>
+            <td class="cell-muted max-w-[10rem]" data-label="授权范围">
               <span class="line-clamp-1">{{ provider.scope || '—' }}</span>
             </td>
-            <td>
+            <td data-label="状态">
               <span class="badge" :class="provider.enabled ? 'badge-ok' : 'badge-off'">
                 {{ provider.enabled ? '启用' : '停用' }}
               </span>
             </td>
-            <td class="cell-muted">{{ formatDateTime(provider.updated_at) }}</td>
-            <td class="cell-actions">
+            <td class="cell-muted" data-label="更新时间">{{ formatDateTime(provider.updated_at) }}</td>
+            <td class="cell-actions" data-label="操作">
               <div class="flex items-center justify-end gap-1">
                 <button type="button" class="btn-row" title="编辑" @click="openEdit(provider)">
                   <AppIcon name="edit" :size="14" />

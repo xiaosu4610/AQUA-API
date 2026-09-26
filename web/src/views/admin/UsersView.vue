@@ -266,9 +266,10 @@ const isEmpty = computed(() => !loading.value && !error.value && users.value.len
       </div>
     </div>
 
-    <p class="mb-2 text-xs text-ink-400 lg:hidden">表格列较多，可左右滑动查看完整内容。</p>
+    <!-- 滑动提示只在桌面端出现：窄屏已切换为卡片视图（.table-cards），不需要左右滑动 -->
+    <p class="mb-2 hidden text-xs text-ink-400 lg:block">表格列较多，可左右滑动查看完整内容。</p>
 
-    <div class="table-wrap">
+    <div class="table-wrap table-cards">
       <table class="data-table min-w-[1080px]">
         <thead>
           <tr>
@@ -305,26 +306,26 @@ const isEmpty = computed(() => !loading.value && !error.value && users.value.len
 
           <template v-if="!loading && !error && users.length">
             <tr v-for="user in users" :key="user.id">
-              <td class="font-mono text-xs text-ink-400">{{ user.id }}</td>
-              <td class="font-medium text-ink-100">{{ user.username }}</td>
-              <td class="text-ink-300">{{ user.email || '—' }}</td>
+              <td class="font-mono text-xs text-ink-400" data-label="ID">{{ user.id }}</td>
+              <td class="font-medium text-ink-100" data-label="用户名">{{ user.username }}</td>
+              <td class="text-ink-300" data-label="邮箱">{{ user.email || '—' }}</td>
 
-              <td>
+              <td data-label="角色">
                 <span :class="roleBadgeClass(user.role)">{{ roleLabel(user.role) }}</span>
               </td>
 
-              <td>
+              <td data-label="状态">
                 <span :class="statusBadgeClass(user.status)">
                   <span class="dot" />
                   {{ user.status === STATUS_ENABLED ? '启用' : '禁用' }}
                 </span>
               </td>
 
-              <td class="cell-num">{{ formatNumber(user.quota) }}</td>
-              <td class="cell-num text-ink-300">{{ formatNumber(user.used_quota) }}</td>
-              <td class="cell-muted whitespace-nowrap">{{ formatDateTime(user.created_at) }}</td>
+              <td class="cell-num" data-label="额度">{{ formatNumber(user.quota) }}</td>
+              <td class="cell-num text-ink-300" data-label="已用额度">{{ formatNumber(user.used_quota) }}</td>
+              <td class="cell-muted whitespace-nowrap" data-label="创建时间">{{ formatDateTime(user.created_at) }}</td>
 
-              <td class="cell-actions">
+              <td class="cell-actions" data-label="操作">
                 <div class="flex items-center justify-end gap-1">
                   <button type="button" class="btn btn-row" title="调整额度" @click="openQuota(user)">
                     <AppIcon name="quota" :size="14" />

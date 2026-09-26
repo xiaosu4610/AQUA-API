@@ -75,7 +75,7 @@ onBeforeUnmount(() => {
     >
       <div
         v-if="open"
-        class="fixed inset-0 z-50 overflow-y-auto overscroll-contain p-4 sm:p-6"
+        class="fixed inset-0 z-50 flex items-end justify-center overflow-y-auto overscroll-contain sm:items-start sm:p-6"
         role="dialog"
         aria-modal="true"
         :aria-label="title"
@@ -85,9 +85,18 @@ onBeforeUnmount(() => {
           @click="closeOnBackdrop && emit('close')"
         />
 
+        <!--
+          窄屏改为「底部弹出式」：面板贴底、只保留上方圆角、限高并可纵向滚动。
+          为什么这么改：手机屏幕本就窄，居中弹窗会把上下内容压扁，且确认/关闭按钮
+          离拇指很远；贴底后主操作落在拇指区，长表单也能在 85vh 内顺畅滚动。
+          桌面端（sm 起）恢复居中卡片形态，保持后台一贯观感。
+          env(safe-area-inset-bottom) 让底部按钮避开 iPhone 的 Home 指示条（桌面为 0）。
+        -->
         <div
-          class="relative z-10 mx-auto my-6 w-full rounded-2xl border border-ink-700 bg-ink-900 shadow-pop"
+          class="relative z-10 flex max-h-[85vh] w-full flex-col overflow-y-auto rounded-t-2xl border border-ink-700
+            bg-ink-900 shadow-pop sm:my-6 sm:max-h-[calc(100vh-3rem)] sm:rounded-2xl"
           :class="width"
+          style="padding-bottom: env(safe-area-inset-bottom)"
         >
           <header class="flex items-start justify-between gap-4 border-b border-ink-800 px-5 py-4">
             <div class="min-w-0">

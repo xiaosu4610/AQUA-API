@@ -22,6 +22,8 @@ import type {
   ChannelPayload,
   ChannelTestResult,
   ChannelTypesResponse,
+  CreateRedeemCodesPayload,
+  CreateRedeemCodesResult,
   CreateTokenPayload,
   CreateTokenResult,
   CreateUserPayload,
@@ -41,11 +43,14 @@ import type {
   PaymentChannel,
   PaymentOrder,
   QuotePreview,
+  RedeemCode,
+  RedeemCodeQuery,
   SiteSettings,
   Task,
   TaskProvider,
   TaskQuery,
   UpdateChannelKeyPayload,
+  UpdateRedeemCodePayload,
   UpdateSiteSettingsPayload,
   UpdateUserPayload,
   UsageLog,
@@ -358,4 +363,41 @@ export function updateOAuthProvider(
 /** DELETE /api/admin/oauth-providers/{id}：删除提供方配置 */
 export function deleteOAuthProvider(id: number): Promise<unknown> {
   return api.delete<unknown>(`/admin/oauth-providers/${id}`)
+}
+
+/* ── 兑换码 ─────────────────────────────────────────────── */
+
+/**
+ * GET /api/admin/redeem-codes：兑换码列表（分页 + 状态/关键词/批次筛选）。
+ *
+ * 筛选参数由后端逐条解析：status 为空串时不传（视为全部），
+ * 因此这里把"未选择"统一表示为 undefined，交由 client 的 cleanParams 剔除。
+ */
+export function listRedeemCodes(query: RedeemCodeQuery = {}): Promise<Paged<RedeemCode>> {
+  return api.get<Paged<RedeemCode>>('/admin/redeem-codes', { ...query })
+}
+
+/** POST /api/admin/redeem-codes：批量生成兑换码（响应含本批全部明文码，供导出分发） */
+export function createRedeemCodes(payload: CreateRedeemCodesPayload): Promise<CreateRedeemCodesResult> {
+  return api.post<CreateRedeemCodesResult>('/admin/redeem-codes', payload)
+}
+
+/** PUT /api/admin/redeem-codes/{id}：改状态 / 备注（只提交变更字段，避免误改另一项） */
+export function updateRedeemCode(id: number, payload: UpdateRedeemCodePayload): Promise<unknown> {
+  return api.put<unknown>(`/admin/redeem-codes/${id}`, payload)
+}
+
+/** DELETE /api/admin/redeem-codes/{id}：删除单张兑换码 */
+export function deleteRedeemCode(id: number): Promise<unknown> {
+  return api.delete<unknown>(`/admin/redeem-codes/${id}`)
+}
+
+/**
+ * DELETE /api/admin/redeem-codes/invalid：清理失效兑换码（已使用 / 已过期）。
+ *
+ * 响应返回被清理的条数，前端据此给出"清理了 N 条"的明确反馈
+ * （而不是笼统的"操作成功"，管理员无法判断是否真的删掉了东西）。
+ */
+export function deleteInvalidRedeemCodes(): Promise<{ deleted: number }> {
+  return api.delete<{ deleted: number }>('/admin/redeem-codes/invalid')
 }

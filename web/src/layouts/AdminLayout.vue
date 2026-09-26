@@ -31,6 +31,7 @@ const groups: NavGroup[] = [
       { label: '计价规则', to: '/admin/prices', icon: 'quota' },
       { label: '令牌管理', to: '/admin/tokens', icon: 'key' },
       { label: '用户管理', to: '/admin/users', icon: 'users' },
+      { label: '兑换码', to: '/admin/redeem-codes', icon: 'cart' },
     ],
   },
   {

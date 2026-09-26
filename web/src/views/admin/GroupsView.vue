@@ -189,7 +189,7 @@ function ratioText(ratio: number): string {
       </div>
     </div>
 
-    <div class="table-wrap">
+    <div class="table-wrap table-cards">
       <table class="data-table">
         <thead>
           <tr>
@@ -215,28 +215,28 @@ function ratioText(ratio: number): string {
           />
 
           <tr v-for="group in groups" :key="group.id">
-            <td>
+            <td data-label="分组">
               <div class="flex items-center gap-2">
                 <span class="font-medium text-ink-100">{{ group.label }}</span>
                 <code class="chip">{{ group.name }}</code>
               </div>
             </td>
-            <td>
+            <td data-label="倍率">
               <span :class="ratioBadgeClass(group.ratio)">{{ ratioText(group.ratio) }}</span>
             </td>
-            <td class="cell-muted max-w-[16rem]">
+            <td class="cell-muted max-w-[16rem]" data-label="说明">
               <span class="line-clamp-2">{{ group.description || '—' }}</span>
             </td>
-            <td class="cell-muted">
+            <td class="cell-muted" data-label="引用情况">
               {{ group.channel_count }} 渠道 / {{ group.price_count }} 规则
             </td>
-            <td>
+            <td data-label="状态">
               <span class="badge" :class="group.enabled ? 'badge-ok' : 'badge-off'">
                 {{ group.enabled ? '启用' : '停用' }}
               </span>
             </td>
-            <td class="cell-muted">{{ formatDateTime(group.updated_at) }}</td>
-            <td class="cell-actions">
+            <td class="cell-muted" data-label="更新时间">{{ formatDateTime(group.updated_at) }}</td>
+            <td class="cell-actions" data-label="操作">
               <div class="flex items-center justify-end gap-1">
                 <button type="button" class="btn-row" title="编辑" @click="openEdit(group)">
                   <AppIcon name="edit" :size="14" />

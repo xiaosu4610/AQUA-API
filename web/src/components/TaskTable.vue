@@ -137,7 +137,7 @@ function openDetail(task: Task): void {
 </script>
 
 <template>
-  <div class="table-wrap">
+  <div class="table-wrap table-cards">
     <table class="data-table">
       <thead>
         <tr>
@@ -164,7 +164,7 @@ function openDetail(task: Task): void {
         />
 
         <tr v-for="task in tasks" :key="task.task_ref">
-          <td>
+          <td data-label="任务">
             <button type="button" class="text-left" @click="openDetail(task)">
               <span class="block font-mono text-[12px] text-ink-200">{{ task.task_ref }}</span>
               <span class="mt-0.5 line-clamp-1 block max-w-[18rem] text-xs text-ink-400">
@@ -173,14 +173,14 @@ function openDetail(task: Task): void {
             </button>
           </td>
 
-          <td v-if="showUser" class="cell-muted">{{ task.user_id }}</td>
+          <td v-if="showUser" class="cell-muted" data-label="用户">{{ task.user_id }}</td>
 
-          <td>
+          <td data-label="模型 / 适配器">
             <span class="block font-mono text-xs text-ink-200">{{ task.model || '—' }}</span>
             <span class="text-[11px] text-ink-500">{{ task.provider }} · {{ task.kind_text }}</span>
           </td>
 
-          <td class="min-w-[7rem]">
+          <td class="min-w-[7rem]" data-label="进度">
             <div class="flex items-center gap-2">
               <span class="h-1.5 w-16 overflow-hidden rounded-full bg-ink-800">
                 <span
@@ -193,18 +193,18 @@ function openDetail(task: Task): void {
             </div>
           </td>
 
-          <td>
+          <td data-label="状态">
             <span :class="statusBadgeClass(task)">{{ task.status_text }}</span>
             <span v-if="task.error" class="mt-0.5 line-clamp-1 block max-w-[14rem] text-[11px] text-red-600">
               {{ task.error }}
             </span>
           </td>
 
-          <td class="cell-num">{{ task.quota > 0 ? formatNumber(task.quota) : '—' }}</td>
+          <td class="cell-num" data-label="额度">{{ task.quota > 0 ? formatNumber(task.quota) : '—' }}</td>
 
-          <td class="cell-muted">{{ formatDateTime(task.created_at) }}</td>
+          <td class="cell-muted" data-label="提交时间">{{ formatDateTime(task.created_at) }}</td>
 
-          <td v-if="allowCancel" class="cell-actions">
+          <td v-if="allowCancel" class="cell-actions" data-label="操作">
             <div class="flex items-center justify-end gap-1">
               <a
                 v-if="task.result_url"

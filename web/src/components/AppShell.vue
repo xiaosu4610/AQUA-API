@@ -131,7 +131,7 @@ async function handleSignOut(): Promise<void> {
 
     <!-- 侧边栏 -->
     <aside
-      class="fixed inset-y-0 left-0 z-40 flex w-60 flex-col border-r border-ink-800 bg-ink-900/95
+      class="sidebar-safe fixed inset-y-0 left-0 z-40 flex w-60 flex-col border-r border-ink-800 bg-ink-900/95
         transition-transform duration-200 lg:translate-x-0"
       :class="sidebarOpen ? 'translate-x-0' : '-translate-x-full'"
     >

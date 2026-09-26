@@ -97,6 +97,15 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '接入示例' },
       },
       {
+        // 在线试聊：用访问令牌直接调用 /v1/chat/completions，
+        // 让用户在浏览器里先确认"这把令牌能不能通、上游答不答得上来"，
+        // 再去接自己的客户端；令牌只粘贴一次、只存内存（见页面注释）。
+        path: 'playground',
+        name: 'console-playground',
+        component: () => import('@/views/console/PlaygroundView.vue'),
+        meta: { title: '游乐场' },
+      },
+      {
         path: 'logs',
         name: 'console-logs',
         component: () => import('@/views/console/LogsView.vue'),
@@ -184,6 +193,13 @@ const routes: RouteRecordRaw[] = [
         name: 'admin-users',
         component: () => import('@/views/admin/UsersView.vue'),
         meta: { title: '用户管理' },
+      },
+      {
+        // 兑换码：运营用"发码"替代"直接调额"，与令牌/用户同属资源域。
+        path: 'redeem-codes',
+        name: 'admin-redeem-codes',
+        component: () => import('@/views/admin/RedeemCodesView.vue'),
+        meta: { title: '兑换码' },
       },
       {
         path: 'logs',

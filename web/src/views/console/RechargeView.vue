@@ -432,7 +432,7 @@ onBeforeUnmount(stopPolling)
     <section class="mt-6">
       <h3 class="section-title mb-3">充值记录</h3>
 
-      <div class="table-wrap">
+      <div class="table-wrap table-cards">
         <table class="data-table">
           <thead>
             <tr>
@@ -458,18 +458,18 @@ onBeforeUnmount(stopPolling)
             />
 
             <tr v-for="order in orders" :key="order.trade_no">
-              <td><code class="font-mono text-[12px] text-ink-200">{{ order.trade_no }}</code></td>
-              <td class="cell-num">¥{{ order.amount_text }}</td>
-              <td class="cell-num">{{ formatNumber(order.quota) }}</td>
-              <td class="cell-muted">{{ order.method }}<span v-if="order.sub_method"> / {{ order.sub_method }}</span></td>
-              <td>
+              <td data-label="订单号"><code class="font-mono text-[12px] text-ink-200">{{ order.trade_no }}</code></td>
+              <td class="cell-num" data-label="金额">¥{{ order.amount_text }}</td>
+              <td class="cell-num" data-label="到账额度">{{ formatNumber(order.quota) }}</td>
+              <td class="cell-muted" data-label="方式">{{ order.method }}<span v-if="order.sub_method"> / {{ order.sub_method }}</span></td>
+              <td data-label="状态">
                 <span :class="orderBadgeClass(order)">{{ order.status_text }}</span>
                 <span v-if="order.status === ORDER_STATUS_PAID && !order.credited" class="ml-1 badge badge-warn">
                   待入账
                 </span>
               </td>
-              <td class="cell-muted">{{ formatDateTime(order.created_at) }}</td>
-              <td class="cell-muted">{{ order.paid_at ? formatDateTime(order.paid_at) : '—' }}</td>
+              <td class="cell-muted" data-label="创建时间">{{ formatDateTime(order.created_at) }}</td>
+              <td class="cell-muted" data-label="支付时间">{{ order.paid_at ? formatDateTime(order.paid_at) : '—' }}</td>
             </tr>
           </tbody>
         </table>

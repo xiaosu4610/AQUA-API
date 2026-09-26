@@ -347,6 +347,19 @@
     .page-head {
       @apply flex-col items-stretch gap-3;
     }
+
+    /* 卡片头（标题 + 右侧操作）在窄屏允许换行。
+       否则一行放不下时，标题会被右侧按钮挤成一条很窄的竖排，几乎无法阅读。 */
+    .card-head {
+      @apply flex-wrap;
+    }
+
+    /* 工具条 / 筛选条：子项允许收缩，避免固定宽度控件在 375px 下把容器撑宽、
+       进而让整页出现横向滚动（.toolbar / .filter-bar 本身已是 flex-wrap）。 */
+    .toolbar > *,
+    .filter-bar > * {
+      min-width: 0;
+    }
   }
 
   .filter-bar {
@@ -413,6 +426,16 @@
 
   .bottom-nav-item-active {
     @apply text-brand-700;
+  }
+
+  /* 抽屉侧边栏的安全区。
+     上一轮只给顶栏与底部导航补了安全区，侧边栏同样是贴边浮层：
+     横屏刘海机型的左侧挖孔、竖屏的顶部状态栏都会压住品牌区与首个导航项，
+     因此这里补出上 / 下 / 左三个方向的安全区内边距（桌面端 env() 为 0，不受影响）。 */
+  .sidebar-safe {
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
   }
 
   /* 侧边栏导航项 */

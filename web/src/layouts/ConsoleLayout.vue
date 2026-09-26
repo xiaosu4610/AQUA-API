@@ -27,6 +27,7 @@ const groups: NavGroup[] = [
       { label: '概览', to: '/console', icon: 'home' },
       { label: '模型广场', to: '/console/models', icon: 'grid' },
       { label: '接入示例', to: '/console/docs', icon: 'book' },
+      { label: '游乐场', to: '/console/playground', icon: 'send' },
     ],
   },
   {
