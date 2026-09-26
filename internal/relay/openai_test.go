@@ -32,6 +32,7 @@ import (
 
 	"gitee.com/xiaosu4610/aqua-api/internal/crypto"
 	"gitee.com/xiaosu4610/aqua-api/internal/model"
+	"gitee.com/xiaosu4610/aqua-api/internal/oai"
 	"gitee.com/xiaosu4610/aqua-api/internal/store"
 )
 
@@ -345,7 +346,7 @@ func TestServeChatCompletions_NoAvailableChannel(t *testing.T) {
 	}
 
 	// 错误体必须符合 OpenAI 格式，客户端 SDK 才能正确解析
-	var body openAIErrorBody
+	var body oai.ErrorBody
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("错误体不是 OpenAI 格式: %v", err)
 	}
@@ -385,7 +386,7 @@ func TestServeChatCompletions_BadRequests(t *testing.T) {
 			if resp.StatusCode != http.StatusBadRequest {
 				t.Errorf("状态码 = %d，期望 400", resp.StatusCode)
 			}
-			var body openAIErrorBody
+			var body oai.ErrorBody
 			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 				t.Fatalf("错误体解析失败: %v", err)
 			}
@@ -471,6 +472,315 @@ func TestIsHopByHopHeader(t *testing.T) {
 	for _, h := range endToEnd {
 		if isHopByHopHeader(h) {
 			t.Errorf("%s 不应被判定为逐跳头", h)
+		}
+	}
+}
+
+// ───────────────────────── 多渠道路由与故障转移 ─────────────────────────
+
+// addChannelWithWeight 写入一个指定权重的启用渠道，用于路由分布测试。
+func addChannelWithWeight(t *testing.T, repo model.ChannelRepository, baseURL string, weight, priority int) {
+	t.Helper()
+
+	ch := &model.Channel{
+		Name:     "加权渠道",
+		Type:     1,
+		BaseURL:  baseURL,
+		APIKey:   "sk-weight-test",
+		Group:    "default",
+		Priority: priority,
+		Weight:   weight,
+		Status:   model.ChannelStatusEnabled,
+	}
+	if err := repo.Create(context.Background(), ch); err != nil {
+		t.Fatalf("写入加权渠道失败: %v", err)
+	}
+}
+
+// deadUpstreamURL 返回一个"必定连接失败"的上游地址。
+//
+// 做法：启动 httptest.Server 后立即关闭——地址仍有效但无人监听，
+// 连接会被拒绝，从而稳定复现"连接层失败"这一可重试场景。
+func deadUpstreamURL(t *testing.T) string {
+	t.Helper()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	url := srv.URL
+	srv.Close()
+	return url
+}
+
+// newGateway 用给定转发引擎启动一个测试用网关。
+func newGateway(t *testing.T, rl *Relay) *httptest.Server {
+	t.Helper()
+	gw := httptest.NewServer(http.HandlerFunc(rl.ServeChatCompletions))
+	t.Cleanup(gw.Close)
+	return gw
+}
+
+// postChat 向网关发起一次对话请求，返回响应。
+func postChat(t *testing.T, gatewayURL, body string) *http.Response {
+	t.Helper()
+
+	resp, err := http.Post(gatewayURL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("请求网关失败: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
+}
+
+// TestForward_FailoverOnConnectionError 验证连接失败时自动换渠道并成功返回。
+//
+// 这是故障转移最核心的场景：高优先级渠道不可用时，请求应落到低优先级渠道，
+// 而不是把错误直接抛给用户。
+func TestForward_FailoverOnConnectionError(t *testing.T) {
+	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"from-healthy-channel"}`)
+	}))
+	defer healthy.Close()
+
+	repo := newTestRepo(t)
+	addChannel(t, repo, deadUpstreamURL(t), "sk-dead", nil, 100) // 高优先级但不可用
+	addChannel(t, repo, healthy.URL, "sk-ok", nil, 10)           // 低优先级可用
+
+	gateway := newGateway(t, newRelay(repo))
+	resp := postChat(t, gateway.URL, `{"model":"any-model"}`)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("状态码 = %d，期望 200（应故障转移而非直接报错）", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "from-healthy-channel") {
+		t.Errorf("响应体未来自可用渠道: %s", body)
+	}
+}
+
+// TestForward_FailoverOnRetryableStatus 验证上游 5xx 时换渠道重试。
+//
+// 与"4xx 不重试"形成对照：5xx 是上游自身故障，换渠道很可能成功。
+func TestForward_FailoverOnRetryableStatus(t *testing.T) {
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway) // 502，可重试
+	}))
+	defer broken.Close()
+
+	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"id":"from-healthy-channel"}`)
+	}))
+	defer healthy.Close()
+
+	repo := newTestRepo(t)
+	addChannel(t, repo, broken.URL, "sk-broken", nil, 100)
+	addChannel(t, repo, healthy.URL, "sk-ok", nil, 10)
+
+	gateway := newGateway(t, newRelay(repo))
+	resp := postChat(t, gateway.URL, `{"model":"any-model"}`)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("状态码 = %d，期望 200（502 应触发换渠道重试）", resp.StatusCode)
+	}
+}
+
+// TestForward_NoRetryOnClientError 验证 4xx 不触发重试，避免无谓的上游调用。
+//
+// 意义：请求本身有问题（参数错、模型不存在）时换渠道结果相同，
+// 重试只会放大上游压力与首字延迟。
+func TestForward_NoRetryOnClientError(t *testing.T) {
+	var secondChannelCalled bool
+
+	rejecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest) // 400，不可重试
+		_, _ = io.WriteString(w, `{"error":{"message":"bad request"}}`)
+	}))
+	defer rejecting.Close()
+
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondChannelCalled = true
+		_, _ = io.WriteString(w, `{"id":"second"}`)
+	}))
+	defer second.Close()
+
+	repo := newTestRepo(t)
+	addChannel(t, repo, rejecting.URL, "sk-reject", nil, 100)
+	addChannel(t, repo, second.URL, "sk-second", nil, 10)
+
+	gateway := newGateway(t, newRelay(repo))
+	resp := postChat(t, gateway.URL, `{"model":"any-model"}`)
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("状态码 = %d，期望原样透传 400", resp.StatusCode)
+	}
+	if secondChannelCalled {
+		t.Error("400 不应触发换渠道重试，但第二个渠道被调用了")
+	}
+}
+
+// TestForward_AllChannelsFail 验证所有候选渠道失败时返回 502 且错误格式规范。
+func TestForward_AllChannelsFail(t *testing.T) {
+	repo := newTestRepo(t)
+	addChannel(t, repo, deadUpstreamURL(t), "sk-dead-1", nil, 100)
+	addChannel(t, repo, deadUpstreamURL(t), "sk-dead-2", nil, 10)
+
+	gateway := newGateway(t, newRelay(repo))
+	resp := postChat(t, gateway.URL, `{"model":"any-model"}`)
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("状态码 = %d，期望 502", resp.StatusCode)
+	}
+
+	var body oai.ErrorBody
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("错误体解析失败: %v", err)
+	}
+	if body.Error.Code != oai.CodeUpstreamRequestFailed {
+		t.Errorf("错误码 = %q，期望 %q", body.Error.Code, oai.CodeUpstreamRequestFailed)
+	}
+}
+
+// TestForward_DoesNotRetrySameFailedChannel 验证重试不会重复选中同一渠道。
+//
+// 这是对参考实现常见缺陷的针对性验证：若只在同优先级内重新随机，
+// 可能反复命中刚失败的渠道，表现为"重试了但毫无效果"。
+func TestForward_DoesNotRetrySameFailedChannel(t *testing.T) {
+	var firstChannelHits int
+
+	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		firstChannelHits++
+		w.WriteHeader(http.StatusInternalServerError) // 500，可重试
+	}))
+	defer failing.Close()
+
+	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"id":"ok"}`)
+	}))
+	defer healthy.Close()
+
+	repo := newTestRepo(t)
+	// 两个渠道同优先级，验证排除逻辑而非优先级回退
+	addChannel(t, repo, failing.URL, "sk-fail", nil, 100)
+	addChannel(t, repo, healthy.URL, "sk-ok", nil, 100)
+
+	gateway := newGateway(t, newRelay(repo))
+	resp := postChat(t, gateway.URL, `{"model":"any-model"}`)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("状态码 = %d，期望 200", resp.StatusCode)
+	}
+	if firstChannelHits > 1 {
+		t.Errorf("失败渠道被重复调用 %d 次，期望最多 1 次（应排除已失败渠道）", firstChannelHits)
+	}
+}
+
+// TestSelectChannel_PrefersHigherPriorityTier 验证权重不会跨越优先级层。
+//
+// 设计意图：优先级表达"先用谁"的强意图（如先用便宜渠道），
+// 因此即便低优先级渠道权重极高，也不应抢占高优先级层的流量。
+func TestSelectChannel_PrefersHigherPriorityTier(t *testing.T) {
+	repo := newTestRepo(t)
+	addChannelWithWeight(t, repo, "https://low-priority.example.com", 1000, 1)
+	addChannelWithWeight(t, repo, "https://high-priority.example.com", 1, 100)
+
+	rl := newRelay(repo)
+	for i := 0; i < 50; i++ {
+		ch, err := rl.SelectChannel(context.Background(), "any-model")
+		if err != nil {
+			t.Fatalf("第 %d 次选择渠道失败: %v", i+1, err)
+		}
+		if ch.BaseURL != "https://high-priority.example.com" {
+			t.Fatalf("选中了低优先级渠道 %s（权重不应跨优先级层）", ch.BaseURL)
+		}
+	}
+}
+
+// TestSelectChannel_WeightedDistributionWithinTier 验证同层内按权重分流。
+//
+// 权重 1:9 时，期望权重小的一方约占 10%。取 2000 次采样以避免偶发波动误判。
+func TestSelectChannel_WeightedDistributionWithinTier(t *testing.T) {
+	const (
+		samples    = 2000
+		lowWeight  = 1
+		highWeight = 9
+	)
+
+	repo := newTestRepo(t)
+	addChannelWithWeight(t, repo, "https://light.example.com", lowWeight, 100)
+	addChannelWithWeight(t, repo, "https://heavy.example.com", highWeight, 100)
+
+	rl := newRelay(repo)
+
+	lightHits := 0
+	for i := 0; i < samples; i++ {
+		ch, err := rl.SelectChannel(context.Background(), "any-model")
+		if err != nil {
+			t.Fatalf("选择渠道失败: %v", err)
+		}
+		if ch.BaseURL == "https://light.example.com" {
+			lightHits++
+		}
+	}
+
+	// 期望命中率 10%，允许 ±5 个百分点（2000 次采样下极难越界）
+	got := float64(lightHits) / float64(samples)
+	if got < 0.05 || got > 0.15 {
+		t.Errorf("低权重渠道命中率 = %.3f，期望约 %.2f（权重分流可能失效）",
+			got, float64(lowWeight)/float64(lowWeight+highWeight))
+	}
+}
+
+// TestWeightedPick_EdgeCases 验证权重选择的边界情况。
+func TestWeightedPick_EdgeCases(t *testing.T) {
+	t.Run("单元素直接返回", func(t *testing.T) {
+		only := &model.Channel{BaseURL: "https://only.example.com", Weight: 5}
+		if got := weightedPick([]*model.Channel{only}); got != only {
+			t.Error("单元素列表应直接返回该元素")
+		}
+	})
+
+	t.Run("权重之和为零时退化为等概率", func(t *testing.T) {
+		// 正常流程下 Validate 会拦住权重 0，这里验证兜底逻辑不会死循环
+		list := []*model.Channel{
+			{BaseURL: "https://a.example.com", Weight: 0},
+			{BaseURL: "https://b.example.com", Weight: 0},
+		}
+		seen := map[string]bool{}
+		for i := 0; i < 100; i++ {
+			seen[weightedPick(list).BaseURL] = true
+		}
+		if len(seen) != 2 {
+			t.Errorf("权重全为 0 时应等概率返回，实际只命中 %d 个渠道", len(seen))
+		}
+	})
+
+	t.Run("权重悬殊时几乎总选大权重", func(t *testing.T) {
+		heavy := &model.Channel{BaseURL: "https://heavy.example.com", Weight: 1000}
+		light := &model.Channel{BaseURL: "https://light.example.com", Weight: 1}
+		heavyHits := 0
+		for i := 0; i < 500; i++ {
+			if weightedPick([]*model.Channel{light, heavy}) == heavy {
+				heavyHits++
+			}
+		}
+		if heavyHits < 490 {
+			t.Errorf("大权重渠道命中 %d/500，期望绝大多数命中", heavyHits)
+		}
+	})
+}
+
+// TestIsRetryableStatus 验证重试状态码判定表。
+func TestIsRetryableStatus(t *testing.T) {
+	retryable := []int{429, 500, 502, 503, 504, 529}
+	for _, code := range retryable {
+		if !isRetryableStatus(code) {
+			t.Errorf("状态码 %d 应可重试", code)
+		}
+	}
+
+	notRetryable := []int{200, 201, 400, 401, 403, 404, 422}
+	for _, code := range notRetryable {
+		if isRetryableStatus(code) {
+			t.Errorf("状态码 %d 不应重试（换渠道结果相同）", code)
 		}
 	}
 }

@@ -1,32 +1,30 @@
-// 本文件实现 OpenAI 兼容协议的请求转发（M1 为纯透传）。
+// 本文件实现 OpenAI 兼容协议的请求转发（M2 起支持多渠道路由与故障转移）。
 //
 // 意图（Why）：
 //
 //	绝大多数客户端工具（SDK、Cursor、LobeChat 等）都按 OpenAI 协议发起请求，
-//	因此把 OpenAI 兼容格式作为网关的"母语"最省事：上游若是 OpenAI 兼容实现，
+//	因此把 OpenAI 兼容格式作为网关的「母语」最省事：上游若也是 OpenAI 兼容实现，
 //	我们只需改写目标地址与鉴权，其余原样转发，几乎零转换成本与信息损失。
 //
 // 流转（Flow）：
 //
 //	ServeChatCompletions(w, req)
-//	  ├─ 步骤1 读取请求体（限长，防内存打爆）
-//	  ├─ 步骤2 仅解析 model 字段用于路由
-//	  ├─ 步骤3 SelectChannel 选渠道（失败返回 OpenAI 风格错误）
+//	  ├─ 步骤1 读取请求体（复用 oai.ReadBody：限长 + 还原 body）
+//	  ├─ 步骤2 探测 model 字段（oai.PeekModel）
+//	  ├─ 步骤3 选渠道并转发，失败按策略换渠道重试（见 forwardWithFallback）
 //	  ├─ 步骤4 构造上游请求：改写 URL / Authorization，保留 Accept 与 User-Agent
 //	  ├─ 步骤5 回写状态码与响应头（过滤逐跳头）
 //	  └─ 步骤6 流式拷贝响应体并逐段 Flush（SSE 关键）
 //
 // 扩展（Extend）：
 //
-//	新增端点（/v1/embeddings、/v1/images/generations 等）：
-//	  在本文件增加常量与 ServeXxx 方法，复用 readAndProbe / forward 逻辑，
-//	  并在 server/router.go 注册路由。
-//	新增协议转换（M2）：在步骤 4 之前插入"请求体转换"，在步骤 6 处插入"响应体转换"。
+//	新增端点（/v1/embeddings 等）：复用 oai 包中的协议工具与
+//	  forwardWithFallback，仅需处理各自的请求体差异。
+//	新增协议转换：在步骤 3 之前插入"请求体转换"，在步骤 6 处插入"响应体转换"。
 package relay
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -34,113 +32,151 @@ import (
 	"strings"
 
 	"gitee.com/xiaosu4610/aqua-api/internal/model"
+	"gitee.com/xiaosu4610/aqua-api/internal/oai"
 )
 
-// OpenAI 兼容端点路径。
-const openAIChatCompletionsPath = "/v1/chat/completions"
-
-// maxRequestBodyBytes 是允许的请求体上限。
-//
-// 取值说明：对话请求可能携带 Base64 编码的图片（体积会膨胀约 1/3），
-// 32MB 足以覆盖多图场景，同时避免异常请求耗尽内存。
-// TODO(relay): 后续改为按配置项可调，并支持流式读取以进一步降低内存占用。
-const maxRequestBodyBytes = 32 << 20 // 32 MiB
-
-// 上游拷贝缓冲区大小。
+// copyBufferBytes 是上游响应的拷贝缓冲区大小。
 //
 // 取 32KB：既能减少系统调用次数，又能让首字尽早到达客户端
-// （缓冲区过大会导致分片被攒住，破坏"逐字输出"的体验）。
+// （缓冲区过大会让分片被攒住，破坏"逐字输出"的体验）。
 const copyBufferBytes = 32 * 1024
 
-// chatCompletionProbe 只承载路由所需的字段。
-//
-// 设计说明：刻意只声明 model 一个字段——我们不做完整反序列化，
-// 既避免因上游字段变化而解析失败，也避免无谓的 CPU 开销。
-// 请求体会被原样转发，客户端发送的其他字段（messages、temperature、stream 等）不受影响。
-type chatCompletionProbe struct {
-	Model string `json:"model"`
-}
-
-// openAIErrorBody 是 OpenAI 风格的错误响应体。
-//
-// 为什么必须遵循该格式：客户端 SDK 通常按此结构解析错误，
-// 若返回自定义格式，调用方只能看到"未知错误"，排查成本很高。
-type openAIErrorBody struct {
-	Error openAIErrorDetail `json:"error"`
-}
-
-// openAIErrorDetail 是错误详情。
-type openAIErrorDetail struct {
-	Message string `json:"message"` // 面向人的可读信息（不得包含内部细节）
-	Type    string `json:"type"`    // 错误类别
-	Code    string `json:"code"`    // 机器可判定的错误码
-}
-
-// ServeChatCompletions 处理 POST /v1/chat/completions（透传）。
+// ServeChatCompletions 处理 POST /v1/chat/completions（透传 + 多渠道路由）。
 //
 // 参数使用标准库类型而非框架类型，目的是让 relay 包不依赖具体 Web 框架，
-// 便于测试与将来替换框架。
+// 便于测试（httptest 直接调用）与将来替换框架。
 func (r *Relay) ServeChatCompletions(w http.ResponseWriter, req *http.Request) {
 	// ── 步骤 1：读取请求体 ──────────────────────────────────────
-	// 多读 1 字节用于判断是否超限（LimitReader 会在达到上限处直接截断，
-	// 若不额外读 1 字节，无法区分"恰好等于上限"与"超过上限"）。
-	body, err := io.ReadAll(io.LimitReader(req.Body, maxRequestBodyBytes+1))
+	// 复用 oai.ReadBody：它同时完成限长检查与 body 还原，
+	// 保证鉴权中间件读过 body 后这里仍能完整读取。
+	body, err := oai.ReadBody(req)
 	if err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "读取请求体失败", "invalid_request_error", "read_body_failed")
-		return
-	}
-	if len(body) > maxRequestBodyBytes {
-		writeOpenAIError(w, http.StatusRequestEntityTooLarge,
-			fmt.Sprintf("请求体超过上限（%d 字节）", maxRequestBodyBytes),
-			"invalid_request_error", "request_too_large")
-		return
-	}
-
-	// ── 步骤 2：解析 model 用于路由 ─────────────────────────────
-	var probe chatCompletionProbe
-	if err := json.Unmarshal(body, &probe); err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "请求体不是合法的 JSON", "invalid_request_error", "invalid_json")
-		return
-	}
-	if strings.TrimSpace(probe.Model) == "" {
-		writeOpenAIError(w, http.StatusBadRequest, "缺少 model 字段", "invalid_request_error", "missing_model")
-		return
-	}
-
-	// ── 步骤 3：选择渠道 ────────────────────────────────────────
-	ch, err := r.SelectChannel(req.Context(), probe.Model)
-	if err != nil {
-		if errors.Is(err, ErrNoAvailableChannel) {
-			// 503 而非 500：这是"暂时无可用后端"，客户端稍后重试可能成功
-			writeOpenAIError(w, http.StatusServiceUnavailable,
-				"当前没有可用的上游渠道能处理该模型", "server_error", "no_available_channel")
+		if errors.Is(err, oai.ErrRequestTooLarge) {
+			oai.WriteError(w, http.StatusRequestEntityTooLarge,
+				fmt.Sprintf("请求体超过上限（%d 字节）", oai.MaxRequestBodyBytes),
+				oai.TypeInvalidRequest, oai.CodeRequestTooLarge)
 			return
 		}
-		// 查询渠道时的内部错误：不向客户端暴露底层细节，只记录在服务端
-		// TODO(relay): 接入结构化日志后在此记录 err
-		writeOpenAIError(w, http.StatusInternalServerError,
-			"网关内部错误", "server_error", "internal_error")
+		oai.WriteError(w, http.StatusBadRequest, "读取请求体失败",
+			oai.TypeInvalidRequest, oai.CodeInvalidJSON)
 		return
 	}
 
-	// ── 步骤 4~6：转发并回写 ────────────────────────────────────
-	r.forwardChat(w, req, ch, body)
+	// ── 步骤 2：探测 model 字段（路由与校验的输入）──────────────
+	modelName, err := oai.PeekModel(body)
+	if err != nil {
+		if errors.Is(err, oai.ErrMissingModel) {
+			oai.WriteError(w, http.StatusBadRequest, "缺少 model 字段",
+				oai.TypeInvalidRequest, oai.CodeMissingModel)
+			return
+		}
+		oai.WriteError(w, http.StatusBadRequest, "请求体不是合法的 JSON",
+			oai.TypeInvalidRequest, oai.CodeInvalidJSON)
+		return
+	}
+
+	// ── 步骤 3~6：转发（含失败换渠道重试）───────────────────────
+	r.forwardWithFallback(w, req, modelName, body)
 }
 
+// forwardWithFallback 按路由策略选择渠道并转发，失败时换渠道重试。
+//
+// 重试语义（M2）：
+//   - 可重试：连接层失败（超时/连接被拒/TLS 失败），以及上游返回 429 与 5xx；
+//   - 不可重试：其他 4xx。这类错误源于请求本身（参数非法、模型不存在、密钥无效），
+//     换渠道结果相同，重试只会放大上游压力与延迟；
+//   - 已失败的渠道加入本次请求的排除集合，避免重复撞上同一故障渠道。
+//     这是参考实现的常见缺陷：同优先级内重新随机，可能再次选中刚失败的渠道。
+//
+// 重试的硬约束：只有在【尚未向客户端写出任何内容】时才允许重试。
+// 因此判断必须发生在 WriteHeader 之前——一旦状态码发出就无法撤回。
+//
+// 说明：M2 采用"同请求内排除"，不做跨请求的熔断与冷却——
+// 那属于健康引擎的范畴（窗口错误率 + 半开恢复）。
+func (r *Relay) forwardWithFallback(w http.ResponseWriter, req *http.Request, modelName string, body []byte) {
+	// 一次性取出候选集：同一次请求内的多次重试都基于它挑选，避免每次重试都查库
+	candidates, err := r.listCandidates(req.Context(), modelName)
+	if err != nil {
+		// 仓储查询失败：不向客户端暴露细节
+		// TODO(relay): 接入结构化日志后在此记录 err
+		oai.WriteError(w, http.StatusInternalServerError, "网关内部错误",
+			oai.TypeServer, oai.CodeInternal)
+		return
+	}
+	if len(candidates) == 0 {
+		// 一个可用渠道都没有：属于"配置/容量"问题。
+		// 用 503（而非 500）表达"暂时无可用后端"，客户端稍后重试可能成功。
+		oai.WriteError(w, http.StatusServiceUnavailable,
+			"当前没有可用的上游渠道能处理该模型",
+			oai.TypeServer, oai.CodeNoAvailableChannel)
+		return
+	}
+
+	excluded := make(map[uint64]struct{}) // 本次请求已尝试并失败的渠道
+
+	for attempt := 1; attempt <= r.maxAttempts; attempt++ {
+		ch := pickCandidate(candidates, excluded)
+		if ch == nil {
+			// 候选已全部尝试过，退出循环统一报错
+			break
+		}
+		excluded[ch.ID] = struct{}{}
+
+		// canRetry 的语义：本次失败时，"还有剩余尝试次数"且"确实还有其他候选"，
+		// 才允许丢弃上游响应改投他处。
+		//
+		// 为什么必须检查"还有其他候选"：若只剩最后一个渠道，丢弃它的 429/5xx 响应
+		// 只会让客户端收到含义更模糊的 502（"所有渠道失败"），
+		// 不如把上游的真实错误原样透传，客户端据此可自助排查。
+		canRetry := attempt < r.maxAttempts && pickCandidate(candidates, excluded) != nil
+
+		if r.forwardChat(w, req, ch, body, canRetry) == forwardResponded {
+			return
+		}
+		// 未产生任何响应，继续尝试下一个候选
+	}
+
+	// 所有候选渠道都尝试失败
+	oai.WriteError(w, http.StatusBadGateway, "所有候选渠道均请求失败",
+		oai.TypeServer, oai.CodeUpstreamRequestFailed)
+}
+
+// forwardOutcome 描述一次转发的结局，用于决定是否还能换渠道重试。
+type forwardOutcome int
+
+const (
+	// forwardResponded 表示已开始向客户端回写响应（包括上游返回错误码的情况）。
+	//
+	// 重要：一旦进入该状态就【不能】再重试——HTTP 状态码已经发出，无法撤回。
+	// 上游返回 401/429 等错误时，这些信息对客户端同样有价值
+	// （它据此判断是密钥问题还是限流），应原样透传而非隐藏后重试。
+	forwardResponded forwardOutcome = iota
+	// forwardNotStarted 表示未向客户端写出任何内容（如建立连接失败），可安全重试。
+	forwardNotStarted
+)
+
 // forwardChat 把请求转发到指定渠道，并把上游响应回写给客户端。
-func (r *Relay) forwardChat(w http.ResponseWriter, req *http.Request, ch *model.Channel, body []byte) {
+//
+// 参数 canRetry 表示"本次失败后是否还有别的渠道可试"：
+//   - 为 true：遇到可重试状态码（429/5xx）时，可在未写出响应前丢弃本次结果、改投他处；
+//   - 为 false：无论上游返回什么都必须原样回写。因为已无退路，
+//     丢弃结果只会让客户端收到更含糊的 502。
+//
+// 返回值表示结局，供上层决定是否继续尝试其他渠道。
+func (r *Relay) forwardChat(w http.ResponseWriter, req *http.Request, ch *model.Channel, body []byte, canRetry bool) forwardOutcome {
 	// 拼接上游地址：去掉 base_url 末尾多余的斜杠，避免出现 "//v1/..." 这类路径
-	upstreamURL := strings.TrimRight(ch.BaseURL, "/") + openAIChatCompletionsPath
+	upstreamURL := strings.TrimRight(ch.BaseURL, "/") + oai.ChatCompletionsPath
 
 	// 用请求 context：客户端断开时自动取消上游请求，避免无谓的上游消耗
 	upReq, err := http.NewRequestWithContext(req.Context(), http.MethodPost, upstreamURL, bytes.NewReader(body))
 	if err != nil {
-		writeOpenAIError(w, http.StatusInternalServerError, "网关内部错误", "server_error", "build_request_failed")
-		return
+		// 请求构造失败属于网关侧问题，未向上游发出请求，可换渠道重试
+		return forwardNotStarted
 	}
 
 	// 请求头策略：只设置必要的头，【绝不复用客户端的 Authorization】——
-	// 客户端带的是本网关的令牌，上游需要的是渠道密钥，二者不可混用。
+	// 客户端带的是本网关的令牌，上游需要的是渠道密钥，二者混用会导致
+	// 上游鉴权失败，并把网关令牌泄露给第三方上游。
 	upReq.Header.Set("Content-Type", "application/json")
 	upReq.Header.Set("Authorization", "Bearer "+ch.APIKey)
 
@@ -148,28 +184,71 @@ func (r *Relay) forwardChat(w http.ResponseWriter, req *http.Request, ch *model.
 	if accept := req.Header.Get("Accept"); accept != "" {
 		upReq.Header.Set("Accept", accept)
 	}
-	// 保留 User-Agent：部分上游会按 UA 做风控或功能分级，透传可减少非预期差异
+	// 保留 User-Agent：部分上游按 UA 做风控或功能分级，透传可减少非预期差异
 	if ua := req.Header.Get("User-Agent"); ua != "" {
 		upReq.Header.Set("User-Agent", ua)
 	}
 
 	resp, err := r.client.Do(upReq)
 	if err != nil {
-		// 502：网关作为代理无法从上游获得有效响应（超时、连接被拒、TLS 失败等）
-		// 注意：不暴露 upstreamURL，避免泄露内部渠道地址
-		writeOpenAIError(w, http.StatusBadGateway, "上游渠道请求失败", "server_error", "upstream_request_failed")
-		return
+		// 连接层面失败（超时、连接被拒、TLS 失败）：未写出任何响应，可安全重试。
+		// 注意：不把错误细节回传给客户端，避免泄露内部渠道地址。
+		return forwardNotStarted
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	// 上游返回可重试的状态码（限流/过载/服务端错误）时，若还有其他渠道可试就改投他处。
+	//
+	// 关键前提：此时尚未调用 WriteHeader，客户端还未收到任何内容，因此丢弃本次响应是安全的。
+	// 若已无退路（canRetry=false），则跳过此分支，把状态码与错误体原样透传。
+	if canRetry && isRetryableStatus(resp.StatusCode) {
+		// 先尽力读完错误体再关闭：直接关闭会让底层连接无法复用，
+		// 高并发故障场景下会退化为每次重试都重新建连。
+		// 仅读有限长度，避免恶意上游返回超大错误体。
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxDrainBytes))
+		return forwardNotStarted
+	}
+
 	// ── 步骤 5：回写响应头 ──────────────────────────────────────
-	// 注意：上游返回的错误状态码（如 401、429）原样透传，
-	// 这对客户端很重要——它据此判断"是我的密钥问题还是上游限流"。
+	// 上游返回的错误状态码（如 401、403）原样透传，便于客户端自助排查。
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 
 	// ── 步骤 6：流式拷贝响应体 ──────────────────────────────────
 	flushCopy(w, resp.Body)
+	return forwardResponded
+}
+
+// maxDrainBytes 是重试前丢弃上游响应体的最大读取量。
+//
+// 取值 64KiB：典型错误体只有几百字节，64KiB 足够读完以维持连接复用，
+// 同时避免异常上游用超大响应体拖慢或撑爆网关。
+const maxDrainBytes = 64 << 10
+
+// isRetryableStatus 判断上游状态码是否值得换渠道重试。
+//
+// 判定原则："换一个渠道很可能成功"才重试：
+//   - 429：限流/额度不足，换渠道通常立即改善；
+//   - 500/502/503/504：上游服务端故障；
+//   - 529：上游过载（Anthropic 等厂商的约定状态码）。
+//
+// 明确不重试的常见状态码及原因：
+//   - 400/422：请求参数有误，换渠道同样失败；
+//   - 401/403：渠道密钥无效或权限不足，换渠道无意义（且应触发渠道健康标记）；
+//   - 404：模型不存在，属于配置问题；
+//   - 408/499：客户端侧问题。
+func isRetryableStatus(status int) bool {
+	switch status {
+	case http.StatusTooManyRequests, // 429
+		http.StatusInternalServerError, // 500
+		http.StatusBadGateway,          // 502
+		http.StatusServiceUnavailable,  // 503
+		http.StatusGatewayTimeout,      // 504
+		529:                            // 上游过载（非标准码，厂商约定）
+		return true
+	default:
+		return false
+	}
 }
 
 // copyResponseHeaders 把上游响应头复制到客户端，并过滤掉不应转发的头。
@@ -213,9 +292,9 @@ func isHopByHopHeader(key string) bool {
 //
 // 为什么必须 Flush：大模型流式回答依赖 SSE，若数据被缓冲在网关或 HTTP 层，
 // 客户端的体验会从"逐字出现"退化为"等全文生成完再一次性蹦出来"，
-// 这与不经网关直连相比是明显的体验倒退。
+// 与不经网关直连相比是明显的体验倒退。
 func flushCopy(w http.ResponseWriter, src io.Reader) {
-	// gin 的 ResponseWriter 实现了 http.Flusher；用类型断言以兼容不支持刷新的实现
+	// gin 的 ResponseWriter 实现了 http.Flusher；用类型断言兼容不支持刷新的实现
 	flusher, canFlush := w.(http.Flusher)
 
 	buf := make([]byte, copyBufferBytes)
@@ -236,21 +315,4 @@ func flushCopy(w http.ResponseWriter, src io.Reader) {
 			return
 		}
 	}
-}
-
-// writeOpenAIError 以 OpenAI 兼容格式输出错误响应。
-//
-// 安全约束：message 参数只允许填写面向用户的描述，
-// 严禁放入文件路径、SQL 语句、上游地址或密钥。
-func writeOpenAIError(w http.ResponseWriter, status int, message, errType, code string) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-
-	_ = json.NewEncoder(w).Encode(openAIErrorBody{
-		Error: openAIErrorDetail{
-			Message: message,
-			Type:    errType,
-			Code:    code,
-		},
-	})
 }
