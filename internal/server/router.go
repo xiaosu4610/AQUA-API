@@ -100,6 +100,10 @@ func (s *Server) registerRoutes() {
 
 	admin.GET("/dashboard", s.handleDashboard)
 
+	// 上游渠道类型目录：后台新建/编辑渠道时据此做「选类型 → 展开该类型必填项」
+	// 的触发式渲染，因此新增上游类型不需要改前端代码。
+	admin.GET("/channel-types", s.handleChannelTypes)
+
 	admin.GET("/channels", s.handleListChannels)
 	admin.POST("/channels", s.handleCreateChannel)
 	admin.GET("/channels/:id", s.handleGetChannel)
