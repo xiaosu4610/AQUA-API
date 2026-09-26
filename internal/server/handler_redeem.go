@@ -350,20 +350,20 @@ func (s *Server) handleUserRedeem(c *gin.Context) {
 
 	user, ok := middleware.CurrentUser(c)
 	if !ok {
-		oai.WriteError(c.Writer, http.StatusUnauthorized,
-			"未登录", oai.TypeAuthentication, oai.CodeMissingAPIKey)
+		writeUserError(c, http.StatusUnauthorized,
+			"auth.not_logged_in", oai.TypeAuthentication, oai.CodeMissingAPIKey)
 		return
 	}
 
 	var req userRedeemRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		oai.WriteError(c.Writer, http.StatusBadRequest, "请求体格式错误",
+		writeUserError(c, http.StatusBadRequest, "request.invalid_json",
 			oai.TypeInvalidRequest, oai.CodeInvalidJSON)
 		return
 	}
 	code := strings.TrimSpace(req.Code)
 	if code == "" {
-		oai.WriteError(c.Writer, http.StatusBadRequest, "请填写兑换码",
+		writeUserError(c, http.StatusBadRequest, "redeem.code_required",
 			oai.TypeInvalidRequest, "missing_redeem_code")
 		return
 	}
@@ -395,17 +395,17 @@ func (s *Server) handleUserRedeem(c *gin.Context) {
 func (s *Server) writeRedeemError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, model.ErrRedeemCodeNotFound):
-		oai.WriteError(c.Writer, http.StatusNotFound,
-			"兑换码不存在，请检查是否输入有误", oai.TypeInvalidRequest, "redeem_code_not_found")
+		writeUserError(c, http.StatusNotFound,
+			"redeem.not_found", oai.TypeInvalidRequest, "redeem_code_not_found")
 	case errors.Is(err, model.ErrRedeemCodeUsed):
-		oai.WriteError(c.Writer, http.StatusConflict,
-			"该兑换码已被使用", oai.TypeInvalidRequest, "redeem_code_used")
+		writeUserError(c, http.StatusConflict,
+			"redeem.used", oai.TypeInvalidRequest, "redeem_code_used")
 	case errors.Is(err, model.ErrRedeemCodeExpired):
-		oai.WriteError(c.Writer, http.StatusGone,
-			"该兑换码已过期", oai.TypeInvalidRequest, "redeem_code_expired")
+		writeUserError(c, http.StatusGone,
+			"redeem.expired", oai.TypeInvalidRequest, "redeem_code_expired")
 	case errors.Is(err, model.ErrRedeemCodeVoid):
-		oai.WriteError(c.Writer, http.StatusConflict,
-			"该兑换码已作废", oai.TypeInvalidRequest, "redeem_code_void")
+		writeUserError(c, http.StatusConflict,
+			"redeem.void", oai.TypeInvalidRequest, "redeem_code_void")
 	default:
 		s.respondInternalError(c, "兑换失败")
 	}

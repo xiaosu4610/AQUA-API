@@ -93,7 +93,7 @@ func (s *Server) handleMyCreateToken(c *gin.Context) {
 
 	var req adminTokenCreateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		oai.WriteError(c.Writer, http.StatusBadRequest, "请求体格式错误", oai.TypeInvalidRequest, oai.CodeInvalidJSON)
+		writeUserError(c, http.StatusBadRequest, "request.invalid_json", oai.TypeInvalidRequest, oai.CodeInvalidJSON)
 		return
 	}
 
@@ -127,7 +127,7 @@ func (s *Server) handleMyDeleteToken(c *gin.Context) {
 func (s *Server) createTokenAndRespond(c *gin.Context, ownerID uint64, name string, expiresInDays int, models []string, unlimitedQuota bool, remainQuota int64, groupName string) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		oai.WriteError(c.Writer, http.StatusBadRequest, "令牌名称不能为空", oai.TypeInvalidRequest, "invalid_name")
+		writeUserError(c, http.StatusBadRequest, "token.name_required", oai.TypeInvalidRequest, "invalid_name")
 		return
 	}
 
@@ -181,7 +181,7 @@ func (s *Server) updateToken(c *gin.Context, ownerID uint64) {
 
 	var req tokenUpdateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		oai.WriteError(c.Writer, http.StatusBadRequest, "请求体格式错误", oai.TypeInvalidRequest, oai.CodeInvalidJSON)
+		writeUserError(c, http.StatusBadRequest, "request.invalid_json", oai.TypeInvalidRequest, oai.CodeInvalidJSON)
 		return
 	}
 
@@ -198,7 +198,7 @@ func (s *Server) updateToken(c *gin.Context, ownerID uint64) {
 	}
 	if req.Status != nil {
 		if !model.TokenStatus(*req.Status).IsValid() {
-			oai.WriteError(c.Writer, http.StatusBadRequest, "令牌状态非法", oai.TypeInvalidRequest, "invalid_status")
+			writeUserError(c, http.StatusBadRequest, "token.invalid_status", oai.TypeInvalidRequest, "invalid_status")
 			return
 		}
 		token.Status = model.TokenStatus(*req.Status)
@@ -252,7 +252,7 @@ func (s *Server) deleteToken(c *gin.Context, ownerID uint64) {
 
 	if err := s.deps.Tokens.Delete(ctx, id); err != nil {
 		if errors.Is(err, model.ErrTokenNotFound) {
-			oai.WriteError(c.Writer, http.StatusNotFound, "令牌不存在", oai.TypeInvalidRequest, "token_not_found")
+			writeUserError(c, http.StatusNotFound, "token.not_found", oai.TypeInvalidRequest, "token_not_found")
 			return
 		}
 		s.respondInternalError(c, "删除令牌失败")
@@ -270,7 +270,7 @@ func (s *Server) loadOwnedToken(c *gin.Context, id, ownerID uint64) (*model.Toke
 	token, err := s.deps.Tokens.GetByID(c.Request.Context(), id)
 	if err != nil {
 		if errors.Is(err, model.ErrTokenNotFound) {
-			oai.WriteError(c.Writer, http.StatusNotFound, "令牌不存在", oai.TypeInvalidRequest, "token_not_found")
+			writeUserError(c, http.StatusNotFound, "token.not_found", oai.TypeInvalidRequest, "token_not_found")
 			return nil, false
 		}
 		s.respondInternalError(c, "查询令牌失败")
@@ -278,7 +278,7 @@ func (s *Server) loadOwnedToken(c *gin.Context, id, ownerID uint64) (*model.Toke
 	}
 
 	if ownerID > 0 && token.OwnerID != ownerID {
-		oai.WriteError(c.Writer, http.StatusNotFound, "令牌不存在", oai.TypeInvalidRequest, "token_not_found")
+		writeUserError(c, http.StatusNotFound, "token.not_found", oai.TypeInvalidRequest, "token_not_found")
 		return nil, false
 	}
 	return token, true
@@ -308,7 +308,7 @@ func (s *Server) resolveTokenGroupName(c *gin.Context, raw string) (string, bool
 	}
 	if _, err := s.deps.Groups.GetByName(c.Request.Context(), name); err != nil {
 		if errors.Is(err, model.ErrModelGroupNotFound) {
-			oai.WriteError(c.Writer, http.StatusBadRequest, "分组不存在", oai.TypeInvalidRequest, "group_not_found")
+			writeUserError(c, http.StatusBadRequest, "group.not_found", oai.TypeInvalidRequest, "group_not_found")
 			return "", false
 		}
 		s.respondInternalError(c, "查询分组失败")
@@ -321,8 +321,8 @@ func (s *Server) resolveTokenGroupName(c *gin.Context, raw string) (string, bool
 func (s *Server) requireCurrentUser(c *gin.Context) (*model.User, bool) {
 	user, ok := middleware.CurrentUser(c)
 	if !ok {
-		oai.WriteError(c.Writer, http.StatusUnauthorized,
-			"未登录", oai.TypeAuthentication, oai.CodeMissingAPIKey)
+		writeUserError(c, http.StatusUnauthorized,
+			"auth.not_logged_in", oai.TypeAuthentication, oai.CodeMissingAPIKey)
 		return nil, false
 	}
 	return user, true

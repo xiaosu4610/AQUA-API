@@ -63,8 +63,8 @@ func SessionAuth(sessions model.SessionRepository, users model.UserRepository) g
 	return func(c *gin.Context) {
 		rawToken := extractAPIKey(c.Request)
 		if rawToken == "" {
-			abortWithError(c, http.StatusUnauthorized,
-				"未登录或凭据缺失", oai.TypeAuthentication, oai.CodeMissingAPIKey)
+			abortWithErrorKey(c, http.StatusUnauthorized,
+				"auth.credentials_missing", oai.TypeAuthentication, oai.CodeMissingAPIKey)
 			return
 		}
 
@@ -72,8 +72,8 @@ func SessionAuth(sessions model.SessionRepository, users model.UserRepository) g
 		session, err := sessions.GetByTokenHash(c.Request.Context(), crypto.SHA256Hex(rawToken))
 		if err != nil {
 			if errors.Is(err, model.ErrSessionNotFound) {
-				abortWithError(c, http.StatusUnauthorized,
-					"登录已失效，请重新登录", oai.TypeAuthentication, oai.CodeInvalidAPIKey)
+				abortWithErrorKey(c, http.StatusUnauthorized,
+					"auth.session_invalid", oai.TypeAuthentication, oai.CodeInvalidAPIKey)
 				return
 			}
 			abortWithError(c, http.StatusInternalServerError,
@@ -86,8 +86,8 @@ func SessionAuth(sessions model.SessionRepository, users model.UserRepository) g
 		if session.IsExpired(time.Now()) {
 			// 顺手清理这条过期会话，避免无效数据长期堆积
 			_ = sessions.DeleteByTokenHash(c.Request.Context(), session.TokenHash)
-			abortWithError(c, http.StatusUnauthorized,
-				"登录已过期，请重新登录", oai.TypeAuthentication, oai.CodeTokenExpired)
+			abortWithErrorKey(c, http.StatusUnauthorized,
+				"auth.session_expired", oai.TypeAuthentication, oai.CodeTokenExpired)
 			return
 		}
 
@@ -96,8 +96,8 @@ func SessionAuth(sessions model.SessionRepository, users model.UserRepository) g
 			if errors.Is(err, model.ErrUserNotFound) {
 				// 用户已被删除，但其会话仍在：清理掉并拒绝
 				_ = sessions.DeleteByUserID(c.Request.Context(), session.UserID)
-				abortWithError(c, http.StatusUnauthorized,
-					"账号不存在", oai.TypeAuthentication, oai.CodeInvalidAPIKey)
+				abortWithErrorKey(c, http.StatusUnauthorized,
+					"auth.account_missing", oai.TypeAuthentication, oai.CodeInvalidAPIKey)
 				return
 			}
 			abortWithError(c, http.StatusInternalServerError,
@@ -109,8 +109,8 @@ func SessionAuth(sessions model.SessionRepository, users model.UserRepository) g
 		// 若只靠登录时校验，已登录的会话仍可长期访问，禁用形同虚设。
 		if !user.IsActive() {
 			_ = sessions.DeleteByUserID(c.Request.Context(), user.ID)
-			abortWithError(c, http.StatusForbidden,
-				"账号已被禁用", oai.TypePermission, oai.CodeTokenDisabled)
+			abortWithErrorKey(c, http.StatusForbidden,
+				"auth.account_disabled", oai.TypePermission, oai.CodeTokenDisabled)
 			return
 		}
 
@@ -125,13 +125,13 @@ func RequireAdmin() gin.HandlerFunc {
 		user, ok := CurrentUser(c)
 		if !ok {
 			// 走到这里说明路由装配有误（未挂 SessionAuth），按未登录处理而非放行
-			abortWithError(c, http.StatusUnauthorized,
-				"未登录", oai.TypeAuthentication, oai.CodeMissingAPIKey)
+			abortWithErrorKey(c, http.StatusUnauthorized,
+				"auth.not_logged_in", oai.TypeAuthentication, oai.CodeMissingAPIKey)
 			return
 		}
 		if !user.IsAdmin() {
-			abortWithError(c, http.StatusForbidden,
-				"需要管理员权限", oai.TypePermission, "insufficient_privileges")
+			abortWithErrorKey(c, http.StatusForbidden,
+				"auth.admin_required", oai.TypePermission, "insufficient_privileges")
 			return
 		}
 		c.Next()

@@ -30,6 +30,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"gitee.com/xiaosu4610/aqua-api/internal/i18n"
 )
 
 // 支持的端点路径。
@@ -116,6 +118,31 @@ func WriteError(w http.ResponseWriter, status int, message, errType, code string
 	_ = json.NewEncoder(w).Encode(ErrorBody{
 		Error: ErrorDetail{Message: message, Type: errType, Code: code},
 	})
+}
+
+// messages 是错误文案的多语言目录（进程内加载一次，只读）。
+var messages = i18n.New()
+
+// WriteErrorKey 按语义化键取词条后再输出错误响应（WriteError 的多语言版本）。
+//
+// 为什么新增而非改写 WriteError：WriteError 有数十个调用点，其中相当一部分是
+// 「运维/内部错误」（如"查询渠道失败""解析失败"），这些消息出现在日志与管理后台，
+// 翻译反而影响按关键词检索排障，因此它们继续使用中文的 WriteError。
+// 只有「面向最终用户、会被展示」的消息才走本函数。
+//
+// 参数 args 为可选格式化参数：当词条内含 %d 等占位符时（如额度不足需回显具体数值），
+// 由本函数用 fmt.Sprintf 填充；无占位符时原样返回。
+//
+// 兼容性：locale 由调用方从请求 context 取得（reqctx.Locale），未携带
+// Accept-Language 时其值为 i18n.Default（中文），输出与改动前完全一致。
+// 注意：只本地化 message，code 必须原样保留——前端依赖 code 做逻辑判断。
+func WriteErrorKey(w http.ResponseWriter, status int, key, errType, code string,
+	locale i18n.Locale, args ...any) {
+	message := messages.Message(locale, key)
+	if len(args) > 0 {
+		message = fmt.Sprintf(message, args...)
+	}
+	WriteError(w, status, message, errType, code)
 }
 
 // ReadBody 读取请求体（带长度上限），并把 Body 还原以便后续再次读取。

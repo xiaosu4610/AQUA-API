@@ -126,6 +126,9 @@ func New(deps Deps) *Server {
 	engine.Use(gin.Recovery())
 	// 访问日志（M1 先用 gin 默认实现；结构化日志与请求 ID 将在后续里程碑替换）
 	engine.Use(gin.Logger())
+	// 解析 Accept-Language 并把语言偏好写入请求 context。
+	// 放在业务处理器之前：让所有错误响应都能按用户语言返回（未携带时回退中文）。
+	engine.Use(middleware.Locale())
 
 	s := &Server{
 		deps:      deps,

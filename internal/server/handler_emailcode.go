@@ -61,8 +61,8 @@ type emailCodeResponse struct {
 func (s *Server) handleSendEmailCode(c *gin.Context) {
 	var req emailCodeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		oai.WriteError(c.Writer, http.StatusBadRequest,
-			"请求体格式错误", oai.TypeInvalidRequest, oai.CodeInvalidJSON)
+		writeUserError(c, http.StatusBadRequest,
+			"request.invalid_json", oai.TypeInvalidRequest, oai.CodeInvalidJSON)
 		return
 	}
 
@@ -74,28 +74,28 @@ func (s *Server) handleSendEmailCode(c *gin.Context) {
 		return
 	}
 	if !settings.RegistrationEnabled {
-		oai.WriteError(c.Writer, http.StatusForbidden,
-			"本站当前未开放注册", oai.TypePermission, "registration_disabled")
+		writeUserError(c, http.StatusForbidden,
+			"auth.registration_closed", oai.TypePermission, "registration_disabled")
 		return
 	}
 	if !settings.RegistrationRequireEmailCode {
 		// 管理员已关闭"验证码校验"，此时不应再消耗邮件配额
-		oai.WriteError(c.Writer, http.StatusBadRequest,
-			"本站注册无需邮箱验证码", oai.TypeInvalidRequest, "email_code_not_required")
+		writeUserError(c, http.StatusBadRequest,
+			"email.code_not_required", oai.TypeInvalidRequest, "email_code_not_required")
 		return
 	}
 
 	email := model.NormalizeEmail(req.Email)
 	if err := model.ValidateEmailFormat(email); err != nil {
-		oai.WriteError(c.Writer, http.StatusBadRequest,
-			"邮箱格式不正确", oai.TypeInvalidRequest, "invalid_email")
+		writeUserError(c, http.StatusBadRequest,
+			"auth.invalid_email", oai.TypeInvalidRequest, "invalid_email")
 		return
 	}
 
 	// 邮件通道未就绪时给出可操作的提示，而不是让用户以为"验证码已发出但没收到"
 	if s.deps.Mailer == nil || !s.deps.Mailer.Configured() {
-		oai.WriteError(c.Writer, http.StatusServiceUnavailable,
-			"邮件服务尚未配置，请联系站点管理员", oai.TypeServer, "email_service_unavailable")
+		writeUserError(c, http.StatusServiceUnavailable,
+			"email.service_unavailable", oai.TypeServer, "email_service_unavailable")
 		return
 	}
 
@@ -110,8 +110,8 @@ func (s *Server) handleSendEmailCode(c *gin.Context) {
 		if elapsed := now.Sub(latest.CreatedAt); elapsed < model.EmailCodeResendCooldown {
 			wait := int((model.EmailCodeResendCooldown - elapsed).Seconds()) + 1
 			c.Header("Retry-After", strconv.Itoa(wait))
-			oai.WriteError(c.Writer, http.StatusTooManyRequests,
-				"请求过于频繁，请 "+strconv.Itoa(wait)+" 秒后重试", oai.TypeRateLimit, "email_code_cooldown")
+			writeUserError(c, http.StatusTooManyRequests,
+				"email.cooldown", oai.TypeRateLimit, "email_code_cooldown", wait)
 			return
 		}
 	} else if !errors.Is(err, model.ErrEmailCodeNotFound) {
@@ -127,8 +127,8 @@ func (s *Server) handleSendEmailCode(c *gin.Context) {
 		return
 	}
 	if emailCount >= model.EmailCodeMaxPerEmailPerHour {
-		oai.WriteError(c.Writer, http.StatusTooManyRequests,
-			"该邮箱申请验证码过于频繁，请稍后再试", oai.TypeRateLimit, "email_code_email_limit")
+		writeUserError(c, http.StatusTooManyRequests,
+			"email.rate_email", oai.TypeRateLimit, "email_code_email_limit")
 		return
 	}
 
@@ -141,8 +141,8 @@ func (s *Server) handleSendEmailCode(c *gin.Context) {
 		return
 	}
 	if ipCount >= model.EmailCodeMaxPerIPPerHour {
-		oai.WriteError(c.Writer, http.StatusTooManyRequests,
-			"当前网络申请验证码过于频繁，请稍后再试", oai.TypeRateLimit, "email_code_ip_limit")
+		writeUserError(c, http.StatusTooManyRequests,
+			"email.rate_ip", oai.TypeRateLimit, "email_code_ip_limit")
 		return
 	}
 
@@ -172,8 +172,8 @@ func (s *Server) handleSendEmailCode(c *gin.Context) {
 		// 被冷却 60 秒，表现为"点了重发却一直提示过于频繁"。
 		// 回滚失败也不向用户暴露细节，仅记录（此处无结构化日志，交给启动日志覆盖）。
 		_ = s.deps.EmailCodes.DeleteByID(ctx, record.ID)
-		oai.WriteError(c.Writer, http.StatusBadGateway,
-			"验证码邮件发送失败，请稍后重试", oai.TypeServer, "email_send_failed")
+		writeUserError(c, http.StatusBadGateway,
+			"email.send_failed", oai.TypeServer, "email_send_failed")
 		return
 	}
 
@@ -194,21 +194,21 @@ func (s *Server) verifyAndConsumeRegisterEmailCode(c *gin.Context, email, code s
 	ctx := c.Request.Context()
 
 	if email == "" {
-		oai.WriteError(c.Writer, http.StatusBadRequest,
-			"请填写邮箱", oai.TypeInvalidRequest, "email_required")
+		writeUserError(c, http.StatusBadRequest,
+			"email.required", oai.TypeInvalidRequest, "email_required")
 		return false
 	}
 	if code == "" {
-		oai.WriteError(c.Writer, http.StatusBadRequest,
-			"请填写邮箱验证码", oai.TypeInvalidRequest, "email_code_required")
+		writeUserError(c, http.StatusBadRequest,
+			"email.code_required", oai.TypeInvalidRequest, "email_code_required")
 		return false
 	}
 
 	record, err := s.deps.EmailCodes.LatestActive(ctx, email, model.EmailCodePurposeRegister)
 	if err != nil {
 		if errors.Is(err, model.ErrEmailCodeNotFound) {
-			oai.WriteError(c.Writer, http.StatusBadRequest,
-				"验证码不存在或已被使用，请重新获取", oai.TypeInvalidRequest, "email_code_invalid")
+			writeUserError(c, http.StatusBadRequest,
+				"email.code_invalid", oai.TypeInvalidRequest, "email_code_invalid")
 			return false
 		}
 		s.respondInternalError(c, "查询验证码失败")
@@ -217,15 +217,15 @@ func (s *Server) verifyAndConsumeRegisterEmailCode(c *gin.Context, email, code s
 
 	now := time.Now()
 	if record.IsExpired(now) {
-		oai.WriteError(c.Writer, http.StatusBadRequest,
-			"验证码已过期，请重新获取", oai.TypeInvalidRequest, "email_code_expired")
+		writeUserError(c, http.StatusBadRequest,
+			"email.code_expired", oai.TypeInvalidRequest, "email_code_expired")
 		return false
 	}
 
 	// 失败次数上限：6 位数字共 100 万种组合，限次后在线穷举不可行
 	if record.Attempts >= model.EmailCodeMaxAttempts {
-		oai.WriteError(c.Writer, http.StatusTooManyRequests,
-			"验证码尝试次数过多，请重新获取", oai.TypeRateLimit, "email_code_attempts_exceeded")
+		writeUserError(c, http.StatusTooManyRequests,
+			"email.code_attempts_exceeded", oai.TypeRateLimit, "email_code_attempts_exceeded")
 		return false
 	}
 
@@ -236,16 +236,16 @@ func (s *Server) verifyAndConsumeRegisterEmailCode(c *gin.Context, email, code s
 		if remaining < 0 {
 			remaining = 0
 		}
-		oai.WriteError(c.Writer, http.StatusBadRequest,
-			"验证码错误，还可尝试 "+strconv.Itoa(remaining)+" 次", oai.TypeInvalidRequest, "email_code_mismatch")
+		writeUserError(c, http.StatusBadRequest,
+			"email.code_mismatch", oai.TypeInvalidRequest, "email_code_mismatch", remaining)
 		return false
 	}
 
 	// 一次性消费：并发提交同一验证码时，只有一条 UPDATE 会生效
 	if err := s.deps.EmailCodes.Consume(ctx, record.ID, now); err != nil {
 		if errors.Is(err, model.ErrEmailCodeNotFound) {
-			oai.WriteError(c.Writer, http.StatusBadRequest,
-				"验证码已被使用，请重新获取", oai.TypeInvalidRequest, "email_code_used")
+			writeUserError(c, http.StatusBadRequest,
+				"email.code_used", oai.TypeInvalidRequest, "email_code_used")
 			return false
 		}
 		s.respondInternalError(c, "消费验证码失败")

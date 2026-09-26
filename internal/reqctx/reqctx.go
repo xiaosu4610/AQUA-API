@@ -19,9 +19,16 @@
 //
 //	需要传递更多请求级信息（如客户端 IP、请求 ID）时，在本结构体加字段——
 //	注意只放"纯数据"，不要把仓储或客户端等依赖塞进来（那会造成隐式耦合）。
+//
+//	语言偏好（locale）也通过本包传递：HTTP 层解析出 Accept-Language 后写入，
+//	转发层与各处理器读取。它同样是"一次请求内不变的纯数据"。
 package reqctx
 
-import "context"
+import (
+	"context"
+
+	"gitee.com/xiaosu4610/aqua-api/internal/i18n"
+)
 
 // Identity 描述一次模型调用请求的调用者身份。
 //
@@ -90,4 +97,33 @@ func Group(ctx context.Context) string {
 	}
 	group, _ := ctx.Value(groupKey).(string)
 	return group
+}
+
+// localeKey 是「本次请求的语言偏好」在 context 中的键。
+//
+// 沿用 ctxKey 的带字段写法（而非空结构体）：与 identityKey / groupKey 一样，
+// 若用空结构体声明，多个键会坍缩成同一个键而互相覆盖——这类串值缺陷极隐蔽。
+var localeKey = ctxKey{name: "locale"}
+
+// WithLocale 返回携带语言偏好的 context。
+//
+// 由 HTTP 层中间件在解析 Accept-Language 后写入；此处不校验取值合法性，
+// 只做"纯传递"（校验与归一由 internal/i18n 负责）。
+func WithLocale(ctx context.Context, locale i18n.Locale) context.Context {
+	return context.WithValue(ctx, localeKey, locale)
+}
+
+// Locale 取出本次请求的语言偏好；未写入或取值非法时回退 i18n.Default（中文）。
+//
+// 为什么回退中文：改动前所有用户可见错误均为中文，回退中文能保证
+// 「未经过 locale 中间件」（如单元测试直接调用中间件）时行为与今天一致。
+func Locale(ctx context.Context) i18n.Locale {
+	if ctx == nil {
+		return i18n.Default
+	}
+	locale, ok := ctx.Value(localeKey).(i18n.Locale)
+	if !ok || locale == "" {
+		return i18n.Default
+	}
+	return locale
 }

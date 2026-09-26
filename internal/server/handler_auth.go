@@ -37,6 +37,7 @@ import (
 	"gitee.com/xiaosu4610/aqua-api/internal/crypto"
 	"gitee.com/xiaosu4610/aqua-api/internal/model"
 	"gitee.com/xiaosu4610/aqua-api/internal/oai"
+	"gitee.com/xiaosu4610/aqua-api/internal/reqctx"
 	"gitee.com/xiaosu4610/aqua-api/internal/server/middleware"
 	"gitee.com/xiaosu4610/aqua-api/internal/version"
 )
@@ -46,6 +47,19 @@ import (
 // 取值 7 天的考虑：太短会让使用者频繁重新登录（尤其后台管理场景）；
 // 太长则一旦会话泄露影响面大。配合"禁用/改密即吊销全部会话"来兜底。
 const sessionTTL = 7 * 24 * time.Hour
+
+// writeUserError 输出「面向最终用户」的错误响应，按请求语言本地化。
+//
+// 与 oai.WriteError 的分工：
+//   - 本函数用于会被展示给用户的错误（注册/登录/令牌/兑换/额度等），
+//     文案以语义化键从 i18n 目录取用，locale 来自 locale 中间件写入的请求 context；
+//   - oai.WriteError 继续用于「运维/内部错误」（如"查询失败""解析失败"），
+//     这些消息出现在日志与管理后台，翻译反而影响按关键词检索排障，故保持中文。
+//
+// args 为可选格式化参数（词条含 %d 等占位符时使用）。
+func writeUserError(c *gin.Context, status int, key, errType, code string, args ...any) {
+	oai.WriteErrorKey(c.Writer, status, key, errType, code, reqctx.Locale(c.Request.Context()), args...)
+}
 
 // dummyPasswordHash 是一个固定的口令哈希，用于登录失败时消耗等量时间。
 //
@@ -159,15 +173,15 @@ func (s *Server) handleRegister(c *gin.Context) {
 		return
 	}
 	if !settings.RegistrationEnabled {
-		oai.WriteError(c.Writer, http.StatusForbidden,
-			"本站当前未开放注册，请联系管理员开通账号", oai.TypePermission, "registration_disabled")
+		writeUserError(c, http.StatusForbidden,
+			"auth.register_disabled", oai.TypePermission, "registration_disabled")
 		return
 	}
 
 	var req registerRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		oai.WriteError(c.Writer, http.StatusBadRequest,
-			"请求体格式错误", oai.TypeInvalidRequest, oai.CodeInvalidJSON)
+		writeUserError(c, http.StatusBadRequest,
+			"request.invalid_json", oai.TypeInvalidRequest, oai.CodeInvalidJSON)
 		return
 	}
 
@@ -190,8 +204,8 @@ func (s *Server) handleRegister(c *gin.Context) {
 		// 用户必须重新获取验证码才能重试，体验明显变差。
 		// 这里不是并发安全的"预留"，真正的唯一性仍由数据库唯一索引保证。
 		if _, err := s.deps.Users.GetByUsername(ctx, username); err == nil {
-			oai.WriteError(c.Writer, http.StatusConflict,
-				"用户名已被占用", oai.TypeInvalidRequest, "username_taken")
+			writeUserError(c, http.StatusConflict,
+				"auth.username_taken", oai.TypeInvalidRequest, "username_taken")
 			return
 		} else if !errors.Is(err, model.ErrUserNotFound) {
 			oai.WriteError(c.Writer, http.StatusInternalServerError,
@@ -206,8 +220,8 @@ func (s *Server) handleRegister(c *gin.Context) {
 		// 未开启验证码校验时邮箱仍为可选字段：填了就要合法，
 		// 否则脏数据会进入用户表，后续做邮件通知时无从投递。
 		if err := model.ValidateEmailFormat(email); err != nil {
-			oai.WriteError(c.Writer, http.StatusBadRequest,
-				"邮箱格式不正确", oai.TypeInvalidRequest, "invalid_email")
+			writeUserError(c, http.StatusBadRequest,
+				"auth.invalid_email", oai.TypeInvalidRequest, "invalid_email")
 			return
 		}
 	}
@@ -231,15 +245,15 @@ func (s *Server) handleRegister(c *gin.Context) {
 	}
 	if err := s.deps.Users.Create(ctx, user); err != nil {
 		if errors.Is(err, model.ErrUsernameTaken) {
-			oai.WriteError(c.Writer, http.StatusConflict,
-				"用户名已被占用", oai.TypeInvalidRequest, "username_taken")
+			writeUserError(c, http.StatusConflict,
+				"auth.username_taken", oai.TypeInvalidRequest, "username_taken")
 			return
 		}
 		// 用户名/口令规则不满足时，领域校验的错误信息对使用者是有帮助的，
 		// 但它可能包含内部描述，因此这里只回笼统提示，详细原因记录在服务端。
 		// TODO(server): 接入结构化日志后记录 err
-		oai.WriteError(c.Writer, http.StatusBadRequest,
-			"注册信息不符合要求", oai.TypeInvalidRequest, "invalid_registration")
+		writeUserError(c, http.StatusBadRequest,
+			"auth.invalid_registration", oai.TypeInvalidRequest, "invalid_registration")
 		return
 	}
 
@@ -262,8 +276,8 @@ type loginRequest struct {
 func (s *Server) handleLogin(c *gin.Context) {
 	var req loginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		oai.WriteError(c.Writer, http.StatusBadRequest,
-			"请求体格式错误", oai.TypeInvalidRequest, oai.CodeInvalidJSON)
+		writeUserError(c, http.StatusBadRequest,
+			"request.invalid_json", oai.TypeInvalidRequest, oai.CodeInvalidJSON)
 		return
 	}
 
@@ -273,8 +287,8 @@ func (s *Server) handleLogin(c *gin.Context) {
 			// 关键：即使用户不存在也执行一次哈希比对，抹平与"口令错误"的耗时差异，
 			// 防止攻击者通过响应时间枚举有效用户名。
 			crypto.VerifyPassword(req.Password, dummyPasswordHash)
-			oai.WriteError(c.Writer, http.StatusUnauthorized,
-				"用户名或密码错误", oai.TypeAuthentication, oai.CodeInvalidAPIKey)
+			writeUserError(c, http.StatusUnauthorized,
+				"auth.invalid_credentials", oai.TypeAuthentication, oai.CodeInvalidAPIKey)
 			return
 		}
 		oai.WriteError(c.Writer, http.StatusInternalServerError,
@@ -284,14 +298,14 @@ func (s *Server) handleLogin(c *gin.Context) {
 
 	if !crypto.VerifyPassword(req.Password, user.PasswordHash) {
 		// 与"用户不存在"返回完全相同的提示，不泄露用户名是否存在
-		oai.WriteError(c.Writer, http.StatusUnauthorized,
-			"用户名或密码错误", oai.TypeAuthentication, oai.CodeInvalidAPIKey)
+		writeUserError(c, http.StatusUnauthorized,
+			"auth.invalid_credentials", oai.TypeAuthentication, oai.CodeInvalidAPIKey)
 		return
 	}
 
 	if !user.IsActive() {
-		oai.WriteError(c.Writer, http.StatusForbidden,
-			"账号已被禁用", oai.TypePermission, oai.CodeTokenDisabled)
+		writeUserError(c, http.StatusForbidden,
+			"auth.account_disabled", oai.TypePermission, oai.CodeTokenDisabled)
 		return
 	}
 
@@ -326,8 +340,8 @@ func (s *Server) handleLogout(c *gin.Context) {
 func (s *Server) handleMe(c *gin.Context) {
 	user, ok := middleware.CurrentUser(c)
 	if !ok {
-		oai.WriteError(c.Writer, http.StatusUnauthorized,
-			"未登录", oai.TypeAuthentication, oai.CodeMissingAPIKey)
+		writeUserError(c, http.StatusUnauthorized,
+			"auth.not_logged_in", oai.TypeAuthentication, oai.CodeMissingAPIKey)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"user": toUserDTO(user)})

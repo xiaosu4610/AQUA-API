@@ -136,16 +136,16 @@ func (s *Server) handleSubmitTask(c *gin.Context) {
 
 	token, ok := middleware.TokenFromContext(c)
 	if !ok {
-		oai.WriteError(c.Writer, http.StatusUnauthorized,
-			"访问令牌无效", oai.TypeAuthentication, oai.CodeInvalidAPIKey)
+		writeUserError(c, http.StatusUnauthorized,
+			"auth.invalid_token", oai.TypeAuthentication, oai.CodeInvalidAPIKey)
 		return
 	}
 
 	body, err := oai.ReadBody(c.Request)
 	if err != nil {
 		if errors.Is(err, oai.ErrRequestTooLarge) {
-			oai.WriteError(c.Writer, http.StatusRequestEntityTooLarge,
-				"请求体超过上限", oai.TypeInvalidRequest, oai.CodeRequestTooLarge)
+			writeUserError(c, http.StatusRequestEntityTooLarge,
+				"request.too_large", oai.TypeInvalidRequest, oai.CodeRequestTooLarge)
 			return
 		}
 		oai.WriteError(c.Writer, http.StatusBadRequest,
@@ -247,8 +247,8 @@ func (s *Server) handleGetTask(c *gin.Context) {
 
 	token, ok := middleware.TokenFromContext(c)
 	if !ok {
-		oai.WriteError(c.Writer, http.StatusUnauthorized,
-			"访问令牌无效", oai.TypeAuthentication, oai.CodeInvalidAPIKey)
+		writeUserError(c, http.StatusUnauthorized,
+			"auth.invalid_token", oai.TypeAuthentication, oai.CodeInvalidAPIKey)
 		return
 	}
 
@@ -276,8 +276,8 @@ func (s *Server) handleListMyTasks(c *gin.Context) {
 	}
 	token, ok := middleware.TokenFromContext(c)
 	if !ok {
-		oai.WriteError(c.Writer, http.StatusUnauthorized,
-			"访问令牌无效", oai.TypeAuthentication, oai.CodeInvalidAPIKey)
+		writeUserError(c, http.StatusUnauthorized,
+			"auth.invalid_token", oai.TypeAuthentication, oai.CodeInvalidAPIKey)
 		return
 	}
 	query, page, size := buildTaskQuery(c, token.OwnerID)
@@ -293,8 +293,8 @@ func (s *Server) handleMyListTasks(c *gin.Context) {
 	}
 	user, ok := middleware.CurrentUser(c)
 	if !ok {
-		oai.WriteError(c.Writer, http.StatusUnauthorized,
-			"未登录", oai.TypeAuthentication, oai.CodeMissingAPIKey)
+		writeUserError(c, http.StatusUnauthorized,
+			"auth.not_logged_in", oai.TypeAuthentication, oai.CodeMissingAPIKey)
 		return
 	}
 	query, page, size := buildTaskQuery(c, user.ID)
@@ -449,6 +449,6 @@ func writeTaskLookupError(c *gin.Context, err error) {
 
 // writeTaskNotFound 统一返回 404，不区分"不存在"与"不属于你"。
 func writeTaskNotFound(c *gin.Context) {
-	oai.WriteError(c.Writer, http.StatusNotFound,
-		"任务不存在", oai.TypeInvalidRequest, "task_not_found")
+	writeUserError(c, http.StatusNotFound,
+		"task.not_found", oai.TypeInvalidRequest, "task_not_found")
 }

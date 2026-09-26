@@ -99,9 +99,8 @@ func TokenAuth(tokens model.TokenRepository, users model.UserRepository, reserve
 		// ── 步骤 1：提取令牌 ────────────────────────────────────
 		rawKey := extractAPIKey(c.Request)
 		if rawKey == "" {
-			abortWithError(c, http.StatusUnauthorized,
-				"缺少访问令牌，请在 Authorization 头中携带 Bearer <令牌>",
-				oai.TypeAuthentication, oai.CodeMissingAPIKey)
+			abortWithErrorKey(c, http.StatusUnauthorized,
+				"auth.missing_token", oai.TypeAuthentication, oai.CodeMissingAPIKey)
 			return
 		}
 
@@ -112,8 +111,8 @@ func TokenAuth(tokens model.TokenRepository, users model.UserRepository, reserve
 			if errors.Is(err, model.ErrTokenNotFound) {
 				// 统一回复"无效"而不区分"不存在"与"格式错误"，
 				// 避免向攻击者提供可用于枚举有效令牌的差异信息。
-				abortWithError(c, http.StatusUnauthorized,
-					"访问令牌无效", oai.TypeAuthentication, oai.CodeInvalidAPIKey)
+				abortWithErrorKey(c, http.StatusUnauthorized,
+					"auth.invalid_token", oai.TypeAuthentication, oai.CodeInvalidAPIKey)
 				return
 			}
 			// 仓储故障：属于网关内部问题，不暴露细节
@@ -130,17 +129,17 @@ func TokenAuth(tokens model.TokenRepository, users model.UserRepository, reserve
 		now := time.Now()
 		switch token.EffectiveStatus(now) {
 		case model.TokenStatusDisabled:
-			abortWithError(c, http.StatusForbidden,
-				"访问令牌已被禁用", oai.TypePermission, oai.CodeTokenDisabled)
+			abortWithErrorKey(c, http.StatusForbidden,
+				"auth.token_disabled", oai.TypePermission, oai.CodeTokenDisabled)
 			return
 		case model.TokenStatusExpired:
-			abortWithError(c, http.StatusUnauthorized,
-				"访问令牌已过期", oai.TypeAuthentication, oai.CodeTokenExpired)
+			abortWithErrorKey(c, http.StatusUnauthorized,
+				"auth.token_expired", oai.TypeAuthentication, oai.CodeTokenExpired)
 			return
 		case model.TokenStatusExhausted:
 			// 429 而非 403：客户端按"稍后重试/更换令牌"处理更自然
-			abortWithError(c, http.StatusTooManyRequests,
-				"访问令牌额度已用尽", oai.TypeRateLimit, oai.CodeInsufficientQuota)
+			abortWithErrorKey(c, http.StatusTooManyRequests,
+				"quota.token_exhausted", oai.TypeRateLimit, oai.CodeInsufficientQuota)
 			return
 		}
 
@@ -175,8 +174,8 @@ func TokenAuth(tokens model.TokenRepository, users model.UserRepository, reserve
 			if err != nil {
 				if errors.Is(err, model.ErrUserNotFound) {
 					// 令牌归属的用户已被删除：令牌本身应视为失效
-					abortWithError(c, http.StatusUnauthorized,
-						"访问令牌已失效", oai.TypeAuthentication, oai.CodeInvalidAPIKey)
+					abortWithErrorKey(c, http.StatusUnauthorized,
+						"auth.token_revoked", oai.TypeAuthentication, oai.CodeInvalidAPIKey)
 					return
 				}
 				abortWithError(c, http.StatusInternalServerError,
@@ -185,8 +184,8 @@ func TokenAuth(tokens model.TokenRepository, users model.UserRepository, reserve
 			}
 
 			if !owner.IsActive() {
-				abortWithError(c, http.StatusForbidden,
-					"账号已被禁用", oai.TypePermission, oai.CodeTokenDisabled)
+				abortWithErrorKey(c, http.StatusForbidden,
+					"auth.account_disabled", oai.TypePermission, oai.CodeTokenDisabled)
 				return
 			}
 
@@ -204,10 +203,9 @@ func TokenAuth(tokens model.TokenRepository, users model.UserRepository, reserve
 			if owner.Quota != model.QuotaUnlimited && owner.AvailableQuota(pending) <= 0 {
 				// 报错里带上具体数值：使用者转述给站长时，"额度 0 / 已用 0"
 				// 一眼就能定位到是"默认额度没配"，而不是"上游限流"。
-				abortWithError(c, http.StatusTooManyRequests,
-					fmt.Sprintf("账号额度已用尽（额度 %d，已用 %d，在途预留 %d），请联系管理员调整额度",
-						owner.Quota, owner.UsedQuota, pending),
-					oai.TypeRateLimit, oai.CodeInsufficientQuota)
+				abortWithErrorKey(c, http.StatusTooManyRequests,
+					"quota.account_exhausted", oai.TypeRateLimit, oai.CodeInsufficientQuota,
+					owner.Quota, owner.UsedQuota, pending)
 				return
 			}
 		}
@@ -234,8 +232,8 @@ func TokenAuth(tokens model.TokenRepository, users model.UserRepository, reserve
 			}
 			modelName, promptBytes = name, size
 			if !token.AllowsModel(modelName) {
-				abortWithError(c, http.StatusForbidden,
-					"该令牌无权访问指定模型", oai.TypePermission, oai.CodeModelNotAllowed)
+				abortWithErrorKey(c, http.StatusForbidden,
+					"model.not_allowed", oai.TypePermission, oai.CodeModelNotAllowed)
 				return
 			}
 		} else if reserveNeeded {
@@ -310,10 +308,9 @@ func tryReserveQuota(c *gin.Context, reserver QuotaReserver, token *model.Token,
 			if available < 0 {
 				available = 0
 			}
-			abortWithError(c, http.StatusTooManyRequests,
-				fmt.Sprintf("账号额度不足（剩余 %d，本次预计需要 %d），请联系管理员充值或调整额度",
-					available, amount),
-				oai.TypeRateLimit, oai.CodeInsufficientQuota)
+			abortWithErrorKey(c, http.StatusTooManyRequests,
+				"quota.insufficient", oai.TypeRateLimit, oai.CodeInsufficientQuota,
+				available, amount)
 			return "", false
 		}
 		// 台账故障：不因一次记账故障阻断全部调用，降级为"本次不预留"并记错误级别日志。
@@ -347,14 +344,14 @@ func peekModelFromBody(c *gin.Context) (string, int, error) {
 func writeModelBodyError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, oai.ErrRequestTooLarge):
-		abortWithError(c, http.StatusRequestEntityTooLarge,
-			"请求体超过上限", oai.TypeInvalidRequest, oai.CodeRequestTooLarge)
+		abortWithErrorKey(c, http.StatusRequestEntityTooLarge,
+			"request.too_large", oai.TypeInvalidRequest, oai.CodeRequestTooLarge)
 	case errors.Is(err, oai.ErrMissingModel):
-		abortWithError(c, http.StatusBadRequest,
-			"缺少 model 字段", oai.TypeInvalidRequest, oai.CodeMissingModel)
+		abortWithErrorKey(c, http.StatusBadRequest,
+			"request.missing_model", oai.TypeInvalidRequest, oai.CodeMissingModel)
 	default:
-		abortWithError(c, http.StatusBadRequest,
-			"请求体不是合法的 JSON", oai.TypeInvalidRequest, oai.CodeInvalidJSON)
+		abortWithErrorKey(c, http.StatusBadRequest,
+			"request.malformed_json", oai.TypeInvalidRequest, oai.CodeInvalidJSON)
 	}
 }
 
@@ -392,7 +389,20 @@ func extractAPIKey(r *http.Request) string {
 //
 // 必须调用 c.Abort()：否则 gin 会继续执行同一路由上的后续处理器，
 // 导致既返回了错误、又执行了业务逻辑（可能产生额外费用）。
+//
+// 本函数用于「运维/内部错误」等无需本地化的文案（保持中文，便于日志检索）。
 func abortWithError(c *gin.Context, status int, message, errType, code string) {
 	oai.WriteError(c.Writer, status, message, errType, code)
+	c.Abort()
+}
+
+// abortWithErrorKey 是 abortWithError 的多语言版本：按语义化键取词条后输出。
+//
+// locale 取自 locale 中间件写入的请求 context；未携带 Accept-Language 时为中文。
+// args 为可选格式化参数（词条含 %d 等占位符时使用）。
+//
+// 仅用于「面向最终用户、会被展示」的错误；内部错误请用 abortWithError 保持中文。
+func abortWithErrorKey(c *gin.Context, status int, key, errType, code string, args ...any) {
+	oai.WriteErrorKey(c.Writer, status, key, errType, code, reqctx.Locale(c.Request.Context()), args...)
 	c.Abort()
 }
