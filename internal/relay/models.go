@@ -34,7 +34,6 @@ import (
 	"net/http"
 	"sort"
 	"strings"
-	"time"
 )
 
 const (
@@ -48,9 +47,11 @@ const (
 	modelsPath = "/v1/models"
 	// modelListTimeout 是拉取模型列表的整体超时。
 	//
-	// 取 20 秒：这只是列目录式的轻量请求，正常在数百毫秒内完成；
-	// 超过 20 秒基本可判定上游异常，继续等待只会让管理员界面一直转圈。
-	modelListTimeout = 20 * time.Second
+	// 与转发链路共用同一个上限（UpstreamTimeout = 300 秒）。
+	// 为什么不用更小的值：部分平台（如 NVIDIA NIM）连"列目录"都可能排队很久，
+	// 用 20 秒会把慢上游判成"拉取失败"，管理员只能手动敲模型名——
+	// 而这个动作本来就是为了省掉手工敲名字。
+	modelListTimeout = UpstreamTimeout
 	// maxModelListBytes 是模型列表响应的读取上限。
 	//
 	// 取 4MiB：NIM 平台上架上千个模型时，JSON 体积可达数百 KB；
@@ -78,7 +79,7 @@ func (r *Relay) FetchModels(ctx context.Context, baseURL, apiKey string) ([]stri
 
 	requestURL := strings.TrimRight(baseURL, "/") + modelsPath
 
-	// 单独设置超时：列模型是轻量操作，不应沿用转发链路那种"等首字节 60 秒"的策略
+	// 单独设置超时：与全站上游超时保持一致（见 UpstreamTimeout 的说明）。
 	ctx, cancel := context.WithTimeout(ctx, modelListTimeout)
 	defer cancel()
 

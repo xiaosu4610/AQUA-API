@@ -36,6 +36,7 @@ import (
 	"gitee.com/xiaosu4610/aqua-api/internal/mailer"
 	"gitee.com/xiaosu4610/aqua-api/internal/model"
 	"gitee.com/xiaosu4610/aqua-api/internal/oai"
+	"gitee.com/xiaosu4610/aqua-api/internal/relay"
 )
 
 // 分页默认值。
@@ -711,7 +712,12 @@ func probeChannel(ctx context.Context, channel *model.Channel) channelTestRespon
 		return channelTestResponse{OK: false, Model: probeModel, Message: "构造测活请求失败"}
 	}
 
-	probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	// 超时与转发链路保持一致（relay.UpstreamTimeout = 300 秒）。
+	//
+	// 为什么不能像以前那样用 15 秒：NVIDIA NIM 这类平台的排队时间本身就长，
+	// 15 秒几乎必然超时，管理员会看到"测活失败"从而误删一个其实完全可用的渠道。
+	// 宁可让管理员多等一会儿，也不要给出一条误导性的结论。
+	probeCtx, cancel := context.WithTimeout(ctx, relay.UpstreamTimeout)
 	defer cancel()
 
 	url := strings.TrimRight(channel.BaseURL, "/") + oai.ChatCompletionsPath
@@ -727,6 +733,19 @@ func probeChannel(ctx context.Context, channel *model.Channel) channelTestRespon
 	latency := int(time.Since(start).Milliseconds())
 
 	if err != nil {
+		// 区分"超时"与"连不上"：两者的处置方式完全不同——
+		// 超时往往只是上游慢（尤其 NVIDIA），换个时间或换个模型可能就正常；
+		// 连不上才是地址/网络配错。混在一起报会让管理员改错地方。
+		if errors.Is(err, context.DeadlineExceeded) {
+			return channelTestResponse{
+				OK:        false,
+				LatencyMS: latency,
+				Model:     probeModel,
+				Message: fmt.Sprintf("等待上游响应超过 %d 秒仍未开始返回。"+
+					"这不代表渠道不可用（部分平台排队时间很长），建议换一个模型再测，"+
+					"或直接交给实际调用验证。", int(relay.UpstreamTimeout.Seconds())),
+			}
+		}
 		return channelTestResponse{
 			OK:        false,
 			LatencyMS: latency,

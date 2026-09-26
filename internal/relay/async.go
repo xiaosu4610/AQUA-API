@@ -64,9 +64,11 @@ var (
 const (
 	// taskOpTimeout 是单次上游调用（提交/查询）的超时。
 	//
-	// 与对话转发不同：任务类接口是"短请求短响应"（提交只是登记，查询只是读状态），
-	// 因此可以放心设置超时；这也避免上游故障时后台轮询器被拖住。
-	taskOpTimeout = 60 * time.Second
+	// 与全站上游超时保持一致（UpstreamTimeout = 300 秒）。
+	// 为什么不能更短：同步型图像接口（如 OpenAI 兼容的 /v1/images/generations）
+	// 会在这一次调用里完成整张图的生成，几十秒到几分钟都很常见；
+	// 设短了会把"能出图但慢"直接判成提交失败并退还额度，等于白送算力。
+	taskOpTimeout = UpstreamTimeout
 
 	// defaultPollInterval 是后台轮询器的默认扫描间隔。
 	//

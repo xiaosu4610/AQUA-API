@@ -12,7 +12,7 @@
  *   新增管理接口：在此加函数 + 更新 types.ts。
  *   注意：渠道的 update 用 PUT（全量字段）；令牌/用户用 PUT 提交需变更字段（后端应支持部分更新）。
  */
-import { api } from './client'
+import { api, UPSTREAM_TIMEOUT_MS } from './client'
 import type {
   AccessToken,
   AdminUpdateTokenPayload,
@@ -83,7 +83,11 @@ export function deleteChannel(id: number): Promise<unknown> {
 
 /** POST /api/admin/channels/{id}/test：测活（后端会真实发起一次请求，可能较慢） */
 export function testChannel(id: number): Promise<ChannelTestResult> {
-  return api.post<ChannelTestResult>(`/admin/channels/${id}/test`)
+  // 后端会等上游最多 300 秒（部分平台排队很久），前端必须比它更有耐心，
+  // 否则后端还在等、前端已经报"请求超时"，用户得到的是错误结论。
+  return api.post<ChannelTestResult>(`/admin/channels/${id}/test`, undefined, {
+    timeout: UPSTREAM_TIMEOUT_MS,
+  })
 }
 
 /* ── 令牌 ───────────────────────────────────────────────── */
@@ -166,7 +170,11 @@ export function updateSettings(payload: UpdateSiteSettingsPayload): Promise<unkn
  * `/channels/:id` 冲突，因此放在管理端顶层路径。
  */
 export function fetchUpstreamModels(payload: FetchModelsPayload): Promise<FetchModelsResult> {
-  return api.post<FetchModelsResult>('/admin/fetch-models', payload)
+  // 与测活同理：拉取模型列表要等上游回答（部分平台很慢），
+  // 前端超时必须放宽到与后端一致的量级。
+  return api.post<FetchModelsResult>('/admin/fetch-models', payload, {
+    timeout: UPSTREAM_TIMEOUT_MS,
+  })
 }
 
 /* ── 渠道密钥池 ─────────────────────────────────────────── */

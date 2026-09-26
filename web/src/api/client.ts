@@ -30,6 +30,27 @@ const TOKEN_KEY = 'aqua.session_token'
 const USER_KEY = 'aqua.session_user'
 
 /**
+ * 默认请求超时（毫秒）。
+ *
+ * 说明：这是"前端等后端"的上限，而不是"后端等上游"的上限——
+ * 网关对上游的等待上限是 300 秒（见后端 relay.UpstreamTimeout）。
+ * 因此后端在等上游时，前端不能比后端先放弃：一旦前端先超时，
+ * 用户看到的是"请求失败"，而实际上后端可能马上就会返回成功。
+ *
+ * 取 30 秒作为绝大多数管理接口的默认值（它们都在本地库上操作，很快）；
+ * 少数会真正等待上游的接口（渠道测活、拉取模型列表）用 UPSTREAM_TIMEOUT_MS 覆盖。
+ */
+const DEFAULT_TIMEOUT_MS = 30_000
+
+/**
+ * 需要等待上游的接口用的超时（毫秒）。
+ *
+ * 比后端的 300 秒多留 20 秒：让后端的超时先触发，
+ * 这样用户拿到的是后端那句"上游太慢"的明确说明，而不是前端的"请求超时"。
+ */
+export const UPSTREAM_TIMEOUT_MS = 320_000
+
+/**
  * 需要豁免 401 自动跳转的路径：登录/注册本身就是「凭据可能无效」的场景，
  * 若也触发跳转，用户在登录页输错密码会被强制刷新，体验很差。
  */
@@ -166,8 +187,8 @@ async function request<T>(config: AxiosRequestConfig): Promise<T> {
       ...config,
       baseURL: API_PREFIX,
       headers,
-      // 大文件上传/长任务不在本阶段范围，30s 足够覆盖测活等慢接口
-      timeout: 30000,
+      // 允许单个请求覆盖超时（渠道测活、拉取模型列表需要等上游）
+      timeout: config.timeout ?? DEFAULT_TIMEOUT_MS,
     })
     return response.data
   } catch (error) {
@@ -181,16 +202,26 @@ async function request<T>(config: AxiosRequestConfig): Promise<T> {
   }
 }
 
+/** 请求级可选参数（目前只用到超时覆盖） */
+interface RequestOptions {
+  /** 覆盖默认超时（毫秒）；会等待上游的接口需要放宽到 UPSTREAM_TIMEOUT_MS */
+  timeout?: number
+}
+
 /** 各视图与 api 模块统一使用的请求方法集合（路径不含 /api 前缀） */
 export const api = {
-  get: <T>(url: string, params?: Record<string, unknown>): Promise<T> =>
-    request<T>({ url, method: 'GET', params: cleanParams(params) }),
+  get: <T>(url: string, params?: Record<string, unknown>, options?: RequestOptions): Promise<T> =>
+    request<T>({ url, method: 'GET', params: cleanParams(params), ...options }),
 
-  post: <T>(url: string, data?: unknown): Promise<T> => request<T>({ url, method: 'POST', data }),
+  post: <T>(url: string, data?: unknown, options?: RequestOptions): Promise<T> =>
+    request<T>({ url, method: 'POST', data, ...options }),
 
-  put: <T>(url: string, data?: unknown): Promise<T> => request<T>({ url, method: 'PUT', data }),
+  put: <T>(url: string, data?: unknown, options?: RequestOptions): Promise<T> =>
+    request<T>({ url, method: 'PUT', data, ...options }),
 
-  patch: <T>(url: string, data?: unknown): Promise<T> => request<T>({ url, method: 'PATCH', data }),
+  patch: <T>(url: string, data?: unknown, options?: RequestOptions): Promise<T> =>
+    request<T>({ url, method: 'PATCH', data, ...options }),
 
-  delete: <T>(url: string): Promise<T> => request<T>({ url, method: 'DELETE' }),
+  delete: <T>(url: string, options?: RequestOptions): Promise<T> =>
+    request<T>({ url, method: 'DELETE', ...options }),
 }

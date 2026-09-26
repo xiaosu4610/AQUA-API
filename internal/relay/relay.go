@@ -44,10 +44,26 @@ import (
 // 便于上层层返回明确的 503 与可操作的提示。
 var ErrNoAvailableChannel = errors.New("relay: 没有可用的上游渠道")
 
+// UpstreamTimeout 是网关等待上游响应的时间上限（首字节）。
+//
+// 取值 300 秒的理由（重要，不要随意调小）：
+//
+//  1. 部分平台（典型如 NVIDIA NIM）本身的排队与首字节延迟就非常高，
+//     几十秒才开始返回是常态；把上限设成 60 秒会把"慢但完全可用"的模型
+//     判成不可用，反而自己制造故障。
+//  2. 推理类模型（长思考、大输出）首字节超过一分钟很常见。
+//  3. 判定"上游真的挂了"应该依据连接错误、明确的 4xx/5xx、以及超时后的换渠道重试，
+//     而不是依据一个偏小的超时值——后者会把"慢"错误地等价成"坏"。
+//
+// 该常量同时被模型列表拉取、渠道测活与异步任务复用，目的是让全站只有
+// 「一个上游超时数字」，避免出现"转发等 300 秒、但测活 15 秒就报失败"这种
+// 自相矛盾的表现。
+const UpstreamTimeout = 300 * time.Second
+
 // 上游 HTTP 客户端的默认参数。
 const (
-	defaultGroup               = "default"        // 默认分组
-	defaultResponseHeaderWait  = 60 * time.Second // 等待上游返回响应头的上限（首字节）
+	defaultGroup               = "default" // 默认分组
+	defaultResponseHeaderWait  = UpstreamTimeout
 	defaultTLSHandshakeTimeout = 10 * time.Second // TLS 握手超时
 	defaultIdleConnTimeout     = 90 * time.Second // 空闲连接回收时间
 	defaultMaxIdleConnsPerHost = 20               // 每个上游主机的空闲连接上限
