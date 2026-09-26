@@ -1,0 +1,39 @@
+# AQUA-API 一键启动（SQLite，零外部依赖）。
+#
+# 用法：
+#   cp .env.example .env      # 填入 AQUA_APP_KEY
+#   docker compose up -d
+#   浏览器打开 http://127.0.0.1:8787
+#
+# 说明：数据落在宿主机 ./data 目录（不是匿名卷），迁移服务器时直接打包该目录即可。
+
+services:
+  aqua:
+    build: .
+    image: aqua-api:local
+    container_name: aqua-api
+    restart: unless-stopped
+    ports:
+      - "${AQUA_PORT:-8787}:8787"
+    environment:
+      # 主密钥必填：缺失时容器会立刻退出，避免"起来了但渠道密钥解不开"的迷惑现场
+      AQUA_APP_KEY: ${AQUA_APP_KEY:?请先在 .env 中设置 AQUA_APP_KEY（可用 aqua -gen-key 生成）}
+      AQUA_SERVER_LISTEN: 0.0.0.0:8787
+      AQUA_SERVER_MODE: release
+      AQUA_DATABASE_DRIVER: sqlite
+      AQUA_DATABASE_DSN: /data/aqua.db
+      AQUA_LOG_LEVEL: ${AQUA_LOG_LEVEL:-info}
+      AQUA_LOG_FORMAT: ${AQUA_LOG_FORMAT:-text}
+      AQUA_RELAY_GROUP: ${AQUA_RELAY_GROUP:-default}
+      # 支付 / 邮件等可选密钥：留空即视为未启用该通道
+      AQUA_EPAY_KEY: ${AQUA_EPAY_KEY:-}
+      AQUA_STRIPE_SECRET_KEY: ${AQUA_STRIPE_SECRET_KEY:-}
+      AQUA_STRIPE_WEBHOOK_SECRET: ${AQUA_STRIPE_WEBHOOK_SECRET:-}
+    volumes:
+      - ./data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8787/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

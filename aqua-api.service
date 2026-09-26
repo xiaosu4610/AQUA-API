@@ -1,0 +1,46 @@
+; AQUA-API 的 systemd 单元文件（裸机 / 云主机部署用）。
+;
+; 安装步骤：
+;   sudo useradd -r -s /usr/sbin/nologin aqua
+;   sudo mkdir -p /opt/aqua /etc/aqua /var/lib/aqua
+;   sudo cp aqua /opt/aqua/aqua && sudo chown aqua:aqua /opt/aqua/aqua
+;   sudo cp .env /etc/aqua/aqua.env && sudo chmod 600 /etc/aqua/aqua.env && sudo chown root:root /etc/aqua/aqua.env
+;   sudo cp aqua-api.service /etc/systemd/system/
+;   sudo systemctl daemon-reload && sudo systemctl enable --now aqua-api
+;
+; 为什么密钥走 EnvironmentFile 而不是写进本文件：
+;   单元文件是明文且常被写进仓库/配置管理，密钥放这里等于公开；
+;   EnvironmentFile 可以单独设成 0600 且只由 root 可读。
+
+[Unit]
+Description=AQUA-API · LLM API 网关与 AI 资产管理系统
+Documentation=https://gitee.com/xiaosu4610/AQUA-API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aqua
+Group=aqua
+
+# 密钥与端口等全部通过该文件注入（权限务必 0600）
+EnvironmentFile=/etc/aqua/aqua.env
+
+ExecStart=/opt/aqua/aqua
+WorkingDirectory=/var/lib/aqua
+
+Restart=always
+RestartSec=3s
+# 给长回答与上游 300 秒超时留出余量，避免被 systemd 提前判定为卡死
+TimeoutStopSec=30s
+
+# ── 安全加固：最小权限原则 ──
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+# 唯一需要写入的位置就是数据目录
+ReadWritePaths=/var/lib/aqua
+
+[Install]
+WantedBy=multi-user.target

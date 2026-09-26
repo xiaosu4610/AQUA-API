@@ -1,0 +1,22 @@
+# 构建上下文排除项：这些内容进镜像只会变大变慢，甚至有泄密风险。
+.git
+.gitignore
+.private
+docs
+opensource
+.trae
+AGENTS.md
+README*.md
+LICENSE
+NOTICE
+
+# 前端依赖与产物：容器内会重新安装并构建，拷进去反而会污染构建
+web/node_modules
+web/dist
+
+# 本地数据与产物
+data
+bin
+*.db
+*.log
+.env
