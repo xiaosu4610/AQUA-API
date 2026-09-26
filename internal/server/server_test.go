@@ -69,11 +69,16 @@ func newTestServer(t *testing.T) (*Server, *store.Store) {
 	channels := store.NewChannelRepository(st.DB(), cipher)
 
 	srv := New(Deps{
-		Config:   cfg,
-		Store:    st,
-		Channels: channels,
-		Tokens:   store.NewTokenRepository(st.DB(), cipher),
-		Relay:    relay.New(channels, relay.Options{}),
+		Config:    cfg,
+		Store:     st,
+		Channels:  channels,
+		Tokens:    store.NewTokenRepository(st.DB(), cipher),
+		Users:     store.NewUserRepository(st.DB()),
+		Sessions:  store.NewSessionRepository(st.DB()),
+		UsageLogs: store.NewUsageLogRepository(st.DB()),
+		Settings:  store.NewSettingRepository(st.DB()),
+		Relay:     relay.New(channels, relay.Options{}),
+		// 测试不注入前端产物：静态托管由 e2e 冒烟验证覆盖
 	})
 	return srv, st
 }
@@ -167,24 +172,9 @@ func TestHealthz_DoesNotLeakInternalDetails(t *testing.T) {
 	}
 }
 
-// TestRoot_ReturnsServiceInfo 验证根路径返回服务标识信息。
-func TestRoot_ReturnsServiceInfo(t *testing.T) {
-	srv, _ := newTestServer(t)
-
-	rec, body := doRequest(t, srv, http.MethodGet, "/")
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("状态码 = %d，期望 200", rec.Code)
-	}
-	if body["name"] != "AQUA-API" {
-		t.Errorf("name = %v，期望 AQUA-API", body["name"])
-	}
-	if _, ok := body["version"]; !ok {
-		t.Error("响应缺少 version 字段")
-	}
-}
-
 // TestUnknownPath_Returns404 验证未注册路径返回 404（而不是 500 或空响应）。
+//
+// 说明：未注入前端产物时，NoRoute 会走"接口不存在"分支并返回 404。
 func TestUnknownPath_Returns404(t *testing.T) {
 	srv, _ := newTestServer(t)
 

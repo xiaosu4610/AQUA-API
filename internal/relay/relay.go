@@ -70,6 +70,10 @@ type Options struct {
 	ResponseHeaderTimeout time.Duration
 	// MaxAttempts 是单次请求最多尝试的渠道数（含首次）。<=0 时使用 defaultMaxAttempts。
 	MaxAttempts int
+	// UsageLogs 为调用日志仓储；为 nil 时不记录用量（便于单元测试）。
+	UsageLogs model.UsageLogRepository
+	// Tokens 为访问令牌仓储，用于更新令牌的最近使用时间；可为 nil。
+	Tokens model.TokenRepository
 }
 
 // Relay 是转发引擎，持有渠道仓储与上游 HTTP 客户端。
@@ -80,6 +84,10 @@ type Relay struct {
 	client      *http.Client
 	group       string
 	maxAttempts int
+
+	// usageLogs / tokens 用于转发后记录用量与令牌使用时间，两者均可为 nil。
+	usageLogs model.UsageLogRepository
+	tokens    model.TokenRepository
 }
 
 // New 创建转发引擎。
@@ -110,6 +118,8 @@ func New(channels model.ChannelRepository, opts Options) *Relay {
 		channels:    channels,
 		group:       group,
 		maxAttempts: maxAttempts,
+		usageLogs:   opts.UsageLogs,
+		tokens:      opts.Tokens,
 		client: &http.Client{
 			Transport: &http.Transport{
 				// 走系统代理环境变量：便于在受限网络中经代理访问上游

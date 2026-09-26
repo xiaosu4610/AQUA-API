@@ -2,17 +2,24 @@
 //
 // 意图（Why）：
 //
-//	把「有哪些接口、分别挂在什么路径」集中在一处，便于通读与审计。
-//	处理器实现分散在各业务文件，但路由表只有一个入口。
+//	把「有哪些接口、分别挂在什么路径、需要什么权限」集中在一处，便于通读与审计。
+//	权限通过路由分组表达（公开 / 需登录 / 需管理员），而不是散落在各处理器内部判断——
+//	后者极易漏判，产生越权漏洞。
 //
 // 流转（Flow）：
 //
 //	server.New() → registerRoutes() → engine 持有全部路由
+//	  ├─ /healthz         运维探活（无需鉴权）
+//	  ├─ /api 公开接口     站点信息、注册、登录
+//	  ├─ /api 需登录       当前用户、退出、用户门户
+//	  ├─ /api/admin 需管理员 仪表盘、渠道、令牌、用户、日志、设置
+//	  └─ /v1 模型接口      访问令牌鉴权后转发到上游
+//	未匹配的路径由 static.go 处理（SPA 回退）
 //
 // 扩展（Extend）：
 //
-//	新增接口时在这里加一行，并保持「按用途分组 + 组内按路径排序」的组织方式，
-//	便于快速判断某接口是否已存在。管理类接口应挂到独立分组下（如 /api）。
+//	新增接口时按用途挂到对应分组；若新增了权限级别，请新建分组并挂载对应中间件，
+//	不要在处理器内写角色判断。
 package server
 
 import (
@@ -22,33 +29,81 @@ import (
 )
 
 // registerRoutes 注册全部路由。
-//
-// 命名约定（后续里程碑沿用）：
-//   - /healthz、/readyz   ：运维探活，无需鉴权
-//   - /v1/...             ：面向客户端的模型 API，需令牌鉴权
-//   - /api/...            ：管理后台接口，需管理员鉴权
 func (s *Server) registerRoutes() {
 	r := s.engine
 
-	// ── 运维与探活（无需鉴权）────────────────────────────────────
-	r.GET("/", s.handleRoot)           // 服务信息（名称/版本），便于人工确认服务是否正常
-	r.GET("/healthz", s.handleHealthz) // 健康检查：含数据库连通性探测
+	// ── 运维探活（无需鉴权）──────────────────────────────────────
+	// 仅保留健康检查：站点首页由前端页面承载（见 static.go 的 SPA 回退）。
+	r.GET("/healthz", s.handleHealthz)
 
-	// ── 模型 API（需令牌鉴权）────────────────────────────────────
+	// ── 公开接口（无需登录）──────────────────────────────────────
+	api := r.Group("/api")
+
+	// 站点信息：落地页与登录页靠它渲染站点名称、注册开关与可用模型
+	api.GET("/status", s.handleSiteStatus)
+
+	// 登录与注册叠加频率限制。
 	//
-	// 中间件顺序说明（顺序会影响行为，勿随意调整）：
-	//   TokenAuth 必须最先执行——后续处理器（转发）依赖上下文中已认证的令牌，
-	//   而且鉴权应当发生在任何实际工作之前，避免未授权请求消耗上游额度。
-	v1 := r.Group("/v1")
-	v1.Use(middleware.TokenAuth(s.deps.Tokens))
+	// 为什么单独给这两个接口限流：口令校验（bcrypt）是刻意昂贵的操作，
+	// 不限流时攻击者可用少量并发请求打满 CPU（生产实例仅 2 核且与转发共享 CPU）。
+	// 注意中间件顺序：限流在业务处理器之前，避免昂贵操作先被执行。
+	authLimit := s.loginLimiter.Middleware(middleware.ClientIP)
+	api.POST("/auth/register", authLimit, s.handleRegister)
+	api.POST("/auth/login", authLimit, s.handleLogin)
 
+	// ── 需登录（网站会话）────────────────────────────────────────
+	authed := api.Group("")
+	authed.Use(middleware.SessionAuth(s.deps.Sessions, s.deps.Users))
+
+	authed.GET("/auth/me", s.handleMe)
+	authed.POST("/auth/logout", s.handleLogout)
+
+	// ── 用户门户（仅能操作自己的资源）────────────────────────────
+	//
+	// 归属校验在处理器内通过 ownerID 强制约束（见 handler_token.go），
+	// 无论请求体传什么 user_id 都会被忽略。
+	portal := authed.Group("/user")
+	portal.GET("/tokens", s.handleMyListTokens)
+	portal.POST("/tokens", s.handleMyCreateToken)
+	portal.PATCH("/tokens/:id", s.handleMyUpdateToken)
+	portal.DELETE("/tokens/:id", s.handleMyDeleteToken)
+	portal.GET("/usage", s.handleMyUsage)
+	portal.GET("/logs", s.handleMyLogs)
+
+	// ── 管理后台（需管理员）──────────────────────────────────────
+	admin := authed.Group("/admin")
+	admin.Use(middleware.RequireAdmin())
+
+	admin.GET("/dashboard", s.handleDashboard)
+
+	admin.GET("/channels", s.handleListChannels)
+	admin.POST("/channels", s.handleCreateChannel)
+	admin.GET("/channels/:id", s.handleGetChannel)
+	admin.PUT("/channels/:id", s.handleUpdateChannel)
+	admin.DELETE("/channels/:id", s.handleDeleteChannel)
+	admin.POST("/channels/:id/test", s.handleTestChannel)
+
+	admin.GET("/tokens", s.handleAdminListTokens)
+	admin.POST("/tokens", s.handleAdminCreateToken)
+	admin.PUT("/tokens/:id", s.handleAdminUpdateToken)
+	admin.DELETE("/tokens/:id", s.handleAdminDeleteToken)
+
+	admin.GET("/users", s.handleListUsers)
+	admin.POST("/users", s.handleCreateUser)
+	admin.PUT("/users/:id", s.handleUpdateUser)
+	admin.DELETE("/users/:id", s.handleDeleteUser)
+
+	admin.GET("/logs", s.handleAdminListLogs)
+
+	admin.GET("/settings", s.handleGetSettings)
+	admin.PUT("/settings", s.handleUpdateSettings)
+
+	// ── 模型 API（访问令牌鉴权）──────────────────────────────────
+	//
 	// gin.WrapF 把标准库风格的 http.HandlerFunc 适配为 gin 处理器。
 	// 这样 relay 包只依赖 net/http，不必依赖 gin —— 核心域与 Web 框架保持解耦，
 	// 既便于单元测试（可直接用 httptest），也便于将来替换框架。
+	v1 := r.Group("/v1")
+	v1.Use(middleware.TokenAuth(s.deps.Tokens))
 	v1.POST("/chat/completions", gin.WrapF(s.deps.Relay.ServeChatCompletions))
-
-	// ── 管理接口（需管理员鉴权，后续里程碑启用）──────────────────
-	// api := r.Group("/api")
-	// api.Use(middleware.AdminAuth())
-	// api.GET("/channels", s.handleListChannels)
 }

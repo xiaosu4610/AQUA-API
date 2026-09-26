@@ -30,6 +30,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"gitee.com/xiaosu4610/aqua-api/internal/model"
 	"gitee.com/xiaosu4610/aqua-api/internal/oai"
@@ -106,6 +107,17 @@ func (r *Relay) forwardWithFallback(w http.ResponseWriter, req *http.Request, mo
 	if len(candidates) == 0 {
 		// 一个可用渠道都没有：属于"配置/容量"问题。
 		// 用 503（而非 500）表达"暂时无可用后端"，客户端稍后重试可能成功。
+		//
+		// 注意：这种情况也记一条日志——"配置漏了模型"是常见事故，
+		// 若不留痕，站长只能看到用户报错却查不到原因。
+		r.recordUsage(req.Context(), usageEntry{
+			UserID:     identityFromRequest(req.Context()).UserID,
+			TokenID:    identityFromRequest(req.Context()).TokenID,
+			Model:      modelName,
+			IsStream:   oai.PeekStream(body),
+			StatusCode: http.StatusServiceUnavailable,
+			ErrorText:  "无可用渠道",
+		})
 		oai.WriteError(w, http.StatusServiceUnavailable,
 			"当前没有可用的上游渠道能处理该模型",
 			oai.TypeServer, oai.CodeNoAvailableChannel)
@@ -130,13 +142,21 @@ func (r *Relay) forwardWithFallback(w http.ResponseWriter, req *http.Request, mo
 		// 不如把上游的真实错误原样透传，客户端据此可自助排查。
 		canRetry := attempt < r.maxAttempts && pickCandidate(candidates, excluded) != nil
 
-		if r.forwardChat(w, req, ch, body, canRetry) == forwardResponded {
+		if r.forwardChat(w, req, ch, modelName, body, canRetry) == forwardResponded {
 			return
 		}
 		// 未产生任何响应，继续尝试下一个候选
 	}
 
-	// 所有候选渠道都尝试失败
+	// 所有候选渠道都尝试失败：记一条日志（channel_id 为 0，因为没有一个渠道成功建立会话）
+	r.recordUsage(req.Context(), usageEntry{
+		UserID:     identityFromRequest(req.Context()).UserID,
+		TokenID:    identityFromRequest(req.Context()).TokenID,
+		Model:      modelName,
+		IsStream:   oai.PeekStream(body),
+		StatusCode: http.StatusBadGateway,
+		ErrorText:  "所有候选渠道均请求失败",
+	})
 	oai.WriteError(w, http.StatusBadGateway, "所有候选渠道均请求失败",
 		oai.TypeServer, oai.CodeUpstreamRequestFailed)
 }
@@ -163,7 +183,10 @@ const (
 //     丢弃结果只会让客户端收到更含糊的 502。
 //
 // 返回值表示结局，供上层决定是否继续尝试其他渠道。
-func (r *Relay) forwardChat(w http.ResponseWriter, req *http.Request, ch *model.Channel, body []byte, canRetry bool) forwardOutcome {
+func (r *Relay) forwardChat(w http.ResponseWriter, req *http.Request, ch *model.Channel, modelName string, body []byte, canRetry bool) forwardOutcome {
+	// 记录起始时间用于计算耗时（写入调用日志）
+	start := time.Now()
+
 	// 拼接上游地址：去掉 base_url 末尾多余的斜杠，避免出现 "//v1/..." 这类路径
 	upstreamURL := strings.TrimRight(ch.BaseURL, "/") + oai.ChatCompletionsPath
 
@@ -193,6 +216,9 @@ func (r *Relay) forwardChat(w http.ResponseWriter, req *http.Request, ch *model.
 	if err != nil {
 		// 连接层面失败（超时、连接被拒、TLS 失败）：未写出任何响应，可安全重试。
 		// 注意：不把错误细节回传给客户端，避免泄露内部渠道地址。
+		//
+		// 此处刻意不记日志：若记录，多次重试会产生多条记录，把请求数统计放大。
+		// 最终失败会在 forwardWithFallback 的统一出口处记录一条。
 		return forwardNotStarted
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -215,7 +241,26 @@ func (r *Relay) forwardChat(w http.ResponseWriter, req *http.Request, ch *model.
 	w.WriteHeader(resp.StatusCode)
 
 	// ── 步骤 6：流式拷贝响应体 ──────────────────────────────────
-	flushCopy(w, resp.Body)
+	// 同时把内容喂给抓取器，用于事后解析 usage（token 数）。
+	sniffer := newUsageSniffer()
+	flushCopy(w, resp.Body, sniffer)
+
+	// 记录用量。此时响应已完整回传，写库不会影响客户端感知的延迟。
+	// 若未取到 usage（部分上游流式响应不返回），token 记为 0，
+	// 但请求数、成功率与耗时仍然准确——统计不至于因缺一项而完全不可用。
+	usage, _ := extractUsage(sniffer.Bytes())
+	identity := identityFromRequest(req.Context())
+	r.recordUsage(req.Context(), usageEntry{
+		UserID:     identity.UserID,
+		TokenID:    identity.TokenID,
+		ChannelID:  ch.ID,
+		Model:      modelName,
+		Usage:      usage,
+		LatencyMS:  int(time.Since(start).Milliseconds()),
+		IsStream:   oai.PeekStream(body),
+		StatusCode: resp.StatusCode,
+	})
+
 	return forwardResponded
 }
 
@@ -290,10 +335,13 @@ func isHopByHopHeader(key string) bool {
 
 // flushCopy 流式拷贝响应体，并在每个分片后立即 Flush。
 //
+// 参数 tee 可为 nil；非 nil 时会把内容同时写入它（用于抓取响应以解析 usage）。
+// tee 的写入始终不返回错误（见 usageSniffer.Write 的实现），因此不会干扰转发。
+//
 // 为什么必须 Flush：大模型流式回答依赖 SSE，若数据被缓冲在网关或 HTTP 层，
 // 客户端的体验会从"逐字出现"退化为"等全文生成完再一次性蹦出来"，
 // 与不经网关直连相比是明显的体验倒退。
-func flushCopy(w http.ResponseWriter, src io.Reader) {
+func flushCopy(w http.ResponseWriter, src io.Reader, tee io.Writer) {
 	// gin 的 ResponseWriter 实现了 http.Flusher；用类型断言兼容不支持刷新的实现
 	flusher, canFlush := w.(http.Flusher)
 
@@ -301,6 +349,9 @@ func flushCopy(w http.ResponseWriter, src io.Reader) {
 	for {
 		n, readErr := src.Read(buf)
 		if n > 0 {
+			if tee != nil {
+				_, _ = tee.Write(buf[:n])
+			}
 			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
 				// 客户端已断开（例如用户取消），无需继续读取上游，直接结束
 				return

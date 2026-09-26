@@ -83,24 +83,5 @@ func (s *Server) handleHealthz(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
-// serviceInfoResponse 是根路径返回的服务标识信息。
-type serviceInfoResponse struct {
-	Name      string `json:"name"`       // 服务名
-	Version   string `json:"version"`    // 构建版本
-	GitCommit string `json:"git_commit"` // 提交哈希，便于确认线上运行的确切代码版本
-	BuildTime string `json:"build_time"` // 构建时间
-}
-
-// handleRoot 处理 GET /，返回服务标识信息。
-//
-// 用途：运维或使用者访问根路径时能确认「服务是什么、什么版本」，
-// 而不是收到一个含义不明的 404。
-func (s *Server) handleRoot(c *gin.Context) {
-	info := version.Get()
-	c.JSON(http.StatusOK, serviceInfoResponse{
-		Name:      "AQUA-API",
-		Version:   info.Version,
-		GitCommit: info.GitCommit,
-		BuildTime: info.BuildTime,
-	})
-}
+// serviceInfoResponse 已移除：站点首页现在由前端页面承载（见 static.go 的 SPA 回退），
+// 服务标识信息可通过 /healthz（含版本）与 /api/status（含站点名与版本）获取。

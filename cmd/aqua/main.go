@@ -31,13 +31,19 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
+	"time"
 
+	aqua "gitee.com/xiaosu4610/aqua-api"
 	"gitee.com/xiaosu4610/aqua-api/internal/config"
 	"gitee.com/xiaosu4610/aqua-api/internal/crypto"
 	"gitee.com/xiaosu4610/aqua-api/internal/model"
@@ -70,6 +76,7 @@ func run() error {
 		showVersion = flag.Bool("version", false, "打印版本信息后退出")
 		genKey      = flag.Bool("gen-key", false, "生成一个加密主密钥（AQUA_APP_KEY）后退出")
 		createToken = flag.String("create-token", "", "创建一个访问令牌（取值为令牌名称）后退出")
+		initAdmin   = flag.String("init-admin", "", "创建一个管理员账号（取值为用户名），随机密码仅打印一次后退出")
 	)
 	flag.Parse()
 
@@ -148,25 +155,60 @@ func run() error {
 		return err
 	}
 
-	// ── 仓储 → 转发引擎 → HTTP 服务 ─────────────────────────────
+	// ── 仓储层装配 ──────────────────────────────────────────────
 	channels := store.NewChannelRepository(st.DB(), cipher)
 	tokens := store.NewTokenRepository(st.DB(), cipher)
+	users := store.NewUserRepository(st.DB())
+	sessions := store.NewSessionRepository(st.DB())
+	usageLogs := store.NewUsageLogRepository(st.DB())
+	settings := store.NewSettingRepository(st.DB())
 
-	// 子命令：创建访问令牌。
-	// 为什么需要它：M2 尚无管理后台，运维必须有一种途径创建第一个令牌，
-	// 否则鉴权上线后无人能调用网关（先有鸡还是先有蛋的问题）。
+	// 启动时清理过期会话：会话表随登录次数持续增长，不清理会无限膨胀。
+	// 清理失败不阻断启动（这只是维护动作，不影响核心功能）。
+	if cleaned, err := sessions.DeleteExpired(ctx, time.Now()); err != nil {
+		logger.Warn("清理过期会话失败", "error", err)
+	} else if cleaned > 0 {
+		logger.Info("已清理过期会话", "count", cleaned)
+	}
+
+	// 子命令：创建访问令牌（M2 遗留入口，保留以兼容既有脚本）
 	if *createToken != "" {
 		return createAndPrintToken(ctx, tokens, *createToken, cfg.Server.Listen)
 	}
 
-	relayEngine := relay.New(channels, relay.Options{})
+	// 子命令：创建管理员账号。
+	// 为什么必须有它：系统初始没有任何账号，若没有管理员则该站点无人可管理
+	// （渠道配不了、令牌发不出去）。密码随机生成并只打印一次，避免使用弱口令。
+	if *initAdmin != "" {
+		return createAdminAndPrint(ctx, users, *initAdmin)
+	}
+
+	// 检查是否存在管理员：没有则给出明确指引（不自动创建，避免生成"弱口令管理员"）
+	adminCount, err := users.CountAdmins(ctx)
+	if err != nil {
+		logger.Warn("统计管理员数量失败", "error", err)
+	} else if adminCount == 0 {
+		logger.Warn("系统中尚不存在管理员账号，无法登录管理后台。请执行：" +
+			"aqua -init-admin <用户名>（会生成随机密码并打印一次）")
+	}
+
+	relayEngine := relay.New(channels, relay.Options{
+		UsageLogs: usageLogs,
+		Tokens:    tokens,
+	})
 
 	srv := server.New(server.Deps{
-		Config:   cfg,
-		Store:    st,
-		Channels: channels,
-		Tokens:   tokens,
-		Relay:    relayEngine,
+		Config:    cfg,
+		Store:     st,
+		Channels:  channels,
+		Tokens:    tokens,
+		Users:     users,
+		Sessions:  sessions,
+		UsageLogs: usageLogs,
+		Settings:  settings,
+		Relay:     relayEngine,
+		// 前端构建产物（web/dist）已通过根包的 go:embed 嵌入二进制
+		WebFS: aqua.WebDist,
 	})
 
 	logger.Info("HTTP 服务已就绪，等待请求", "addr", cfg.Server.Listen)
@@ -249,6 +291,56 @@ func createAndPrintToken(ctx context.Context, tokens model.TokenRepository, name
 
 ⚠ 令牌明文仅此一次展示（数据库只存摘要与密文），请立即妥善保存。
 `, token.Name, key, listenAddr, key)
+
+	return nil
+}
+
+// createAdminAndPrint 创建管理员账号并打印随机密码，随后退出。
+//
+// 为什么随机生成密码：手工设定时使用者往往图省事填弱口令，
+// 而管理员账号可配置渠道与查看全部数据，一旦被爆破后果严重。
+// 随机密码只打印一次，请立即保存并尽快在后台修改为自己的密码。
+func createAdminAndPrint(ctx context.Context, users model.UserRepository, username string) error {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return errors.New("用户名不能为空")
+	}
+
+	// 18 字节随机数 → 36 位十六进制字符，熵足够且便于复制
+	rawPassword := make([]byte, 18)
+	if _, err := rand.Read(rawPassword); err != nil {
+		return fmt.Errorf("生成随机密码失败: %w", err)
+	}
+	password := hex.EncodeToString(rawPassword)
+
+	hash, err := crypto.HashPassword(password)
+	if err != nil {
+		return fmt.Errorf("计算口令哈希失败: %w", err)
+	}
+
+	admin := &model.User{
+		Username:     username,
+		PasswordHash: hash,
+		Role:         model.UserRoleAdmin,
+		Status:       model.UserStatusEnabled,
+		// 管理员不限额度：其调用不应因额度耗尽而被拒绝
+		Quota: model.QuotaUnlimited,
+	}
+	if err := users.Create(ctx, admin); err != nil {
+		if errors.Is(err, model.ErrUsernameTaken) {
+			return fmt.Errorf("用户名 %q 已被占用", username)
+		}
+		return fmt.Errorf("创建管理员失败: %w", err)
+	}
+
+	fmt.Printf(`已创建管理员账号：
+
+  用户名：%s
+  密码：  %s
+
+请立即登录并修改密码（管理后台可配置全部渠道与查看所有数据，
+随机密码仅此一次展示，请勿通过聊天工具明文留存）。
+`, admin.Username, password)
 
 	return nil
 }

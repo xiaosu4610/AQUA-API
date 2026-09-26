@@ -161,3 +161,22 @@ func PeekModel(body []byte) (string, error) {
 	}
 	return model, nil
 }
+
+// streamProbe 只承载"是否流式"这一字段。
+//
+// 说明：与 PeekModel 一样只声明关心的字段，避免因客户端字段差异导致解析失败。
+type streamProbe struct {
+	Stream bool `json:"stream"`
+}
+
+// PeekStream 判断请求是否为流式（SSE）。
+//
+// 用途：调用日志需要区分流式与非流式请求（两者在延迟特征与计费口径上不同）。
+// 解析失败时返回 false——此时请求本身大概率也不合法，会被后续校验拦下。
+func PeekStream(body []byte) bool {
+	var probe streamProbe
+	if err := json.Unmarshal(body, &probe); err != nil {
+		return false
+	}
+	return probe.Stream
+}

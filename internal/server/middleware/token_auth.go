@@ -32,6 +32,7 @@ import (
 
 	"gitee.com/xiaosu4610/aqua-api/internal/model"
 	"gitee.com/xiaosu4610/aqua-api/internal/oai"
+	"gitee.com/xiaosu4610/aqua-api/internal/reqctx"
 )
 
 // bearerPrefix 是 Authorization 头中令牌的标准前缀。
@@ -101,6 +102,15 @@ func TokenAuth(tokens model.TokenRepository) gin.HandlerFunc {
 
 		// ── 步骤 5：放行 ────────────────────────────────────────
 		SetToken(c, token)
+
+		// 把调用者身份写入请求 context，供转发引擎在结束时落调用日志。
+		// 用标准库 context 而非 gin 上下文，是为了让 relay 不必依赖 Web 框架。
+		identityCtx := reqctx.WithIdentity(c.Request.Context(), reqctx.Identity{
+			UserID:  token.OwnerID,
+			TokenID: token.ID,
+		})
+		c.Request = c.Request.WithContext(identityCtx)
+
 		c.Next()
 	}
 }

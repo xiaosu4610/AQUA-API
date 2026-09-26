@@ -25,6 +25,7 @@ package server
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"net/http"
 	"time"
 
@@ -33,20 +34,31 @@ import (
 	"gitee.com/xiaosu4610/aqua-api/internal/config"
 	"gitee.com/xiaosu4610/aqua-api/internal/model"
 	"gitee.com/xiaosu4610/aqua-api/internal/relay"
+	"gitee.com/xiaosu4610/aqua-api/internal/server/middleware"
 	"gitee.com/xiaosu4610/aqua-api/internal/store"
 )
 
 // Deps 汇总服务运行所需的外部依赖，由 main 装配后注入。
 //
 // 设计说明：用结构体聚合依赖，而非把依赖作为多个参数传递——
-// 这样后续新增依赖（如 relay 引擎、缓存）时，调用方无需修改函数签名。
+// 这样后续新增依赖（如缓存、计费）时，调用方无需修改函数签名。
 // 所有字段均为必需项，缺失会在启动或首次请求时立即暴露（而非静默降级）。
 type Deps struct {
-	Config   *config.Config          // 运行配置（监听地址、模式等）
-	Store    *store.Store            // 数据库（健康检查需要探测其连通性）
-	Channels model.ChannelRepository // 渠道仓储（上游凭证，供路由使用）
-	Tokens   model.TokenRepository   // 令牌仓储（下游凭证，供鉴权使用）
-	Relay    *relay.Relay            // 转发引擎（模型 API 的核心处理器）
+	Config    *config.Config           // 运行配置（监听地址、模式等）
+	Store     *store.Store             // 数据库（健康检查需要探测其连通性）
+	Channels  model.ChannelRepository  // 渠道仓储（上游凭证，供路由与管理使用）
+	Tokens    model.TokenRepository    // 访问令牌仓储（下游凭证，供模型接口鉴权）
+	Users     model.UserRepository     // 用户仓储
+	Sessions  model.SessionRepository  // 登录会话仓储
+	UsageLogs model.UsageLogRepository // 调用日志仓储（用量统计）
+	Settings  model.SettingRepository  // 系统设置仓储
+	Relay     *relay.Relay             // 转发引擎（模型 API 的核心处理器）
+
+	// WebFS 是前端构建产物的嵌入文件系统；为 nil 时不托管前端页面（接口仍可用）。
+	//
+	// 用 fs.FS 而非 *embed.FS：便于测试注入内存文件系统，
+	// 也让 server 包不必依赖承载嵌入声明的根包。
+	WebFS fs.FS
 }
 
 // Server 是 HTTP 服务的运行时载体。
@@ -55,6 +67,12 @@ type Server struct {
 	engine     *gin.Engine
 	httpServer *http.Server
 	startedAt  time.Time // 记录启动时刻，用于健康检查上报运行时长
+
+	// loginLimiter 限制登录与注册接口的频率。
+	//
+	// 为什么必须限流：口令校验（bcrypt）是刻意昂贵的操作，
+	// 不限流时攻击者可用少量并发请求打满 CPU（生产实例仅 2 核且与转发共享）。
+	loginLimiter *middleware.RateLimiter
 }
 
 // New 创建并装配 HTTP 服务（不启动监听，便于测试直接取用 Handler）。
@@ -74,8 +92,18 @@ func New(deps Deps) *Server {
 		deps:      deps,
 		engine:    engine,
 		startedAt: time.Now(),
+		// 每个来源 IP 每 5 分钟最多 20 次登录/注册尝试：
+		// 正常使用者远达不到该频率，而爆破攻击会被有效拖慢。
+		loginLimiter: middleware.NewRateLimiter(20, 5*time.Minute),
 	}
 	s.registerRoutes()
+
+	// 注册前端静态资源与 SPA 回退。
+	// 必须在 registerRoutes 之后：SPA 回退依赖 gin 的 NoRoute 钩子，
+	// 早于路由注册设置也不会出错，但放在之后更符合阅读顺序（先接口、后兜底）。
+	if deps.WebFS != nil {
+		s.registerStaticRoutes(deps.WebFS)
+	}
 
 	s.httpServer = &http.Server{
 		Addr:    deps.Config.Server.Listen,
