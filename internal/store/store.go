@@ -329,6 +329,19 @@ func (s *Store) applyMigration(ctx context.Context, m migration) error {
 	return nil
 }
 
+// SupportedSchemaVersion 返回当前二进制内置的最高迁移版本号。
+//
+// 用途：让调用方（启动日志、健康检查、测试）能判断"数据库结构是否已追平程序"，
+// 避免在测试或代码中写死版本号——每新增一个迁移都要改多处，很容易漏改。
+//
+// 注意：迁移清单在 init() 中加载，因此本函数在包加载完成后始终可用。
+func SupportedSchemaVersion() int {
+	if len(migrations) == 0 {
+		return 0
+	}
+	return migrations[len(migrations)-1].Version
+}
+
 // LatestMigrationVersion 返回已登记的最高迁移版本号，供健康检查展示。
 //
 // 说明：全新数据库在 Migrate 之前调用会返回 0。

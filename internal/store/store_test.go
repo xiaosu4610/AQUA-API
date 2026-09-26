@@ -97,13 +97,15 @@ func TestMigrate_CreatesExpectedTables(t *testing.T) {
 		}
 	}
 
-	// 版本号应已登记为 1
+	// 版本号应已追平二进制内置的最高迁移版本。
+	// 刻意不写死数字：每新增一个迁移脚本都要改测试是很脆弱的做法。
+	wantVersion := SupportedSchemaVersion()
 	version, err := st.LatestMigrationVersion(ctx)
 	if err != nil {
 		t.Fatalf("查询迁移版本失败: %v", err)
 	}
-	if version != 1 {
-		t.Errorf("迁移版本 = %d，期望 1", version)
+	if version != wantVersion {
+		t.Errorf("迁移版本 = %d，期望 %d", version, wantVersion)
 	}
 }
 
@@ -119,21 +121,22 @@ func TestMigrate_Idempotent(t *testing.T) {
 		}
 	}
 
+	wantVersion := SupportedSchemaVersion()
 	version, err := st.LatestMigrationVersion(ctx)
 	if err != nil {
 		t.Fatalf("查询迁移版本失败: %v", err)
 	}
-	if version != 1 {
-		t.Errorf("重复迁移后版本 = %d，期望仍为 1", version)
+	if version != wantVersion {
+		t.Errorf("重复迁移后版本 = %d，期望仍为 %d", version, wantVersion)
 	}
 
-	// 迁移记录不应重复插入
+	// 迁移记录不应重复插入：每个脚本恰好一条记录
 	var count int
 	if err := st.DB().QueryRowContext(ctx, "SELECT COUNT(1) FROM schema_migrations").Scan(&count); err != nil {
 		t.Fatalf("统计数据失败: %v", err)
 	}
-	if count != 1 {
-		t.Errorf("schema_migrations 记录数 = %d，期望 1（不应重复登记）", count)
+	if count != len(migrations) {
+		t.Errorf("schema_migrations 记录数 = %d，期望 %d（不应重复登记）", count, len(migrations))
 	}
 }
 

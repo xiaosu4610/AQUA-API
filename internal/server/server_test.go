@@ -108,9 +108,9 @@ func TestHealthz_ReturnsOK(t *testing.T) {
 	if body["database"] != dependencyOK {
 		t.Errorf("database = %v，期望 %q", body["database"], dependencyOK)
 	}
-	// 迁移版本应为 1（M1 只有初始迁移）
-	if v, ok := body["migration_version"].(float64); !ok || int(v) != 1 {
-		t.Errorf("migration_version = %v，期望 1", body["migration_version"])
+	// 迁移版本应与二进制内置的最高版本一致（不写死数字，避免新增迁移后测试失效）
+	if v, ok := body["migration_version"].(float64); !ok || int(v) != store.SupportedSchemaVersion() {
+		t.Errorf("migration_version = %v，期望 %d", body["migration_version"], store.SupportedSchemaVersion())
 	}
 	// 版本字段必须存在（可为 dev）
 	if _, ok := body["version"]; !ok {

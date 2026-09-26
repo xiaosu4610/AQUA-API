@@ -28,6 +28,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -130,4 +131,17 @@ func GenerateKeyMaterial() (string, error) {
 		return "", fmt.Errorf("crypto: 生成密钥材料失败: %w", err)
 	}
 	return fmt.Sprintf("%x", buf), nil
+}
+
+// SHA256Hex 返回字符串的 SHA-256 十六进制摘要。
+//
+// 用途：令牌鉴权时的等值查找——数据库只保存摘要并建立唯一索引，
+// 既避免明文落库，也避免"解密全表逐个比对"的低效与内存暴露风险。
+//
+// 安全说明：此处刻意不加盐。原因是摘要需支持"按相同输入复现"以用于精确查找，
+// 加盐后将无法查询；而令牌本身是 192 位高熵随机串，不存在彩虹表或字典攻击的可行性，
+// 这与"用户口令必须加盐"的场景有本质区别。
+func SHA256Hex(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
 }
