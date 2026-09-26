@@ -94,6 +94,9 @@ func (s *Server) registerRoutes() {
 	portal.GET("/orders", s.handleMyListOrders)
 	portal.GET("/orders/:tradeNo", s.handleMyGetOrder)
 
+	// 兑换码：用户输入兑换码领取额度（归属约束由会话强制，无需传用户 id）
+	portal.POST("/redeem", s.handleUserRedeem)
+
 	// ── 管理后台（需管理员）──────────────────────────────────────
 	admin := authed.Group("/admin")
 	admin.Use(middleware.RequireAdmin())
@@ -161,6 +164,15 @@ func (s *Server) registerRoutes() {
 	admin.POST("/tasks/:ref/cancel", s.handleAdminCancelTask)
 	// 已注册的上游任务适配器（供任务表单提示可选 provider）
 	admin.GET("/task-providers", s.handleTaskProviders)
+
+	// 兑换码（批量生成活动码、按状态/批次筛选、作废与清理）
+	admin.GET("/redeem-codes", s.handleAdminListRedeemCodes)
+	admin.POST("/redeem-codes", s.handleAdminCreateRedeemCodes)
+	// 静态段 /invalid 与参数段 /:id 在同一层级可共存（gin 优先匹配静态段），
+	// 且语义独立，故放在 :id 之前便于阅读。
+	admin.DELETE("/redeem-codes/invalid", s.handleAdminDeleteInvalidRedeemCodes)
+	admin.PUT("/redeem-codes/:id", s.handleAdminUpdateRedeemCode)
+	admin.DELETE("/redeem-codes/:id", s.handleAdminDeleteRedeemCode)
 
 	// 充值订单管理（人工确认入账 / 关单 / 退款）
 	admin.GET("/orders", s.handleAdminListOrders)
