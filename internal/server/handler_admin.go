@@ -701,7 +701,12 @@ func probeChannel(ctx context.Context, channel *model.Channel) channelTestRespon
 	case resp.StatusCode == http.StatusTooManyRequests:
 		message = "上游返回限流（密钥有效但当前受限）"
 	case resp.StatusCode == http.StatusNotFound:
-		message = "上游返回 404：请检查 BaseURL 与模型名是否正确"
+		// 404 有两种成因，必须区分开，否则管理员会一直去改 BaseURL：
+		//   1) 地址配错 —— 但若此前能拉到模型列表，基本可排除；
+		//   2) 该密钥/账号无权访问这个模型 —— NVIDIA 等平台按模型逐个授权，
+		//      账号只拿了部分模型的权限。把两种可能都写出来，管理员才不会误判。
+		message = "上游返回 404：可能是该渠道的密钥无权访问此模型（部分平台按模型逐个授权），" +
+			"也可能是 BaseURL 填错（注意不要带 /v1）"
 	case !ok:
 		message = fmt.Sprintf("上游返回异常状态码 %d", resp.StatusCode)
 	}
