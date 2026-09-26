@@ -41,6 +41,7 @@ import (
 
 	"gitee.com/xiaosu4610/aqua-api/internal/model"
 	"gitee.com/xiaosu4610/aqua-api/internal/oai"
+	"gitee.com/xiaosu4610/aqua-api/internal/server/middleware"
 )
 
 // ---------------------------------------------------------------------------
@@ -334,6 +335,102 @@ func (s *Server) respondGroupLookupError(c *gin.Context, err error) {
 		return
 	}
 	s.respondInternalError(c, "查询分组失败")
+}
+
+// ---------------------------------------------------------------------------
+// 模型清单（OpenAI 兼容：GET /v1/models）
+// ---------------------------------------------------------------------------
+
+// openAIModelDTO 是 OpenAI 兼容的单个模型对象。
+type openAIModelDTO struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int64  `json:"created"`
+	OwnedBy string `json:"owned_by"`
+}
+
+// handleListModels 处理 GET /v1/models（OpenAI 兼容的模型清单）。
+//
+// 为什么必须提供：大量客户端（SDK、IDE 插件、Web UI）在启动时会先调
+// /v1/models 来填充模型下拉框；没有这个接口时它们会显示"未获取到模型列表"，
+// 使用者往往误以为网关坏了（生产日志里确实出现过这个 404）。
+//
+// 返回内容：
+//
+//	所有【启用渠道】声明模型的并集，再按令牌白名单过滤——
+//	令牌看不到自己无权调用的模型，这与 OpenAI 的语义一致
+//	（列出的模型应当都是该 Key 能用的）。
+//
+// 边界处理：若渠道都没有声明模型（过渡约定：空清单 = 支持全部模型），
+// 则退回"计价规则里出现过的具体模型名"，让使用者至少能看到已定价的模型。
+func (s *Server) handleListModels(c *gin.Context) {
+	if s.deps.Channels == nil {
+		oai.WriteError(c.Writer, http.StatusServiceUnavailable,
+			"网关未就绪", oai.TypeServer, oai.CodeInternal)
+		return
+	}
+
+	ctx := c.Request.Context()
+	enabled := model.ChannelStatusEnabled
+	channels, err := s.deps.Channels.List(ctx, model.ChannelQuery{Status: &enabled, Limit: 500})
+	if err != nil {
+		s.respondInternalError(c, "查询渠道失败")
+		return
+	}
+
+	token, _ := middleware.TokenFromContext(c)
+
+	seen := make(map[string]struct{})
+	for _, channel := range channels {
+		for _, name := range channel.Models {
+			modelName := strings.TrimSpace(name)
+			if modelName == "" {
+				continue
+			}
+			// 令牌白名单过滤：不让令牌看到自己无权调用的模型
+			if token != nil && !token.AllowsModel(modelName) {
+				continue
+			}
+			seen[modelName] = struct{}{}
+		}
+	}
+
+	// 渠道未声明模型时的兜底：用已定价的模型名（排除通配模式）
+	if len(seen) == 0 && s.deps.ModelPrices != nil {
+		if prices, err := s.deps.ModelPrices.List(ctx, "", true); err == nil {
+			for _, price := range prices {
+				modelName := strings.TrimSpace(price.Model)
+				if modelName == "" || price.PatternKind() != model.PatternExact {
+					continue
+				}
+				if token != nil && !token.AllowsModel(modelName) {
+					continue
+				}
+				seen[modelName] = struct{}{}
+			}
+		}
+	}
+
+	names := make([]string, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	data := make([]openAIModelDTO, 0, len(names))
+	for _, name := range names {
+		data = append(data, openAIModelDTO{
+			ID:     name,
+			Object: "model",
+			// Created 填 0：模型在本网关里没有"创建时间"这一语义，
+			// 客户端只把它当作可排序字段，填 0 比编造一个时间更诚实。
+			Created: 0,
+			// owned_by 标注为本网关，明确"这些模型是通过网关转发的"。
+			OwnedBy: "aqua-api",
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{"object": "list", "data": data})
 }
 
 // ---------------------------------------------------------------------------

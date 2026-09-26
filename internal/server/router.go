@@ -171,6 +171,9 @@ func (s *Server) registerRoutes() {
 	// 既便于单元测试（可直接用 httptest），也便于将来替换框架。
 	v1 := r.Group("/v1")
 	v1.Use(middleware.TokenAuth(s.deps.Tokens, s.deps.Users))
+	// OpenAI 兼容的模型清单：客户端（SDK / IDE 插件 / Web UI）启动时普遍会先调它，
+	// 缺了会显示"未获取到模型列表"，使用者容易误判为网关故障。
+	v1.GET("/models", s.handleListModels)
 	v1.POST("/chat/completions", gin.WrapF(s.deps.Relay.ServeChatCompletions))
 	// Anthropic Messages 协议：Claude 官方 SDK、Claude Code 等客户端默认走这里。
 	// 网关内部会把请求转换为 OpenAI 格式再转发，响应再转换回 Anthropic 格式。

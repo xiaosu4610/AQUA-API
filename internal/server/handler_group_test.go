@@ -18,7 +18,10 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 
@@ -32,12 +35,23 @@ import (
 	"gitee.com/xiaosu4610/aqua-api/internal/store"
 )
 
-// newPlazaTestServer 构造包含分组 / 计价规则 / 渠道的最小可用服务。
+// plazaFixture 汇总测试所需的仓储与已创建的访问令牌。
 //
-// 说明：本文件不复用 server_test.go 的 newTestServer，因为广场接口需要
-// Groups / ModelPrices / Payment 三个依赖，而这些是后续里程碑才加入的；
-// 为它单独组装一个更明确的依赖集合，可避免默认装配悄悄变化导致测试失真。
-func newPlazaTestServer(t *testing.T) (*Server, model.ChannelRepository, model.ModelGroupRepository, model.ModelPriceRepository) {
+// 为什么要带上访问令牌：/v1/models 挂在令牌鉴权之后，
+// 没有可用令牌就无法验证它的真实行为（而它正是生产环境里暴露出来的缺口）。
+type plazaFixture struct {
+	server       *Server
+	channels     model.ChannelRepository
+	groups       model.ModelGroupRepository
+	prices       model.ModelPriceRepository
+	tokenRepo    model.TokenRepository
+	userRepo     model.UserRepository
+	plainToken   string
+	tokenOwnerID uint64
+}
+
+// newPlazaFixture 构造包含分组 / 计价规则 / 渠道 / 令牌的最小可用服务。
+func newPlazaFixture(t *testing.T) *plazaFixture {
 	t.Helper()
 	gin.DefaultWriter = io.Discard
 
@@ -64,6 +78,34 @@ func newPlazaTestServer(t *testing.T) (*Server, model.ChannelRepository, model.M
 	channels := store.NewChannelRepository(st.DB(), cipher)
 	groups := store.NewModelGroupRepository(st.DB())
 	priceRepo := store.NewModelPriceRepository(st.DB())
+	tokenRepo := store.NewTokenRepository(st.DB(), cipher)
+	userRepo := store.NewUserRepository(st.DB())
+
+	ctx := context.Background()
+	owner := &model.User{
+		Username:     "plaza-owner",
+		PasswordHash: "test-hash",
+		Role:         model.UserRoleUser,
+		Status:       model.UserStatusEnabled,
+		Quota:        model.QuotaUnlimited,
+	}
+	if err := userRepo.Create(ctx, owner); err != nil {
+		t.Fatalf("创建测试用户失败: %v", err)
+	}
+
+	plainKey, err := model.GenerateTokenKey()
+	if err != nil {
+		t.Fatalf("生成令牌失败: %v", err)
+	}
+	if err := tokenRepo.Create(ctx, &model.Token{
+		Name:           "plaza-token",
+		Key:            plainKey,
+		OwnerID:        owner.ID,
+		Status:         model.TokenStatusEnabled,
+		UnlimitedQuota: true,
+	}); err != nil {
+		t.Fatalf("创建访问令牌失败: %v", err)
+	}
 
 	srv := New(Deps{
 		Config:      cfg,
@@ -72,10 +114,38 @@ func newPlazaTestServer(t *testing.T) (*Server, model.ChannelRepository, model.M
 		Groups:      groups,
 		ModelPrices: priceRepo,
 		Settings:    store.NewSettingRepository(st.DB()),
+		Tokens:      tokenRepo,
+		Users:       userRepo,
 		Relay:       relay.New(channels, relay.Options{}),
 		Payment:     payment.NewRegistry(payment.Options{}),
 	})
-	return srv, channels, groups, priceRepo
+
+	return &plazaFixture{
+		server:       srv,
+		channels:     channels,
+		groups:       groups,
+		prices:       priceRepo,
+		tokenRepo:    tokenRepo,
+		userRepo:     userRepo,
+		plainToken:   plainKey,
+		tokenOwnerID: owner.ID,
+	}
+}
+
+// doAuthRequest 带访问令牌发起一次请求（用于 /v1/* 接口）。
+func doAuthRequest(t *testing.T, srv *Server, method, path, token string) (*httptest.ResponseRecorder, map[string]any) {
+	t.Helper()
+
+	req := httptest.NewRequest(method, path, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	body := map[string]any{}
+	if rec.Body.Len() > 0 {
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	}
+	return rec, body
 }
 
 // createTestChannel 写入一个启用的渠道（测试数据固定，便于断言）。
@@ -117,7 +187,8 @@ func plazaItems(t *testing.T, body map[string]any) map[string]map[string]any {
 }
 
 func TestModelPlaza_合并渠道与价格并算出生效价格(t *testing.T) {
-	srv, channels, groups, priceRepo := newPlazaTestServer(t)
+	fx := newPlazaFixture(t)
+	srv, channels, groups, priceRepo := fx.server, fx.channels, fx.groups, fx.prices
 	ctx := context.Background()
 
 	if err := groups.Create(ctx, &model.ModelGroup{
@@ -241,7 +312,8 @@ func TestModelPlaza_合并渠道与价格并算出生效价格(t *testing.T) {
 }
 
 func TestModelPlaza_按分组与关键词过滤(t *testing.T) {
-	srv, channels, _, priceRepo := newPlazaTestServer(t)
+	fx := newPlazaFixture(t)
+	srv, channels, priceRepo := fx.server, fx.channels, fx.prices
 	ctx := context.Background()
 
 	for _, name := range []string{"alpha-model", "beta-model"} {
@@ -273,7 +345,8 @@ func TestModelPlaza_按分组与关键词过滤(t *testing.T) {
 }
 
 func TestPublicPaymentInfo_默认关闭充值且只启用人工通道(t *testing.T) {
-	srv, _, _, _ := newPlazaTestServer(t)
+	fx := newPlazaFixture(t)
+	srv := fx.server
 
 	rec, body := doRequest(t, srv, "GET", "/api/payment/public")
 	if rec.Code != 200 {
@@ -297,5 +370,92 @@ func TestPublicPaymentInfo_默认关闭充值且只启用人工通道(t *testing
 	// 密钥状态字段必须存在且不包含任何密钥内容（只有布尔值）
 	if _, ok := first["ready"].(bool); !ok {
 		t.Fatal("通道应带 ready 字段（密钥是否就绪）")
+	}
+}
+
+func TestListModels_OpenAI兼容清单(t *testing.T) {
+	fx := newPlazaFixture(t)
+	ctx := context.Background()
+
+	// 渠道声明两个模型 + 计价规则里有一个"只定价未接渠道"的模型
+	if err := fx.prices.Create(ctx, &model.ModelPrice{
+		Model: "priced-only", PerCallPrice: 100, Group: model.DefaultGroupName, Enabled: true,
+	}); err != nil {
+		t.Fatalf("创建计价规则失败: %v", err)
+	}
+	if err := fx.prices.Create(ctx, &model.ModelPrice{
+		Model: "gpt-4*", PerCallPrice: 100, Group: model.DefaultGroupName, Enabled: true,
+	}); err != nil {
+		t.Fatalf("创建计价规则失败: %v", err)
+	}
+	createTestChannel(t, fx.channels, []string{"alpha-model", "beta-model"})
+
+	// 1) 未携带令牌 → 必须 401（不能因为它是只读接口就放开）
+	rec, _ := doRequest(t, fx.server, "GET", "/v1/models")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("未带令牌应返回 401，实际 %d", rec.Code)
+	}
+
+	// 2) 带令牌 → 200，且返回 OpenAI 兼容结构
+	rec, body := doAuthRequest(t, fx.server, "GET", "/v1/models", fx.plainToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码应为 200，实际 %d，响应：%s", rec.Code, rec.Body.String())
+	}
+	if object, _ := body["object"].(string); object != "list" {
+		t.Fatalf("object 应为 list，实际 %v", body["object"])
+	}
+
+	data, ok := body["data"].([]any)
+	if !ok {
+		t.Fatalf("响应缺少 data 数组：%s", rec.Body.String())
+	}
+	ids := make([]string, 0, len(data))
+	for _, raw := range data {
+		item, _ := raw.(map[string]any)
+		if id, _ := item["id"].(string); id != "" {
+			ids = append(ids, id)
+		}
+		if obj, _ := item["object"].(string); obj != "model" {
+			t.Fatalf("每个条目的 object 应为 model，实际 %v", item["object"])
+		}
+	}
+
+	// 渠道声明的两个模型必须在列表里，且按名称升序
+	if len(ids) != 2 || ids[0] != "alpha-model" || ids[1] != "beta-model" {
+		t.Fatalf("应返回渠道声明的 2 个模型且按名称升序，实际 %v", ids)
+	}
+	// 只定价未接渠道的模型不应出现（渠道有声明时不走兜底）
+	for _, id := range ids {
+		if id == "priced-only" || id == "gpt-4*" {
+			t.Fatalf("不应出现仅存在于计价规则中的模型，实际 %v", ids)
+		}
+	}
+}
+
+func TestListModels_渠道未声明模型时回退到已定价模型(t *testing.T) {
+	fx := newPlazaFixture(t)
+	ctx := context.Background()
+
+	// 渠道的模型清单为空（过渡约定：支持全部模型），此时无法枚举，只能用已定价模型兜底
+	if err := fx.prices.Create(ctx, &model.ModelPrice{
+		Model: "priced-model", PerCallPrice: 100, Group: model.DefaultGroupName, Enabled: true,
+	}); err != nil {
+		t.Fatalf("创建计价规则失败: %v", err)
+	}
+	if err := fx.prices.Create(ctx, &model.ModelPrice{
+		Model: "*", PerCallPrice: 10, Group: model.DefaultGroupName, Enabled: true,
+	}); err != nil {
+		t.Fatalf("创建通配规则失败: %v", err)
+	}
+	createTestChannel(t, fx.channels, nil)
+
+	_, body := doAuthRequest(t, fx.server, "GET", "/v1/models", fx.plainToken)
+	data, _ := body["data"].([]any)
+	if len(data) != 1 {
+		t.Fatalf("应回退到 1 个已定价模型，实际 %d", len(data))
+	}
+	item, _ := data[0].(map[string]any)
+	if id, _ := item["id"].(string); id != "priced-model" {
+		t.Fatalf("兜底结果应为 priced-model，实际 %v", item["id"])
 	}
 }
