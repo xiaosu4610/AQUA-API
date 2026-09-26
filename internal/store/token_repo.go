@@ -303,6 +303,34 @@ func (r *tokenRepository) RecordUsage(ctx context.Context, id uint64, at time.Ti
 	return nil
 }
 
+// ConsumeQuota 扣减令牌额度。
+//
+// 实现要点（逐条说明为什么这样写）：
+//  1. 单条 SQL 完成"累加已用 + 自减剩余"，杜绝并发下的计数丢失；
+//  2. 用 CASE WHEN unlimited_quota 保证"不限额度"令牌的剩余额度不被扣成负数；
+//  3. 用 SQLite 的标量 MAX(x, 0) 兜底，防止管理员误设的余额被扣穿；
+//  4. amount <= 0 时直接返回：调用方可能传入 0（未定价模型），
+//     此时不应产生一次无意义的写操作。
+func (r *tokenRepository) ConsumeQuota(ctx context.Context, id uint64, amount int64, at time.Time) error {
+	if amount <= 0 {
+		return nil
+	}
+
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE tokens SET
+			used_quota   = used_quota + ?,
+			remain_quota = CASE WHEN unlimited_quota = 1 THEN remain_quota
+			                    ELSE MAX(remain_quota - ?, 0) END,
+			last_used_at = ?
+		WHERE id = ?`,
+		amount, amount, at.Unix(), id)
+	if err != nil {
+		return fmt.Errorf("store: 扣减令牌 %d 额度失败: %w", id, err)
+	}
+	// 令牌可能已被删除：属于正常情况，不让计费失败影响转发主流程
+	return nil
+}
+
 // scanToken 把一行数据映射为领域对象，并解密 KEY。
 func (r *tokenRepository) scanToken(sc rowScanner) (*model.Token, error) {
 	var (

@@ -165,8 +165,15 @@ func (r *Relay) recordUsage(ctx context.Context, entry usageEntry) {
 		Error:            entry.ErrorText,
 		CreatedAt:        time.Now(),
 	}
-	// TODO(relay): 接入计费后在此按倍率换算 quota
-	logEntry.Quota = 0
+	// 计费：按用量扣减令牌与用户额度。
+	//
+	// 放在写日志之前，这样日志里的 quota 就是本次真实扣减额——
+	// 若先写日志再扣费，日志中的额度会永远是 0（这正是此前的缺陷）。
+	//
+	// 计费失败不会影响客户端：Charge 内部只记录错误不返回错误，
+	// 用户不该因为"记账失败"而收到报错。
+	logEntry.Quota = r.billing.Charge(writeCtx, entry.UserID, entry.TokenID, entry.Model,
+		int64(entry.Usage.PromptTokens), int64(entry.Usage.CompletionTokens))
 
 	if err := r.usageLogs.Create(writeCtx, logEntry); err != nil {
 		// 日志写入失败不影响用户，但要留下痕迹便于排查

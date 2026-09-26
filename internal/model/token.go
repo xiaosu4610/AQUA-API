@@ -272,6 +272,17 @@ type TokenRepository interface {
 	// 说明：只更新一个字段，避免把整行写回造成并发覆盖。
 	RecordUsage(ctx context.Context, id uint64, at time.Time) error
 
+	// ConsumeQuota 扣减令牌额度：累加已用额度，并相应减少剩余额度。
+	//
+	// 关键实现要求：必须在【单条 SQL】内完成自增与自减。
+	// 若写成"先读出来、在内存里加减、再写回"，并发请求会互相覆盖，
+	// 表现为"用于统计的已用额度明显偏小"——这是计费类系统最典型的漏计缺陷。
+	//
+	// 不限额度（unlimited_quota）的令牌只累加已用额度、不动剩余额度，
+	// 但用量仍然照常记录，便于站长核算上游成本。
+	// 剩余额度扣到 0 为止（不允许为负），避免出现"倒欠额度"的怪异状态。
+	ConsumeQuota(ctx context.Context, id uint64, amount int64, at time.Time) error
+
 	// Update 按 ID 更新令牌（不修改创建时间），不存在时返回 ErrTokenNotFound。
 	Update(ctx context.Context, t *Token) error
 

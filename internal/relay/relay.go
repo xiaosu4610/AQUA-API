@@ -81,6 +81,8 @@ type Options struct {
 	Tokens model.TokenRepository
 	// Keys 为渠道密钥池仓储；为 nil 时退化为"每渠道单密钥"模式（便于单元测试）。
 	Keys model.ChannelKeyRepository
+	// Billing 为计费组件；为 nil 时只记录用量而不扣减额度。
+	Billing *Billing
 }
 
 // Relay 是转发引擎，持有渠道仓储与上游 HTTP 客户端。
@@ -97,6 +99,8 @@ type Relay struct {
 	tokens    model.TokenRepository
 	// keys 为渠道密钥池仓储（可选）。为 nil 时行为退化为单密钥。
 	keys model.ChannelKeyRepository
+	// billing 为计费组件（可选）。为 nil 时不扣费，仅记录用量。
+	billing *Billing
 }
 
 // New 创建转发引擎。
@@ -130,6 +134,7 @@ func New(channels model.ChannelRepository, opts Options) *Relay {
 		usageLogs:   opts.UsageLogs,
 		tokens:      opts.Tokens,
 		keys:        opts.Keys,
+		billing:     opts.Billing,
 		client: &http.Client{
 			Transport: &http.Transport{
 				// 走系统代理环境变量：便于在受限网络中经代理访问上游
