@@ -52,6 +52,10 @@ export interface SiteStatus {
   site_description: string
   /** 当前对外提供的模型（所有启用渠道声明模型的并集） */
   models: string[]
+  /** 注册是否必须填写邮箱验证码（由后台开关控制） */
+  email_code_required: boolean
+  /** 邮件发送通道是否已就绪；false 时即使开启校验也收不到验证码 */
+  email_service_ready: boolean
 }
 
 /** 登录 / 注册返回的用户摘要（契约二、三节） */
@@ -83,8 +87,26 @@ export interface LoginPayload {
 export interface RegisterPayload {
   username: string
   password: string
-  /** 可选字段，留空时不发送 */
+  /** 邮箱：站点开启"注册必须邮箱验证码"时为必填 */
   email?: string
+  /** 邮箱验证码，与 email 成对出现 */
+  code?: string
+}
+
+/** POST /api/auth/email-code 请求体 */
+export interface EmailCodePayload {
+  email: string
+}
+
+/** POST /api/auth/email-code 响应 */
+export interface EmailCodeResult {
+  ok: boolean
+  /** 验证码有效期（秒） */
+  expires_in: number
+  /** 重发冷却时间（秒），前端据此启动倒计时 */
+  cooldown: number
+  /** 后端给出的提示文案（如"验证码已发送，请查收邮件"） */
+  message: string
 }
 
 /* ────────────────────────── 访问令牌 ────────────────────────── */
@@ -285,6 +307,35 @@ export interface DashboardStats {
   recent_days: { date: string; requests: number; tokens: number }[]
   top_models: { model: string; requests: number }[]
 }
+
+/* ────────────────────────── 系统设置 ────────────────────────── */
+
+/** GET /api/admin/settings 响应 */
+export interface SiteSettings {
+  site_name: string
+  site_description: string
+  /** 是否开放自助注册 */
+  registration_enabled: boolean
+  /** 注册是否必须通过邮箱验证码校验 */
+  registration_require_email_code: boolean
+  /** 新用户默认额度（-1 表示不限） */
+  default_user_quota: number
+  default_group: string
+  /** 邮件通道是否已就绪（SMTP 配置完整）；只读，由服务端环境变量决定 */
+  email_service_ready: boolean
+  /** 发件地址；未配置时为空字符串。只读 */
+  email_from: string
+}
+
+/** PUT /api/admin/settings 请求体：只提交需要变更的字段 */
+export type UpdateSiteSettingsPayload = Partial<{
+  site_name: string
+  site_description: string
+  registration_enabled: boolean
+  registration_require_email_code: boolean
+  default_user_quota: number
+  default_group: string
+}>
 
 /* ────────────────────────── 查询参数 ────────────────────────── */
 

@@ -32,6 +32,15 @@ export const useSiteStore = defineStore('site', () => {
   const models = computed(() => status.value?.models ?? [])
   /** 注册开关：未拿到站点信息时按「关闭」处理（保守策略，避免注册页误导用户） */
   const registrationEnabled = computed(() => status.value?.registration_enabled === true)
+  /**
+   * 注册是否需要邮箱验证码。
+   *
+   * 未拿到站点信息时按 false 处理：注册页此时会显示骨架屏，
+   * 不会渲染表单，因此不会造成"少显示一个必填项"的问题。
+   */
+  const emailCodeRequired = computed(() => status.value?.email_code_required === true)
+  /** 邮件通道是否就绪：未就绪时注册页提前给出"请联系管理员"的提示 */
+  const emailServiceReady = computed(() => status.value?.email_service_ready !== false)
 
   /**
    * 拉取站点信息。
@@ -59,6 +68,8 @@ export const useSiteStore = defineStore('site', () => {
     version,
     models,
     registrationEnabled,
+    emailCodeRequired,
+    emailServiceReady,
     load,
   }
 })

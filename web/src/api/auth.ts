@@ -14,19 +14,34 @@
  *   新增认证方式（如 OAuth）时在此加函数，并在 stores/auth.ts 暴露对应 action。
  */
 import { api } from './client'
-import type { AuthResult, AuthUser, LoginPayload, RegisterPayload } from './types'
+import type { AuthResult, AuthUser, EmailCodeResult, LoginPayload, RegisterPayload } from './types'
 
 /** POST /api/auth/login：用户名 + 密码登录 */
 export function login(payload: LoginPayload): Promise<AuthResult> {
   return api.post<AuthResult>('/auth/login', payload)
 }
 
-/** POST /api/auth/register：受站点 registration_enabled 开关控制（由调用方先行校验） */
+/**
+ * POST /api/auth/register：受站点 registration_enabled 开关控制（由调用方先行校验）。
+ *
+ * 站点开启"注册必须邮箱验证码"时，后端会强制校验 email + code；
+ * 未开启时二者可选（留空则不发送，避免后端把空字符串当成显式空值）。
+ */
 export function register(payload: RegisterPayload): Promise<AuthResult> {
   const body: RegisterPayload = { username: payload.username, password: payload.password }
-  // email 为可选字段：留空时不发送，避免后端把它当成「显式空值」
   if (payload.email) body.email = payload.email
+  if (payload.code) body.code = payload.code
   return api.post<AuthResult>('/auth/register', body)
+}
+
+/**
+ * POST /api/auth/email-code：申请注册邮箱验证码。
+ *
+ * 后端返回 cooldown（冷却秒数）与 expires_in（有效期秒数），
+ * 前端据此驱动倒计时，避免把这两个数值硬编码在页面里。
+ */
+export function sendEmailCode(email: string): Promise<EmailCodeResult> {
+  return api.post<EmailCodeResult>('/auth/email-code', { email })
 }
 
 /**

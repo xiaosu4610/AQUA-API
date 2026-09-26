@@ -50,6 +50,8 @@ export type IconName =
   | 'eye-off'
   | 'filter'
   | 'layers'
+  | 'mail'
+  | 'sliders'
 
 /** 图标路径表：24×24 视口下的描边路径（原创几何线条，无第三方图标依赖） */
 export const ICON_PATHS: Record<IconName, string[]> = {
@@ -122,4 +124,15 @@ export const ICON_PATHS: Record<IconName, string[]> = {
   ],
   filter: ['M3.5 5.5h17l-6.6 7.6V19l-4-1.9v-4L3.5 5.5Z'],
   layers: ['M12 3.2 20 7.6v8.8L12 20.8 4 16.4V7.6L12 3.2Z', 'M4 7.6 12 12l8-4.4', 'M12 12v8.8'],
+  // 信封：矩形边框 + 顶部的"封盖"折线（用于邮箱验证码等与邮件相关的操作）
+  mail: ['M3.6 6.4h16.8v11.2H3.6z', 'M3.6 6.9 12 13.1 20.4 6.9'],
+  // 滑杆：两组"轨道 + 手柄"，用于后台设置入口
+  sliders: [
+    'M3.6 8.4h4.2',
+    'M12.6 8.4h7.8',
+    'M10.6 5.9v5',
+    'M3.6 15.6h9.2',
+    'M17.6 15.6h2.8',
+    'M15.6 13.1v5',
+  ],
 }

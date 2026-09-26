@@ -30,7 +30,10 @@ const groups: NavGroup[] = [
   },
   {
     title: '运维',
-    items: [{ label: '调用日志', to: '/admin/logs', icon: 'list' }],
+    items: [
+      { label: '调用日志', to: '/admin/logs', icon: 'list' },
+      { label: '系统设置', to: '/admin/settings', icon: 'sliders' },
+    ],
   },
 ]
 </script>

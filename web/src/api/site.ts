@@ -36,6 +36,11 @@ export async function fetchSiteStatus(force = false): Promise<SiteStatus> {
     registration_enabled: Boolean(status?.registration_enabled),
     site_description: status?.site_description || '',
     models: Array.isArray(status?.models) ? status.models : [],
+    // 这两个开关决定注册页的字段是否必填。字段缺失时按「不需要验证码」处理，
+    // 与后端默认值（需要验证码）相反——但后端一旦运行就必然返回该字段，
+    // 缺失只可能出现在极早期的旧版本，此时按宽松处理可避免注册页被锁死。
+    email_code_required: Boolean(status?.email_code_required),
+    email_service_ready: status?.email_service_ready !== false,
   }
   cachedStatus = normalized
   cachedAt = Date.now()

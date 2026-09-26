@@ -26,6 +26,8 @@ import type {
   DashboardStats,
   LogQuery,
   Paged,
+  SiteSettings,
+  UpdateSiteSettingsPayload,
   UpdateUserPayload,
   UsageLog,
 } from './types'
@@ -118,4 +120,20 @@ export function deleteUser(id: number): Promise<unknown> {
 /** GET /api/admin/logs：全站调用日志（分页 + 多条件筛选） */
 export function listAllLogs(query: LogQuery): Promise<Paged<UsageLog>> {
   return api.get<Paged<UsageLog>>('/admin/logs', { ...query })
+}
+
+/* ── 系统设置 ───────────────────────────────────────────── */
+
+/** GET /api/admin/settings：读取系统设置（含邮件通道是否就绪） */
+export function fetchSettings(): Promise<SiteSettings> {
+  return api.get<SiteSettings>('/admin/settings')
+}
+
+/**
+ * PUT /api/admin/settings：更新系统设置。
+ *
+ * 只提交变更字段：后端对未提交项保持原值，避免"改一项清空其他项"。
+ */
+export function updateSettings(payload: UpdateSiteSettingsPayload): Promise<unknown> {
+  return api.put<unknown>('/admin/settings', payload)
 }
