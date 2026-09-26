@@ -57,6 +57,11 @@ type Deps struct {
 	Settings    model.SettingRepository  // 系统设置仓储
 	Relay       *relay.Relay             // 转发引擎（模型 API 的核心处理器）
 
+	// ModelPrices 是模型计价规则仓储（后台维护价格、计算用量费用）。
+	ModelPrices model.ModelPriceRepository
+	// Billing 用于在改价后清空价格缓存，保证"改完立即生效"。
+	Billing *relay.Billing
+
 	// EmailCodes 是注册邮箱验证码仓储（由 main 注入；验证码相关接口依赖它）。
 	EmailCodes model.EmailCodeRepository
 	// Mailer 是出站邮件发送器；未配置时验证码接口会返回明确的"邮件服务未配置"提示，

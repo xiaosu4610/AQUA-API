@@ -11,7 +11,8 @@
 //	请求 → TokenAuth
 //	  ├─ extractAPIKey        从请求头提取令牌明文
 //	  ├─ tokens.GetByKey      按摘要索引查库（O(1)，不解密全表）
-//	  ├─ EffectiveStatus      结合时间与额度判定实际状态
+//	  ├─ EffectiveStatus      结合时间与额度判定令牌自身状态
+//	  ├─ users.GetByID        账号级校验：是否禁用、额度是否耗尽
 //	  ├─ 模型白名单校验        仅当白名单非空时才读请求体（省开销）
 //	  └─ SetToken → c.Next()  放行并把令牌写入上下文
 //
@@ -40,8 +41,12 @@ const bearerPrefix = "Bearer "
 
 // TokenAuth 返回校验下游令牌的 gin 中间件。
 //
-// 参数 tokens 为令牌仓储；它由 main 装配后注入，便于替换实现与单元测试。
-func TokenAuth(tokens model.TokenRepository) gin.HandlerFunc {
+// 参数：
+//   - tokens 为令牌仓储；
+//   - users 为用户仓储（用于账号级额度校验），可为 nil（此时跳过该层校验）。
+//
+// 两者都由 main 装配后注入，便于替换实现与单元测试。
+func TokenAuth(tokens model.TokenRepository, users model.UserRepository) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// ── 步骤 1：提取令牌 ────────────────────────────────────
 		rawKey := extractAPIKey(c.Request)
@@ -91,7 +96,41 @@ func TokenAuth(tokens model.TokenRepository) gin.HandlerFunc {
 			return
 		}
 
-		// ── 步骤 4：模型白名单校验 ──────────────────────────────
+		// ── 步骤 4：账号级额度校验 ──────────────────────────────
+		//
+		// 为什么令牌之外还要查用户额度：令牌是"发给某个用户的凭据"，
+		// 用户额度才是账号级上限。若只校验令牌额度，用户可以随手新建
+		// 若干个令牌来绕过总量限制——限额就形同虚设。
+		//
+		// 额度语义：QuotaUnlimited(-1) 表示不限；其余情况下剩余 = 总额度 - 已用。
+		// 新用户默认额度为 0（需管理员分配），因此此处会拒绝其调用，这是预期行为。
+		if users != nil && token.OwnerID > 0 {
+			owner, err := users.GetByID(c.Request.Context(), token.OwnerID)
+			if err != nil {
+				if errors.Is(err, model.ErrUserNotFound) {
+					// 令牌归属的用户已被删除：令牌本身应视为失效
+					abortWithError(c, http.StatusUnauthorized,
+						"访问令牌已失效", oai.TypeAuthentication, oai.CodeInvalidAPIKey)
+					return
+				}
+				abortWithError(c, http.StatusInternalServerError,
+					"网关内部错误", oai.TypeServer, oai.CodeInternal)
+				return
+			}
+
+			if !owner.IsActive() {
+				abortWithError(c, http.StatusForbidden,
+					"账号已被禁用", oai.TypePermission, oai.CodeTokenDisabled)
+				return
+			}
+			if owner.RemainingQuota() == 0 {
+				abortWithError(c, http.StatusTooManyRequests,
+					"账号额度已用尽，请联系管理员", oai.TypeRateLimit, oai.CodeInsufficientQuota)
+				return
+			}
+		}
+
+		// ── 步骤 5：模型白名单校验 ──────────────────────────────
 		// 性能考量：仅当令牌配置了白名单时才读取请求体。
 		// 未配置白名单（不限模型）是最常见的情况，此时零额外开销。
 		if len(token.Models) > 0 {
@@ -100,7 +139,7 @@ func TokenAuth(tokens model.TokenRepository) gin.HandlerFunc {
 			}
 		}
 
-		// ── 步骤 5：放行 ────────────────────────────────────────
+		// ── 步骤 6：放行 ────────────────────────────────────────
 		SetToken(c, token)
 
 		// 把调用者身份写入请求 context，供转发引擎在结束时落调用日志。

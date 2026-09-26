@@ -170,6 +170,7 @@ func run() error {
 	usageLogs := store.NewUsageLogRepository(st.DB())
 	settings := store.NewSettingRepository(st.DB())
 	emailCodes := store.NewEmailCodeRepository(st.DB())
+	modelPrices := store.NewModelPriceRepository(st.DB())
 
 	// 启动时清理过期会话：会话表随登录次数持续增长，不清理会无限膨胀。
 	// 清理失败不阻断启动（这只是维护动作，不影响核心功能）。
@@ -227,11 +228,18 @@ func run() error {
 			"aqua -init-admin <用户名>（会生成随机密码并打印一次）")
 	}
 
+	// ── 计费组件 ────────────────────────────────────────────────
+	// 负责按模型单价与用量换算额度，并扣减令牌与用户额度。
+	// 价格规则缓存在内存中（后台改价后会主动失效），避免每次转发都查库。
+	billing := relay.NewBilling(modelPrices, tokens, users, "")
+
 	relayEngine := relay.New(channels, relay.Options{
 		UsageLogs: usageLogs,
 		Tokens:    tokens,
 		// 渠道密钥池：让一个渠道可以挂多把上游密钥并轮询使用
 		Keys: channelKeys,
+		// 计费：把 usage 换算成额度并扣减
+		Billing: billing,
 	})
 
 	srv := server.New(server.Deps{
@@ -245,6 +253,9 @@ func run() error {
 		UsageLogs:   usageLogs,
 		Settings:    settings,
 		Relay:       relayEngine,
+		// 计费：价格规则仓储 + 计费组件（后台改价后用它清缓存）
+		ModelPrices: modelPrices,
+		Billing:     billing,
 		// 注册邮箱验证码：仓储 + 发信通道
 		EmailCodes: emailCodes,
 		Mailer:     mailerSender,

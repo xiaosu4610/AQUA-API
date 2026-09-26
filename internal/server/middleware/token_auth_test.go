@@ -85,15 +85,113 @@ func createToken(t *testing.T, repo model.TokenRepository, mutate func(*model.To
 	return key
 }
 
+// newTokenAndUserRepos 在同一临时库上同时构造令牌与用户仓储。
+//
+// 必须共用一个数据库：账号级额度校验会按 token.OwnerID 去查用户，
+// 用两个独立库会让"令牌存在但用户查不到"这类集成问题测不出来。
+func newTokenAndUserRepos(t *testing.T) (model.TokenRepository, model.UserRepository) {
+	t.Helper()
+
+	st, err := store.Open("sqlite", filepath.Join(t.TempDir(), "auth_pair_test.db"))
+	if err != nil {
+		t.Fatalf("打开测试数据库失败: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	if err := st.Migrate(context.Background()); err != nil {
+		t.Fatalf("执行迁移失败: %v", err)
+	}
+
+	cipher, err := crypto.New(testEncryptionKey)
+	if err != nil {
+		t.Fatalf("构造加密器失败: %v", err)
+	}
+	return store.NewTokenRepository(st.DB(), cipher), store.NewUserRepository(st.DB())
+}
+
+// TestTokenAuth_账号额度耗尽_应被拒绝 验证账号级限额确实生效。
+//
+// 这条用例守住的是"只校验令牌额度会被多建令牌绕过"这个漏洞：
+// 即使令牌本身不限额度，只要账号额度耗尽，也必须拒绝。
+func TestTokenAuth_账号额度耗尽_应被拒绝(t *testing.T) {
+	tokens, users := newTokenAndUserRepos(t)
+	ctx := context.Background()
+
+	cases := []struct {
+		name     string
+		quota    int64
+		used     int64
+		wantCode int
+	}{
+		{name: "额度已用尽", quota: 100, used: 100, wantCode: http.StatusTooManyRequests},
+		{name: "额度为零", quota: 0, used: 0, wantCode: http.StatusTooManyRequests},
+		{name: "额度充足", quota: 100, used: 50, wantCode: http.StatusOK},
+		{name: "不限额度", quota: model.QuotaUnlimited, used: 999999, wantCode: http.StatusOK},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			owner := &model.User{
+				Username:     "owner-" + strings.ReplaceAll(tc.name, " ", ""),
+				PasswordHash: "test-hash-placeholder",
+				Role:         model.UserRoleUser,
+				Status:       model.UserStatusEnabled,
+				Quota:        tc.quota,
+				UsedQuota:    tc.used,
+			}
+			if err := users.Create(ctx, owner); err != nil {
+				t.Fatalf("创建用户失败: %v", err)
+			}
+
+			key, err := model.GenerateTokenKey()
+			if err != nil {
+				t.Fatalf("生成令牌失败: %v", err)
+			}
+			// 令牌自身不限额度：这样失败原因只可能来自账号级校验
+			token := &model.Token{
+				OwnerID:        owner.ID,
+				Name:           "account-quota-probe",
+				Key:            key,
+				Status:         model.TokenStatusEnabled,
+				UnlimitedQuota: true,
+			}
+			if err := tokens.Create(ctx, token); err != nil {
+				t.Fatalf("创建令牌失败: %v", err)
+			}
+
+			gin.SetMode(gin.TestMode)
+			engine := gin.New()
+			engine.Use(TokenAuth(tokens, users))
+			engine.POST("/v1/chat/completions", func(c *gin.Context) {
+				c.JSON(http.StatusOK, gin.H{"ok": true})
+			})
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+				strings.NewReader(`{"model":"test-model"}`))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+key)
+			rec := httptest.NewRecorder()
+			engine.ServeHTTP(rec, req)
+
+			if rec.Code != tc.wantCode {
+				t.Fatalf("期望 HTTP %d，实际 %d（响应体：%s）", tc.wantCode, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
 // newAuthEngine 构造一个挂载了鉴权中间件的测试引擎。
 //
 // 探针处理器回显请求体，便于验证"鉴权读取后请求体仍可读"。
+//
+// 说明：这里传 nil 作为用户仓储，表示本组用例只关注令牌层校验；
+// 账号级额度校验由 TestTokenAuth_RejectsExhaustedUser 单独覆盖。
 func newAuthEngine(t *testing.T, repo model.TokenRepository) *gin.Engine {
 	t.Helper()
 
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
-	engine.Use(TokenAuth(repo))
+	engine.Use(TokenAuth(repo, nil))
 	engine.POST("/v1/chat/completions", func(c *gin.Context) {
 		body, err := io.ReadAll(c.Request.Body)
 		if err != nil {

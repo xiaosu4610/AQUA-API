@@ -108,6 +108,14 @@ func (s *Server) registerRoutes() {
 
 	admin.GET("/logs", s.handleAdminListLogs)
 
+	// 模型计价规则（用量 → 费用的换算依据）
+	admin.GET("/prices", s.handleListPrices)
+	admin.POST("/prices", s.handleCreatePrice)
+	admin.PUT("/prices/:id", s.handleUpdatePrice)
+	admin.DELETE("/prices/:id", s.handleDeletePrice)
+	// 费用试算：给定模型与 token 数，返回应扣额度
+	admin.GET("/prices/quote", s.handleQuotePreview)
+
 	admin.GET("/settings", s.handleGetSettings)
 	admin.PUT("/settings", s.handleUpdateSettings)
 
@@ -117,6 +125,6 @@ func (s *Server) registerRoutes() {
 	// 这样 relay 包只依赖 net/http，不必依赖 gin —— 核心域与 Web 框架保持解耦，
 	// 既便于单元测试（可直接用 httptest），也便于将来替换框架。
 	v1 := r.Group("/v1")
-	v1.Use(middleware.TokenAuth(s.deps.Tokens))
+	v1.Use(middleware.TokenAuth(s.deps.Tokens, s.deps.Users))
 	v1.POST("/chat/completions", gin.WrapF(s.deps.Relay.ServeChatCompletions))
 }
