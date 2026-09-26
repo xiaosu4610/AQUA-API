@@ -16,6 +16,9 @@
  *
  * 扩展（Extend）：
  *   新增渠道字段：同步 api/types.ts 的 ChannelPayload 与此处表单（两处必须一致）。
+ *   上游类型差异（默认地址、鉴权方式、能力、额外参数）不写死在本页：
+ *   由 /admin/channel-types 目录下发，本页按选中类型触发式渲染，
+ *   因此后端新增一种上游时本页无需改动。
  */
 import { computed, onMounted, ref } from 'vue'
 
@@ -27,6 +30,7 @@ import { ApiError } from '@/api/client'
 import {
   createChannel,
   deleteChannel,
+  fetchChannelTypes,
   fetchUpstreamModels,
   getChannel,
   listChannelKeys,
@@ -46,6 +50,8 @@ import {
   type ChannelKey,
   type ChannelPayload,
   type ChannelTestResult,
+  type ChannelType,
+  type ChannelTypeCategory,
   type FetchModelsPayload,
   type ModelGroup,
 } from '@/api/types'
@@ -109,6 +115,7 @@ async function loadChannels(): Promise<void> {
 onMounted(() => {
   void loadChannels()
   void loadGroupOptions()
+  void loadChannelTypes()
 })
 
 /**
@@ -127,6 +134,98 @@ async function loadGroupOptions(): Promise<void> {
   } catch {
     groupOptions.value = []
   }
+}
+
+/* ── 上游渠道类型目录 ─────────────────────────────────── */
+/**
+ * 渠道类型目录：由后端下发每种上游的默认地址、鉴权方式、能力位与额外参数。
+ *
+ * 为什么不在前端写死一份"厂商列表"：上游厂商会不断增加，每家的差异
+ * （默认地址、鉴权头、必填的额外参数）只有后端注册表知道；前端只认这份目录，
+ * 因此后端新增一种上游时前端无需改动。加载失败只影响便利性，故不阻断页面。
+ */
+const channelTypes = ref<ChannelType[]>([])
+const channelCategories = ref<ChannelTypeCategory[]>([])
+const channelTypesError = ref('')
+
+async function loadChannelTypes(): Promise<void> {
+  try {
+    const data = await fetchChannelTypes()
+    channelTypes.value = data.items ?? []
+    channelCategories.value = data.categories ?? []
+    channelTypesError.value = ''
+  } catch (err) {
+    channelTypes.value = []
+    channelCategories.value = []
+    channelTypesError.value = err instanceof ApiError ? err.message : '渠道类型加载失败'
+  }
+}
+
+/**
+ * 按大类分组后的类型清单（供下拉的 optgroup 渲染）。
+ *
+ * 用后端下发的 categories 保序与中文名，避免前端再硬编码一套中英映射；
+ * 计数为 0 的大类不展示（否则下拉里会出现空分组）。
+ */
+const groupedChannelTypes = computed(() =>
+  channelCategories.value
+    .map((category) => ({
+      key: category.key,
+      label: category.label,
+      items: channelTypes.value.filter((item) => item.category === category.key),
+    }))
+    .filter((group) => group.items.length > 0),
+)
+
+/** 当前选中的接入类型（未选时为 null） */
+const selectedTypeKey = ref('')
+const selectedChannelType = computed<ChannelType | null>(
+  () => channelTypes.value.find((item) => item.key === selectedTypeKey.value) ?? null,
+)
+
+/** 选中类型后填写的额外参数：field.key -> value */
+const extraValues = ref<Record<string, string>>({})
+
+/** 选中的类型是否尚未实现（不允许保存） */
+const typeUnavailable = computed(
+  () => selectedChannelType.value !== null && !selectedChannelType.value.available,
+)
+
+/**
+ * 选中某个接入类型：套用默认地址、重置额外参数。
+ *
+ * 地址填充规则分两种：
+ *   - 允许覆盖（base_url_editable）：仅在用户尚未填写时填入，避免冲掉手填内容；
+ *   - 不允许覆盖：强制使用该类型的固定端点。
+ */
+function applyChannelType(key: string): void {
+  selectedTypeKey.value = key
+  const type = channelTypes.value.find((item) => item.key === key)
+  if (!type) {
+    extraValues.value = {}
+    return
+  }
+
+  if (type.default_base_url) {
+    if (!type.base_url_editable) form.value.base_url = type.default_base_url
+    else if (!form.value.base_url.trim()) form.value.base_url = type.default_base_url
+  }
+
+  const values: Record<string, string> = {}
+  for (const field of type.extra_fields) values[field.key] = field.default ?? ''
+  extraValues.value = values
+}
+
+/** 一键填入该类型（或当前类型）的默认地址 */
+function fillDefaultBaseURL(): void {
+  const type = selectedChannelType.value
+  if (type?.default_base_url) form.value.base_url = type.default_base_url
+}
+
+/** 清空类型选择（新建/编辑切换时调用），避免把上一次的类型提示带到下一个渠道 */
+function resetChannelType(): void {
+  selectedTypeKey.value = ''
+  extraValues.value = {}
 }
 
 function changePage(next: number): void {
@@ -203,6 +302,7 @@ function openCreate(): void {
   // 清空上一次的上游模型缓存，避免把 A 上游的模型误选到 B 渠道
   upstreamModels.value = []
   upstreamError.value = ''
+  resetChannelType()
   drawerOpen.value = true
 }
 
@@ -212,6 +312,9 @@ function openCreate(): void {
  */
 async function openEdit(channel: Channel): Promise<void> {
   editing.value = channel
+  // 编辑现有渠道时渠道里没有类型标识（后端只存数字 type），因此类型选择器留空，
+  // 由管理员按需重新选择；这样既不臆造映射，也不影响原有编辑功能。
+  resetChannelType()
   form.value = {
     name: channel.name,
     type: channel.type,
@@ -249,6 +352,7 @@ async function openEdit(channel: Channel): Promise<void> {
 }
 
 function validateForm(): string | null {
+  if (typeUnavailable.value) return '该接入类型的适配器尚未实现，暂不可选用'
   if (!form.value.name.trim()) return '请填写渠道名称'
   if (!form.value.base_url.trim()) return '请填写上游 Base URL'
   if (!/^https?:\/\//i.test(form.value.base_url.trim())) return 'Base URL 需以 http:// 或 https:// 开头'
@@ -699,9 +803,41 @@ const isEmpty = computed(() => !loading.value && !error.value && channels.value.
           <input id="channel-name" v-model="form.name" class="input" type="text" placeholder="例如：OpenAI 官方" />
         </div>
 
+        <!-- 接入类型：由后端目录下发，选中后才展开该类型的默认地址/鉴权/能力与额外参数 -->
+        <div>
+          <label class="label" for="channel-type-catalog">接入类型</label>
+          <select
+            id="channel-type-catalog"
+            class="input"
+            :value="selectedTypeKey"
+            @change="applyChannelType(($event.target as HTMLSelectElement).value)"
+          >
+            <option value="">（不指定，按下方协议编号接入）</option>
+            <optgroup
+              v-for="group in groupedChannelTypes"
+              :key="group.key"
+              :label="group.label"
+            >
+              <option
+                v-for="item in group.items"
+                :key="item.key"
+                :value="item.key"
+                :disabled="!item.available"
+              >
+                {{ item.label }}{{ item.available ? '' : '（即将支持）' }}
+              </option>
+            </optgroup>
+          </select>
+          <p v-if="channelTypesError" class="field-error">{{ channelTypesError }}</p>
+          <p v-else class="hint">
+            选择上游类型后会自动填入默认地址，并展示该类上游的鉴权方式与所需参数。
+            「即将支持」的类型暂不可选。
+          </p>
+        </div>
+
         <div class="grid gap-5 sm:grid-cols-2">
           <div>
-            <label class="label" for="channel-type">渠道类型 <span class="text-red-600">*</span></label>
+            <label class="label" for="channel-type">协议编号（兼容字段）</label>
             <input
               id="channel-type"
               v-model.number="form.type"
@@ -713,7 +849,7 @@ const isEmpty = computed(() => !loading.value && !error.value && channels.value.
             <datalist id="channel-type-options">
               <option value="1">OpenAI 兼容</option>
             </datalist>
-            <p class="hint">当前版本仅支持 1（OpenAI 兼容协议），其它类型待后端支持。</p>
+            <p class="hint">提交给后端的 type 编号；当前版本仅支持 1（OpenAI 兼容协议）。</p>
           </div>
 
           <div>
@@ -739,15 +875,85 @@ const isEmpty = computed(() => !loading.value && !error.value && channels.value.
           </div>
         </div>
 
+        <!-- 选中类型的只读提示 + 该类型的额外参数（触发式渲染） -->
+        <div v-if="selectedChannelType" class="rounded-lg border border-ink-800 p-4">
+          <div class="flex flex-wrap items-center gap-2">
+            <p class="section-title">{{ selectedChannelType.label }}</p>
+            <span v-if="selectedChannelType.available" class="badge badge-ok">可用</span>
+            <span v-else class="badge badge-off">即将支持</span>
+          </div>
+
+          <p v-if="selectedChannelType.notes" class="hint mt-1">{{ selectedChannelType.notes }}</p>
+
+          <div class="mt-3 flex flex-wrap items-center gap-1.5">
+            <span class="text-xs text-ink-400">鉴权方式</span>
+            <span class="chip">{{ selectedChannelType.auth_label }}</span>
+            <template v-if="selectedChannelType.capabilities.length">
+              <span class="text-xs text-ink-400">能力</span>
+              <span
+                v-for="cap in selectedChannelType.capabilities"
+                :key="cap"
+                class="badge badge-info"
+              >
+                {{ cap }}
+              </span>
+            </template>
+          </div>
+
+          <p v-if="!selectedChannelType.available" class="mt-3 text-xs text-amber-700">
+            该类型适配器尚未实现，暂不可选用（保存会被拒绝）。
+          </p>
+
+          <!-- 额外参数：只属于少数类型（如部署名/api-version），因此按选中类型动态展开 -->
+          <div v-if="selectedChannelType.extra_fields.length" class="mt-4 grid gap-4 sm:grid-cols-2">
+            <div v-for="field in selectedChannelType.extra_fields" :key="field.key">
+              <label class="label" :for="`ct-${field.key}`">
+                {{ field.label }}
+                <span v-if="field.required" class="text-red-600">*</span>
+              </label>
+              <input
+                :id="`ct-${field.key}`"
+                v-model="extraValues[field.key]"
+                class="input input-mono"
+                :type="field.secret ? 'password' : 'text'"
+                autocomplete="new-password"
+                :placeholder="field.placeholder || undefined"
+              />
+              <p v-if="field.help" class="hint">{{ field.help }}</p>
+              <p v-if="field.secret" class="hint text-amber-700">
+                敏感值请通过环境变量注入，避免写入代码库或日志。
+              </p>
+              <p v-else-if="field.default" class="hint">默认值：{{ field.default }}</p>
+            </div>
+          </div>
+
+          <p class="hint mt-3">
+            该类型的专用参数：当前版本后端仅保存通用渠道字段，这些参数会在对应适配器接入后随渠道保存。
+          </p>
+        </div>
+
         <div>
           <label class="label" for="channel-base-url">Base URL <span class="text-red-600">*</span></label>
-          <input
-            id="channel-base-url"
-            v-model="form.base_url"
-            class="input input-mono"
-            type="url"
-            placeholder="https://api.openai.com"
-          />
+          <div class="flex gap-2">
+            <input
+              id="channel-base-url"
+              v-model="form.base_url"
+              class="input input-mono flex-1"
+              type="url"
+              :placeholder="selectedChannelType?.default_base_url || 'https://api.openai.com'"
+            />
+            <!-- 选中类型后给出默认地址的一键填充，减少手抄端点出错 -->
+            <button
+              v-if="selectedChannelType?.default_base_url"
+              type="button"
+              class="btn btn-secondary shrink-0"
+              title="填入该类型的默认上游地址"
+              @click="fillDefaultBaseURL"
+            >
+              <AppIcon name="check" :size="15" />
+              填入默认地址
+            </button>
+          </div>
           <p class="hint">
             只填到域名根：如 <code>https://integrate.api.nvidia.com</code>、<code>https://api.openai.com</code>。
             <strong>不要</strong>带 <code>/v1</code> 或 <code>/chat/completions</code>——
@@ -904,7 +1110,12 @@ const isEmpty = computed(() => !loading.value && !error.value && channels.value.
 
       <template #footer>
         <button type="button" class="btn btn-secondary" :disabled="saving" @click="drawerOpen = false">取消</button>
-        <button type="button" class="btn btn-primary" :disabled="saving" @click="submitForm">
+        <button
+          type="button"
+          class="btn btn-primary"
+          :disabled="saving || typeUnavailable"
+          @click="submitForm"
+        >
           <span
             v-if="saving"
             class="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white"

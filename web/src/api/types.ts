@@ -309,6 +309,73 @@ export interface ChannelTestResult {
   status_code: number
 }
 
+/* ────────────────────────── 上游渠道类型目录 ────────────────────────── */
+
+/**
+ * 上游渠道类型的一个额外参数（供新建/编辑渠道时做条件表单）。
+ *
+ * ExtraField 只属于少数类型（如 Azure 的部署名、Vertex 的项目/区域），
+ * 因此由后端声明、前端按选中类型动态展开，而不是平铺给所有渠道。
+ */
+export interface ChannelTypeField {
+  key: string
+  label: string
+  placeholder: string
+  help: string
+  default: string
+  /** 必填：该类型没有它必然连不通 */
+  required: boolean
+  /** 敏感值（如 AK/SK、服务账号 JSON），应按密码框渲染并提示走环境变量 */
+  secret: boolean
+}
+
+/** 一种上游渠道类型（GET /api/admin/channel-types 的 items 项） */
+export interface ChannelType {
+  /** 类型标识（稳定不变，写入渠道记录） */
+  key: string
+  label: string
+  /** 所属大类标识（用于分组下拉） */
+  category: string
+  /** 大类中文名（后端下发，避免前端硬编码中英映射） */
+  category_label: string
+  protocol: string
+  /** 鉴权方式的稳定枚举值 */
+  auth_mode: string
+  /** 鉴权方式的中文说明（只读提示） */
+  auth_label: string
+  /** 鉴权所需的自定义请求头名（部分模式使用） */
+  auth_header: string
+  /** 默认上游地址；为空表示必须由使用者填写 */
+  default_base_url: string
+  /** 是否允许使用者覆盖默认地址 */
+  base_url_editable: boolean
+  /** 必须携带的固定请求头（如某些版本的版本头） */
+  default_headers?: Record<string, string>
+  /** 能力位的中文名列表（如 ["对话","流式","工具调用"]） */
+  capabilities: string[]
+  extra_fields: ChannelTypeField[]
+  supports_model_list: boolean
+  /** false 表示适配器尚未实现：显示"即将支持"且不允许选中 */
+  available: boolean
+  notes: string
+}
+
+/** 渠道类型大类汇总（供分组渲染与计数） */
+export interface ChannelTypeCategory {
+  key: string
+  label: string
+  count: number
+}
+
+/** GET /api/admin/channel-types 响应 */
+export interface ChannelTypesResponse {
+  items: ChannelType[]
+  categories: ChannelTypeCategory[]
+  total: number
+  /** 适配器已实现、可直接接入的类型数量 */
+  available_count: number
+}
+
 /* ────────────────────────── 用户 ────────────────────────── */
 
 /** 管理端用户对象（契约数据模型 users 表） */
@@ -375,6 +442,13 @@ export interface SiteSettings {
   email_from: string
   /** 充值 / 支付运营参数（非密钥，可修改并即时生效） */
   payment: PaymentSettings
+  /**
+   * 支付通道清单：由后端注册表下发的「字段描述 + 当前值 + 密钥就绪状态」。
+   *
+   * 前端据此做触发式渲染（勾选哪个通道才展开它的字段），
+   * 因此后端新增支付通道时前端无需改动。
+   */
+  payment_channels: PaymentChannel[]
   /** 各支付通道的密钥是否已通过环境变量就绪；只读 */
   payment_secrets: PaymentSecretStatus
 }
@@ -623,6 +697,7 @@ export interface PublicPaymentInfo {
 /** 管理端支付运营参数（非密钥） */
 export interface PaymentSettings {
   enabled: boolean
+  /** 已启用的支付通道标识集合（即通道清单里被勾选的通道 key） */
   methods: string[]
   exchange_rate: number
   currency: string
@@ -630,6 +705,17 @@ export interface PaymentSettings {
   max_cents: number
   order_ttl_minutes: number
   notify_base: string
+  /**
+   * 各通道的通道级参数，键为 `setting_key`（形如 "epay.gateway"）。
+   *
+   * 这是「任意多种支付通道」的承载：通道与字段由后端注册表声明，
+   * 前端按字段描述渲染表单并原样回传，后端不再为每个通道定义专用字段。
+   */
+  params: Record<string, string>
+  /**
+   * 以下四个是旧版专用字段，仅为兼容老前端保留；新前端一律改用 params。
+   * @deprecated 请使用 params（键如 "epay.gateway" / "stripe.note"）
+   */
   epay_gateway: string
   epay_pid: string
   epay_types: string[]
@@ -638,6 +724,65 @@ export interface PaymentSettings {
 
 /** 各支付通道的密钥是否已通过环境变量就绪（只读，不回传密钥本身） */
 export type PaymentSecretStatus = Record<string, boolean>
+
+/** 支付通道字段的控件类型（与后端 payment.FieldKind 一一对应） */
+export type PaymentFieldKind = 'text' | 'number' | 'list' | 'select' | 'switch'
+
+/**
+ * 支付通道字段的取值来源（与后端 payment.FieldSource 一一对应）。
+ * - setting：值存于设置表，可在后台编辑，随 payment.params 提交；
+ * - secret：密钥，只从环境变量读取，后台仅展示"是否就绪"，永不回显内容。
+ */
+export type PaymentFieldSource = 'setting' | 'secret'
+
+/** select 类型字段的候选项 */
+export interface PaymentChannelFieldOption {
+  value: string
+  label: string
+}
+
+/**
+ * 支付通道的一个配置字段（由后端下发，前端据 kind 触发式渲染控件）。
+ *
+ * 为什么字段由后端描述：字段名、是否必填、密钥对应哪个环境变量，
+ * 都是"该通道需要什么"的知识，放前端会出现"后端加了字段、前端忘了加输入框"的漏配。
+ */
+export interface PaymentChannelField {
+  key: string
+  label: string
+  kind: PaymentFieldKind | string
+  source: PaymentFieldSource | string
+  /** source=secret 时对应的环境变量名（如 AQUA_EPAY_KEY） */
+  env_var: string
+  placeholder: string
+  help: string
+  default: string
+  required: boolean
+  /** 仅 select 类型有候选项 */
+  options?: PaymentChannelFieldOption[]
+  /** setting 字段的当前值（secret 字段恒为空，值不出服务端） */
+  value: string
+  /** setting：值非空即为就绪；secret：环境变量已注入即为就绪 */
+  ready: boolean
+  /** 提交 payment.params 时使用的键（形如 "epay.gateway"） */
+  setting_key: string
+}
+
+/** 一个支付通道（含字段定义、密钥就绪状态与回调路径） */
+export interface PaymentChannel {
+  key: string
+  label: string
+  description: string
+  /** false 表示适配器尚未实现：界面显示"即将支持"且不允许勾选 */
+  available: boolean
+  /** 该通道当前是否启用 */
+  enabled: boolean
+  /** 回调地址的路径部分；后台拼上站点地址展示，供站长复制到支付平台 */
+  notify_path: string
+  /** 尚未注入的环境变量名列表；非空表示密钥未就绪，启用会被后端拒绝 */
+  missing_env: string[]
+  fields: PaymentChannelField[]
+}
 
 /** 订单查询参数 */
 export interface OrderQuery {

@@ -21,6 +21,7 @@ import type {
   ChannelKey,
   ChannelPayload,
   ChannelTestResult,
+  ChannelTypesResponse,
   CreateTokenPayload,
   CreateTokenResult,
   CreateUserPayload,
@@ -36,6 +37,7 @@ import type {
   OAuthProviderPayload,
   OrderQuery,
   Paged,
+  PaymentChannel,
   PaymentOrder,
   QuotePreview,
   SiteSettings,
@@ -64,6 +66,17 @@ export function listChannels(paged: { page?: number; size?: number } = {}): Prom
 /** GET /api/admin/channels/{id}：渠道详情 */
 export function getChannel(id: number): Promise<Channel> {
   return api.get<Channel>(`/admin/channels/${id}`)
+}
+
+/**
+ * GET /api/admin/channel-types：上游渠道类型目录。
+ *
+ * 返回每种类型的默认地址、鉴权方式、能力位与额外参数定义，
+ * 供新建/编辑渠道时做「选类型 → 展开该类型必填项」的触发式渲染。
+ * 单独开接口而不是塞进渠道详情：它会被多处复用（类型筛选、批量导入模板等）。
+ */
+export function fetchChannelTypes(): Promise<ChannelTypesResponse> {
+  return api.get<ChannelTypesResponse>('/admin/channel-types')
 }
 
 /** POST /api/admin/channels：新建渠道（api_key 为明文，仅存在于请求体） */
@@ -155,6 +168,18 @@ export function fetchSettings(): Promise<SiteSettings> {
  */
 export function updateSettings(payload: UpdateSiteSettingsPayload): Promise<unknown> {
   return api.put<unknown>('/admin/settings', payload)
+}
+
+/**
+ * 读取支付通道清单（字段描述 + 当前值 + 密钥就绪状态）。
+ *
+ * 不单开接口：后端已把它放在 /admin/settings 的 payment_channels 字段里，
+ * 这里只是从同一份响应里取出，避免页面为了通道清单再发一次请求
+ * （设置页本来就要拉 settings，多一次往返纯属浪费）。
+ */
+export async function fetchPaymentChannels(): Promise<PaymentChannel[]> {
+  const settings = await fetchSettings()
+  return settings.payment_channels ?? []
 }
 
 /* ── 上游模型列表 ───────────────────────────────────────── */

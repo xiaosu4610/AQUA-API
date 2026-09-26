@@ -15,16 +15,20 @@
  *   → 「保存」→ updateSettings(仅变更字段) → toast 反馈 → 重新拉取（校正只读字段）
  *
  * 扩展（Extend）：
- *   新增设置项：在 types.ts 的 SiteSettings / UpdateSiteSettingsPayload 加字段，
+ *   新增通用设置项：在 types.ts 的 SiteSettings / UpdateSiteSettingsPayload 加字段，
  *   本页加表单项，后端 LoadSiteSettings / ToMap 同步补映射（三处必须同步）。
+ *   支付通道不在此硬编码：通道与字段由后端 payment_channels 下发，
+ *   本页只按 field.kind 触发式渲染（勾选哪个通道才展开它的字段），
+ *   因此后端新增支付通道时本页无需改动。
  */
 import { computed, onMounted, ref } from 'vue'
 
 import AppIcon from '@/components/AppIcon.vue'
+import CopyButton from '@/components/CopyButton.vue'
 import DataState from '@/components/DataState.vue'
 import { fetchSettings, updateSettings } from '@/api/admin'
 import { ApiError } from '@/api/client'
-import type { SiteSettings, UpdateSiteSettingsPayload } from '@/api/types'
+import type { PaymentChannel, SiteSettings, UpdateSiteSettingsPayload } from '@/api/types'
 import { toastError, toastSuccess } from '@/composables/useToast'
 import { useSiteStore } from '@/stores/site'
 
@@ -43,49 +47,126 @@ const requireEmailCode = ref(false)
 const defaultUserQuota = ref(0)
 const defaultGroup = ref('')
 
-/* 充值 / 支付表单字段。
+/* 充值 / 支付的「通用项」。
    金额与汇率一律用"分"或整数承载：金额用分、汇率用"1 元可兑换的额度"，
-   避免浮点在各处来回换算（这是支付类系统最经典的资损来源）。 */
+   避免浮点在各处来回换算（这是支付类系统最经典的资损来源）。
+   通道各自的参数不在这里硬编码 —— 见下方 paymentChannels。 */
 const paymentEnabled = ref(false)
-const paymentMethods = ref<string[]>([])
 const paymentExchangeRate = ref(100)
 const paymentCurrency = ref('CNY')
 const paymentMinYuan = ref(1)
 const paymentMaxYuan = ref(0)
 const paymentOrderTTL = ref(30)
 const paymentNotifyBase = ref('')
-const paymentEPayGateway = ref('')
-const paymentEPayPID = ref('')
-const paymentEPayTypes = ref('')
-const paymentStripeNote = ref('')
 
-/** 支持的支付通道（与后端 model.PaymentMethod* 一一对应） */
-const PAYMENT_METHOD_OPTIONS = [
-  { name: 'epay', label: '在线支付（易支付协议）', desc: '跳转第三方收银台，回调自动入账' },
-  { name: 'stripe', label: 'Stripe', desc: '海外部署常用，需配置 Webhook 密钥' },
-  { name: 'manual', label: '人工确认', desc: '不依赖第三方，由管理员在订单页确认入账' },
-]
+/**
+ * 支付通道清单：完全由后端下发（字段描述 + 当前值 + 密钥就绪状态）。
+ *
+ * 为什么不在前端硬编码：通道与字段是"该支付方式需要什么"的知识，只有后端知道；
+ * 放前端会出现"后端加了字段、前端忘了加输入框"的静默漏配。
+ * 前端只负责按 kind 触发式渲染（勾选哪个通道才展开它的字段）。
+ */
+const paymentChannels = ref<PaymentChannel[]>([])
+/** 通道勾选态：channel.key -> 是否启用 */
+const checkedChannels = ref<Record<string, boolean>>({})
+/**
+ * setting 字段的本地值：setting_key -> value。
+ *
+ * 键形如 "epay.gateway"，本身已含通道前缀，因此可全局唯一，无需按通道嵌套；
+ * 提交时原样组装成 payment.params 交给后端。
+ */
+const paymentParams = ref<Record<string, string>>({})
 
 /** 邮件通道是否就绪（只读，由服务端环境变量决定） */
 const emailReady = computed(() => settings.value?.email_service_ready === true)
 const emailFrom = computed(() => settings.value?.email_from || '')
 
-/** 各通道密钥是否就绪（只读） */
-const secretStatus = computed(() => settings.value?.payment_secrets ?? {})
-
 /** 兑换比例是否有效：启用充值但比例为 0 会让用户"付钱却不到账" */
 const paymentRateInvalid = computed(() => paymentEnabled.value && Number(paymentExchangeRate.value) <= 0)
 
-/** 启用易支付但没填网关/商户号 */
-const epayIncomplete = computed(
-  () =>
-    paymentEnabled.value &&
-    paymentMethods.value.includes('epay') &&
-    (!paymentEPayGateway.value.trim() || !paymentEPayPID.value.trim()),
-)
+/** 站点对外基址：优先用管理员填写的回调基址，否则退回浏览器访问地址 */
+const siteOrigin = computed(() => {
+  const base = paymentNotifyBase.value.trim().replace(/\/+$/, '')
+  return base || window.location.origin
+})
+
+/** 通道状态文案：即将支持 / 密钥未注入 / 可用 */
+function channelStatusText(channel: PaymentChannel): string {
+  if (!channel.available) return '即将支持'
+  if (channel.missing_env.length > 0) return '密钥未注入'
+  return '可用'
+}
+
+/** 通道状态配色：可用绿、未就绪黄、未实现灰 */
+function channelStatusClass(channel: PaymentChannel): string {
+  if (!channel.available) return 'badge badge-off'
+  if (channel.missing_env.length > 0) return 'badge badge-warn'
+  return 'badge badge-ok'
+}
+
+/** 拼出该通道的完整回调地址（配错它是"付了钱不到账"的最常见原因） */
+function notifyURL(channel: PaymentChannel): string {
+  return channel.notify_path ? `${siteOrigin.value}${channel.notify_path}` : ''
+}
+
+/** 通道是否被勾选 */
+function isChannelChecked(channel: PaymentChannel): boolean {
+  return checkedChannels.value[channel.key] === true
+}
+
+/** 勾选 / 取消勾选通道（未实现的通道不允许勾选） */
+function toggleChannel(channel: PaymentChannel, checked: boolean): void {
+  if (!channel.available) return
+  checkedChannels.value[channel.key] = checked
+}
+
+/** switch 字段的当前状态（以字符串 "true"/"false" 存，与后端 params 的字符串值一致） */
+function isSwitchOn(settingKey: string): boolean {
+  return paymentParams.value[settingKey] === 'true'
+}
+
+/** 切换 switch 字段 */
+function setSwitch(settingKey: string, on: boolean): void {
+  paymentParams.value[settingKey] = on ? 'true' : 'false'
+}
+
+/**
+ * 已勾选通道的配置问题清单。
+ *
+ * 提前拦截三类"开了也用不了"的配置，避免站长保存后才发现充值页下不了单：
+ *   1) 勾选了尚未实现的通道；
+ *   2) 密钥未注入（后端也会拒绝）；
+ *   3) 必填的 setting 字段为空。
+ */
+const paymentChannelIssues = computed<string[]>(() => {
+  const issues: string[] = []
+  for (const channel of paymentChannels.value) {
+    if (!isChannelChecked(channel)) continue
+    if (!channel.available) {
+      issues.push(`「${channel.label}」尚未开放`)
+      continue
+    }
+    if (channel.missing_env.length > 0) {
+      issues.push(`「${channel.label}」缺少环境变量 ${channel.missing_env.join('、')}`)
+      continue
+    }
+    const missing = channel.fields
+      .filter(
+        (field) =>
+          field.source === 'setting' &&
+          field.required &&
+          !(paymentParams.value[field.setting_key] ?? '').trim(),
+      )
+      .map((field) => field.label)
+    if (missing.length > 0) issues.push(`「${channel.label}」还需要填写：${missing.join('、')}`)
+  }
+  return issues
+})
 
 /** 充值配置存在硬错误时禁用保存（避免保存出"能下单却付不了款"的站点） */
-const paymentInvalid = computed(() => paymentRateInvalid.value || epayIncomplete.value)
+const paymentInvalid = computed(
+  () => paymentRateInvalid.value || (paymentEnabled.value && paymentChannelIssues.value.length > 0),
+)
 
 /**
  * 危险组合：开启了邮箱验证码校验，但邮件通道未配置。
@@ -116,20 +197,32 @@ function applyToForm(data: SiteSettings): void {
   defaultUserQuota.value = data.default_user_quota
   defaultGroup.value = data.default_group
 
-  // 支付参数：分 → 元的换算只在这一处发生（反向换算在 handleSave）
+  // 支付通用参数：分 → 元的换算只在这一处发生（反向换算在 handleSave）
   const payment = data.payment
   paymentEnabled.value = payment?.enabled === true
-  paymentMethods.value = Array.isArray(payment?.methods) ? [...payment.methods] : []
   paymentExchangeRate.value = payment?.exchange_rate ?? 100
   paymentCurrency.value = payment?.currency || 'CNY'
   paymentMinYuan.value = (payment?.min_cents ?? 0) / 100
   paymentMaxYuan.value = (payment?.max_cents ?? 0) / 100
   paymentOrderTTL.value = payment?.order_ttl_minutes ?? 30
   paymentNotifyBase.value = payment?.notify_base || ''
-  paymentEPayGateway.value = payment?.epay_gateway || ''
-  paymentEPayPID.value = payment?.epay_pid || ''
-  paymentEPayTypes.value = Array.isArray(payment?.epay_types) ? payment.epay_types.join(',') : ''
-  paymentStripeNote.value = payment?.stripe_note || ''
+
+  // 支付通道：把后端下发的字段描述与当前值复制到本地编辑态。
+  // 勾选态以 methods 为准（后端用 methods 表达"启用了哪些通道"），
+  // 未实现的通道强制不勾选，避免把"即将支持"的通道带进保存请求。
+  const channels = data.payment_channels ?? []
+  paymentChannels.value = channels
+  const enabledMethods = new Set(Array.isArray(payment?.methods) ? payment.methods : [])
+  const checks: Record<string, boolean> = {}
+  const params: Record<string, string> = {}
+  for (const channel of channels) {
+    checks[channel.key] = channel.available && enabledMethods.has(channel.key)
+    for (const field of channel.fields) {
+      if (field.source === 'setting') params[field.setting_key] = field.value ?? ''
+    }
+  }
+  checkedChannels.value = checks
+  paymentParams.value = params
 }
 
 /** 元 → 分：用四舍五入到整数，避免 0.1+0.2 类浮点误差 */
@@ -138,13 +231,31 @@ function yuanToCents(yuan: number): number {
   return Math.round(yuan * 100)
 }
 
+/**
+ * 组装提交给后端的通道级参数。
+ *
+ * 键沿用后端下发的 setting_key（形如 "epay.gateway"），值做 trim；
+ * 未勾选的通道其参数也一并保留，避免"临时取消勾选"把已配好的值清掉。
+ */
+function collectPaymentParams(): Record<string, string> {
+  const params: Record<string, string> = {}
+  for (const [key, value] of Object.entries(paymentParams.value)) {
+    params[key] = (value ?? '').trim()
+  }
+  return params
+}
+
 async function handleSave(): Promise<void> {
   if (emailCodeUnavailable.value) {
     toastError('邮件服务未配置，无法开启邮箱验证码校验')
     return
   }
   if (paymentInvalid.value) {
-    toastError(paymentRateInvalid.value ? '充值兑换比例必须大于 0' : '启用易支付需填写网关地址与商户号')
+    toastError(
+      paymentRateInvalid.value
+        ? '充值兑换比例必须大于 0'
+        : paymentChannelIssues.value[0] || '支付通道配置不完整',
+    )
     return
   }
 
@@ -157,20 +268,21 @@ async function handleSave(): Promise<void> {
     default_group: defaultGroup.value.trim(),
     payment: {
       enabled: paymentEnabled.value,
-      methods: paymentMethods.value,
+      // 启用通道集合 = 被勾选（且已实现）的通道 key
+      methods: paymentChannels.value.filter((channel) => isChannelChecked(channel)).map((channel) => channel.key),
       exchange_rate: Math.round(Number(paymentExchangeRate.value) || 0),
       currency: paymentCurrency.value.trim() || 'CNY',
       min_cents: yuanToCents(Number(paymentMinYuan.value)),
       max_cents: yuanToCents(Number(paymentMaxYuan.value)),
       order_ttl_minutes: Math.round(Number(paymentOrderTTL.value) || 0),
       notify_base: paymentNotifyBase.value.trim(),
-      epay_gateway: paymentEPayGateway.value.trim(),
-      epay_pid: paymentEPayPID.value.trim(),
-      epay_types: paymentEPayTypes.value
-        .split(/[,，\s]+/)
-        .map((item) => item.trim())
-        .filter(Boolean),
-      stripe_note: paymentStripeNote.value.trim(),
+      // 通道级参数：键为 setting_key，值是各输入框的当前内容（trim 后）
+      params: collectPaymentParams(),
+      // 旧版专用字段不再使用，显式置空，避免与新 params 混淆
+      epay_gateway: '',
+      epay_pid: '',
+      epay_types: [],
+      stripe_note: '',
     },
   }
 
@@ -362,35 +474,130 @@ onMounted(load)
             </div>
           </div>
 
-          <!-- 支付通道 -->
+          <!-- 支付通道清单：字段由后端下发，勾选后才展开该通道的配置项 -->
           <div>
-            <p class="label">启用的支付通道</p>
-            <div class="grid gap-2 sm:grid-cols-3">
-              <label
-                v-for="option in PAYMENT_METHOD_OPTIONS"
-                :key="option.name"
-                class="flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2.5 transition-colors"
-                :class="
-                  paymentMethods.includes(option.name)
-                    ? 'border-brand-500/60 bg-brand-500/5'
-                    : 'border-ink-800 hover:border-ink-700'
-                "
+            <p class="label">支付通道</p>
+            <p class="hint mb-2">
+              勾选某个通道后，才会展开它需要的配置项。密钥类字段只显示注入状态，密钥本身不会下发到页面。
+            </p>
+
+            <div class="space-y-2">
+              <div
+                v-for="channel in paymentChannels"
+                :key="channel.key"
+                class="rounded-lg border transition-colors"
+                :class="isChannelChecked(channel) ? 'border-brand-500/60 bg-brand-500/5' : 'border-ink-800'"
               >
-                <input v-model="paymentMethods" class="checkbox mt-0.5" type="checkbox" :value="option.name" />
-                <span class="min-w-0">
-                  <span class="flex flex-wrap items-center gap-1.5 text-sm text-ink-100">
-                    {{ option.label }}
-                    <span
-                      class="badge"
-                      :class="secretStatus[option.name] ? 'badge-ok' : 'badge-warn'"
-                      :title="secretStatus[option.name] ? '密钥已通过环境变量就绪' : '密钥未配置（环境变量）'"
-                    >
-                      {{ secretStatus[option.name] ? '密钥就绪' : '缺密钥' }}
+                <label
+                  class="flex items-start gap-3 px-3 py-2.5"
+                  :class="channel.available ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'"
+                >
+                  <input
+                    class="checkbox mt-0.5"
+                    type="checkbox"
+                    :checked="isChannelChecked(channel)"
+                    :disabled="!channel.available"
+                    @change="toggleChannel(channel, ($event.target as HTMLInputElement).checked)"
+                  />
+                  <span class="min-w-0 flex-1">
+                    <span class="flex flex-wrap items-center gap-1.5 text-sm text-ink-100">
+                      {{ channel.label }}
+                      <span class="badge" :class="channelStatusClass(channel)">
+                        {{ channelStatusText(channel) }}
+                      </span>
+                    </span>
+                    <span class="mt-0.5 block text-xs leading-relaxed text-ink-400">
+                      {{ channel.description }}
+                    </span>
+
+                    <!-- 回调地址：这一步配错是"付了钱不到账"最常见的原因，故直接给出可复制地址 -->
+                    <span v-if="notifyURL(channel)" class="mt-1.5 flex flex-wrap items-center gap-1.5">
+                      <span class="text-xs text-ink-400">回调地址</span>
+                      <code class="chip max-w-full truncate" :title="notifyURL(channel)">{{ notifyURL(channel) }}</code>
+                      <CopyButton :value="notifyURL(channel)" small outline success-text="回调地址已复制" />
+                    </span>
+
+                    <span v-if="channel.missing_env.length" class="mt-1 block text-xs text-amber-700">
+                      启用前请注入环境变量：{{ channel.missing_env.join('、') }}
                     </span>
                   </span>
-                  <span class="mt-0.5 block text-xs leading-relaxed text-ink-400">{{ option.desc }}</span>
-                </span>
-              </label>
+                </label>
+
+                <!-- 触发式展开：仅当该通道被勾选且适配器已实现时才渲染 -->
+                <div
+                  v-if="isChannelChecked(channel) && channel.available"
+                  class="border-t border-ink-800/60 px-3 py-3"
+                >
+                  <div class="grid gap-4 sm:grid-cols-2">
+                    <div v-for="field in channel.fields" :key="field.setting_key || field.key">
+                      <!-- 密钥字段：只读状态行，绝不渲染输入框（值不出服务端） -->
+                      <template v-if="field.source === 'secret'">
+                        <p class="label">
+                          {{ field.label }}
+                          <span v-if="field.required" class="text-red-600">*</span>
+                        </p>
+                        <p
+                          class="flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs"
+                          :class="
+                            field.ready
+                              ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-700'
+                              : 'border-amber-500/25 bg-amber-500/10 text-amber-700'
+                          "
+                        >
+                          <AppIcon :name="field.ready ? 'check' : 'alert'" :size="14" />
+                          <span v-if="field.ready">已就绪</span>
+                          <span v-else>
+                            未注入，请设置环境变量 <code class="chip">{{ field.env_var }}</code>
+                          </span>
+                        </p>
+                        <p v-if="field.help" class="hint">{{ field.help }}</p>
+                      </template>
+
+                      <!-- 可编辑字段：按 kind 渲染（text/number/list/select/switch） -->
+                      <template v-else>
+                        <label class="label" :for="`pf-${channel.key}-${field.key}`">
+                          {{ field.label }}
+                          <span v-if="field.required" class="text-red-600">*</span>
+                        </label>
+
+                        <select
+                          v-if="field.kind === 'select'"
+                          :id="`pf-${channel.key}-${field.key}`"
+                          v-model="paymentParams[field.setting_key]"
+                          class="input"
+                        >
+                          <option v-for="option in field.options || []" :key="option.value" :value="option.value">
+                            {{ option.label }}
+                          </option>
+                        </select>
+
+                        <label
+                          v-else-if="field.kind === 'switch'"
+                          class="flex items-center gap-2 text-sm text-ink-200"
+                        >
+                          <input
+                            class="checkbox"
+                            type="checkbox"
+                            :checked="isSwitchOn(field.setting_key)"
+                            @change="setSwitch(field.setting_key, ($event.target as HTMLInputElement).checked)"
+                          />
+                          {{ isSwitchOn(field.setting_key) ? '已开启' : '已关闭' }}
+                        </label>
+
+                        <input
+                          v-else
+                          :id="`pf-${channel.key}-${field.key}`"
+                          v-model="paymentParams[field.setting_key]"
+                          class="input input-mono"
+                          :type="field.kind === 'number' ? 'number' : 'text'"
+                          :placeholder="field.placeholder || undefined"
+                        />
+                        <p v-if="field.help" class="hint">{{ field.help }}</p>
+                      </template>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -413,69 +620,17 @@ onMounted(load)
               <p class="hint">
                 支付平台必须能回调到本网关。留空时按浏览器访问地址推导；
                 若本站经过反向代理或使用内网地址，请显式填写公网地址。
+                各通道的完整回调地址见上方通道清单。
               </p>
             </div>
           </div>
 
-          <!-- 易支付参数 -->
-          <div class="rounded-lg border border-ink-800 p-4">
-            <p class="section-title">易支付参数</p>
-            <div class="mt-3 grid gap-4 sm:grid-cols-3">
-              <div>
-                <label class="label" for="payment-epay-gateway">网关地址</label>
-                <input
-                  id="payment-epay-gateway"
-                  v-model="paymentEPayGateway"
-                  class="input input-mono"
-                  type="url"
-                  placeholder="https://pay.example.com"
-                />
-              </div>
-              <div>
-                <label class="label" for="payment-epay-pid">商户号（PID）</label>
-                <input id="payment-epay-pid" v-model="paymentEPayPID" class="input input-mono" type="text" />
-              </div>
-              <div>
-                <label class="label" for="payment-epay-types">可用支付方式</label>
-                <input
-                  id="payment-epay-types"
-                  v-model="paymentEPayTypes"
-                  class="input input-mono"
-                  type="text"
-                  placeholder="alipay,wxpay"
-                />
-                <p class="hint">逗号分隔，取值以你的支付服务商文档为准。</p>
-              </div>
-            </div>
-            <p class="hint mt-3">
-              商户密钥（Key）只能通过环境变量
-              <code class="chip">AQUA_EPAY_KEY</code> 注入，不在此处填写，也不会写入数据库。
-            </p>
-          </div>
-
-          <!-- Stripe 参数 -->
-          <div class="rounded-lg border border-ink-800 p-4">
-            <p class="section-title">Stripe 参数</p>
-            <div class="mt-3">
-              <label class="label" for="payment-stripe-note">结账页商品名</label>
-              <input
-                id="payment-stripe-note"
-                v-model="paymentStripeNote"
-                class="input"
-                type="text"
-                placeholder="账户充值"
-              />
-            </div>
-            <p class="hint mt-3">
-              需要环境变量 <code class="chip">AQUA_STRIPE_SECRET_KEY</code> 与
-              <code class="chip">AQUA_STRIPE_WEBHOOK_SECRET</code>；
-              并把 Webhook 地址配置为本站的
-              <code class="chip">/api/payments/stripe/notify</code>。
-            </p>
-          </div>
-
           <p v-if="paymentInvalid" class="field-error">
-            {{ paymentRateInvalid ? '充值兑换比例必须大于 0，否则用户付钱后不会到账。' : '启用易支付需要填写网关地址与商户号（PID）。' }}
+            {{
+              paymentRateInvalid
+                ? '充值兑换比例必须大于 0，否则用户付钱后不会到账。'
+                : paymentChannelIssues.join('；')
+            }}
           </p>
         </div>
       </section>
