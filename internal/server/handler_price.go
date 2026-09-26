@@ -244,7 +244,8 @@ func (s *Server) handleDeletePrice(c *gin.Context) {
 
 // handleQuotePreview 试算某模型的费用，便于管理员核对定价是否合理。
 //
-// 参数：model、prompt_tokens、completion_tokens（可选，默认按 1000/1000 估算）。
+// 参数：model、prompt_tokens、completion_tokens（可选，默认按 1000/1000 估算）、
+// group（可选，缺省用计费组件的默认分组）——价格规则按分组隔离，试算也需能指定分组。
 func (s *Server) handleQuotePreview(c *gin.Context) {
 	if s.deps.Billing == nil {
 		oai.WriteError(c.Writer, http.StatusServiceUnavailable,
@@ -257,10 +258,11 @@ func (s *Server) handleQuotePreview(c *gin.Context) {
 		oai.WriteError(c.Writer, http.StatusBadRequest, "缺少 model 参数", oai.TypeInvalidRequest, "missing_model")
 		return
 	}
+	group := strings.TrimSpace(c.Query("group"))
 	promptTokens := parseInt64Query(c, "prompt_tokens", 1000)
 	completionTokens := parseInt64Query(c, "completion_tokens", 1000)
 
-	quota := s.deps.Billing.Quote(c.Request.Context(), modelName, promptTokens, completionTokens)
+	quota := s.deps.Billing.Quote(c.Request.Context(), group, modelName, promptTokens, completionTokens)
 	c.JSON(http.StatusOK, gin.H{
 		"model":             modelName,
 		"prompt_tokens":     promptTokens,

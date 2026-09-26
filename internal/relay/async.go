@@ -219,7 +219,15 @@ func (s *TaskService) Submit(ctx context.Context, userID, tokenID uint64, req *T
 		return nil, err
 	}
 
-	ch, apiKey, keyID, err := s.pickTarget(ctx, req.Model)
+	// 解析本次任务的分组：与对话请求同一套优先级（令牌分组 → Relay 默认分组）。
+	// 选渠道与计费共用这个值，避免"按 A 分组选渠道、按 B 分组计费"。
+	// 先判空再读分组：relay 未装配时交由 pickTarget 返回统一的"不可用"错误。
+	group := ""
+	if s.relay != nil {
+		group = s.relay.groupFromContext(ctx)
+	}
+
+	ch, apiKey, keyID, err := s.pickTarget(ctx, group, req.Model)
 	if err != nil {
 		return nil, err
 	}
@@ -228,7 +236,7 @@ func (s *TaskService) Submit(ctx context.Context, userID, tokenID uint64, req *T
 	// 为什么在提交上游之前扣：见 model.Task 的文件头说明（防白嫖算力）。
 	quota := int64(0)
 	if s.relay != nil && s.relay.billing != nil {
-		quota = s.relay.billing.ChargeOnce(ctx, userID, tokenID, req.Model, req.Count)
+		quota = s.relay.billing.ChargeOnce(ctx, group, userID, tokenID, req.Model, req.Count)
 	}
 
 	// ── 提交上游 ──────────────────────────────────────────────
@@ -436,12 +444,14 @@ func (s *TaskService) pollPending(ctx context.Context) {
 //
 // 复用转发链路的候选集与密钥池：任务与对话请求共享同一套路由语义
 // （优先级分层 → 层内权重随机 → 池内随机取凭据）。
-func (s *TaskService) pickTarget(ctx context.Context, modelName string) (*model.Channel, string, uint64, error) {
+//
+// 参数 group 为本次任务的分组（由 Submit 解析一次后传入，见 relay.groupFromContext）。
+func (s *TaskService) pickTarget(ctx context.Context, group, modelName string) (*model.Channel, string, uint64, error) {
 	if s.relay == nil {
 		return nil, "", 0, ErrTaskUnavailable
 	}
 
-	candidates, err := s.relay.listCandidates(ctx, modelName)
+	candidates, err := s.relay.listCandidates(ctx, group, modelName)
 	if err != nil {
 		return nil, "", 0, err
 	}

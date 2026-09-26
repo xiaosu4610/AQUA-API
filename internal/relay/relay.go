@@ -14,7 +14,8 @@
 //	server/router.go
 //	  └─ POST /v1/chat/completions → Relay.ServeChatCompletions
 //	       ├─ 读取并解析请求体（仅取 model 字段用于路由，其余原样透传）
-//	       ├─ Relay.SelectChannel(reqCtx, model)  选渠道
+//	       ├─ 解析本次请求分组          groupFromContext（令牌分组 → 默认分组）
+//	       ├─ Relay.SelectChannel(reqCtx, group, model)  按分组选渠道
 //	       ├─ forwardChat(...)                    构造上游请求并发送
 //	       └─ flushCopy(...)                      流式回写响应体
 //
@@ -33,9 +34,11 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"net/http"
+	"strings"
 	"time"
 
 	"gitee.com/xiaosu4610/aqua-api/internal/model"
+	"gitee.com/xiaosu4610/aqua-api/internal/reqctx"
 )
 
 // ErrNoAvailableChannel 表示当前没有任何可用渠道能处理请求的模型。
@@ -178,7 +181,7 @@ func New(channels model.ChannelRepository, opts Options) *Relay {
 	}
 }
 
-// listCandidates 查询本分组的启用渠道，并过滤出支持该模型的候选。
+// listCandidates 查询指定分组的启用渠道，并过滤出支持该模型的候选。
 //
 // 返回结果保持仓储给出的顺序：优先级降序 → 权重降序 → ID 升序。
 // 路由逻辑依赖"优先级降序"这一前提来分层，故不可在此重排。
@@ -186,11 +189,17 @@ func New(channels model.ChannelRepository, opts Options) *Relay {
 // 为什么"一次查询、多次挑选"：故障转移会在同一请求内多次选渠道。
 // 若每次重试都查一次库，故障场景下会把数据库压力放大数倍；
 // 而渠道配置在单次请求的毫秒级窗口内几乎不会变化，缓存于内存是安全且划算的。
-func (r *Relay) listCandidates(ctx context.Context, modelName string) ([]*model.Channel, error) {
+//
+// 参数 group 为空时回退到 Relay 的默认分组：这样"未指定分组的调用方"
+// （如内部调用或尚未接入分组的老代码）行为与改动前完全一致。
+func (r *Relay) listCandidates(ctx context.Context, group, modelName string) ([]*model.Channel, error) {
+	if group == "" {
+		group = r.group
+	}
 	enabled := model.ChannelStatusEnabled
 
 	channels, err := r.channels.List(ctx, model.ChannelQuery{
-		Group:  r.group,
+		Group:  group,
 		Status: &enabled,
 	})
 	if err != nil {
@@ -208,19 +217,37 @@ func (r *Relay) listCandidates(ctx context.Context, modelName string) ([]*model.
 	return eligible, nil
 }
 
-// SelectChannel 为指定模型选择可用渠道（不排除任何渠道）。
+// groupFromContext 解析「本次请求应使用的分组」。
+//
+// 解析优先级（顺序不可变，改错会造成"用 A 分组选渠道、用 B 分组计费"的错账）：
+//  1. 请求上下文里的令牌分组（非空）→ 用它；
+//  2. 令牌分组为空 → Relay 的默认分组；
+//  3. 上下文里没有令牌（内部调用，如异步任务/后台流程）→ Relay 的默认分组。
+//
+// 之所以只在此处解析一次、并把结果沿转发链路往下传：渠道选择、失败重试换渠道、
+// 计费必须使用同一个分组值；任何一处重新解析都可能因取值来源不同而串组。
+func (r *Relay) groupFromContext(ctx context.Context) string {
+	if group := strings.TrimSpace(reqctx.Group(ctx)); group != "" {
+		return group
+	}
+	return r.group
+}
+
+// SelectChannel 为指定模型在指定分组中选择可用渠道（不排除任何渠道）。
 //
 // 适用场景：管理后台的连通性测试、渠道体检等"只想知道有没有可用渠道"的调用。
 // 转发路径使用 listCandidates + pickCandidate，以便跳过本次请求已失败的渠道。
-func (r *Relay) SelectChannel(ctx context.Context, modelName string) (*model.Channel, error) {
-	candidates, err := r.listCandidates(ctx, modelName)
+//
+// 参数 group 为空时回退到 Relay 的默认分组（见 listCandidates 的说明）。
+func (r *Relay) SelectChannel(ctx context.Context, group, modelName string) (*model.Channel, error) {
+	candidates, err := r.listCandidates(ctx, group, modelName)
 	if err != nil {
 		return nil, err
 	}
 
 	ch := pickCandidate(candidates, nil)
 	if ch == nil {
-		return nil, fmt.Errorf("%w（分组=%s, 模型=%s）", ErrNoAvailableChannel, r.group, modelName)
+		return nil, fmt.Errorf("%w（分组=%s, 模型=%s）", ErrNoAvailableChannel, group, modelName)
 	}
 	return ch, nil
 }

@@ -10,8 +10,10 @@
 // 流转（Flow）：
 //
 //	middleware.TokenAuth 鉴权成功
-//	  └─ reqctx.WithIdentity(c.Request.Context(), ...) 写回 c.Request
-//	       └─ relay 转发结束时 reqctx.IdentityFrom(req.Context()) 取出并落日志
+//	  ├─ reqctx.WithIdentity(c.Request.Context(), ...) 写回 c.Request
+//	  └─ reqctx.WithGroup(..., 令牌分组)                 写回 c.Request
+//	       └─ relay 转发时 reqctx.Group(req.Context()) 取出分组，用于
+//	          「按分组选渠道」与「按分组计费」；结束时 IdentityFrom 取出身份落日志
 //
 // 扩展（Extend）：
 //
@@ -42,10 +44,15 @@ type Identity struct {
 //
 // 使用自定义类型而非字符串：避免与其他包的键冲突
 // （字符串键一旦重名会互相覆盖，且不会有任何编译期提示）。
-type ctxKey struct{}
+//
+// 重要：本类型必须带一个"名字"字段，而不是用空结构体 struct{}。
+// 空结构体的不同实例彼此相等（零值都相等），若直接用它声明多个键
+// （identityKey / groupKey），多个键会坍缩成同一个键而互相覆盖——
+// 表现为"写入了分组，身份却丢了"这种极隐蔽的串值缺陷。
+type ctxKey struct{ name string }
 
 // identityKey 是身份信息在 context 中的键。
-var identityKey = ctxKey{}
+var identityKey = ctxKey{name: "identity"}
 
 // WithIdentity 返回携带调用者身份的 context。
 func WithIdentity(ctx context.Context, id Identity) context.Context {
@@ -59,4 +66,28 @@ func IdentityFrom(ctx context.Context) (Identity, bool) {
 	}
 	id, ok := ctx.Value(identityKey).(Identity)
 	return id, ok
+}
+
+// groupKey 是「本次请求所用分组」在 context 中的键。
+//
+// 与 identityKey 分开存放（而非塞进 Identity）：分组是"路由与计费"的输入，
+// 与"调用者是谁"是两类信息；分开后二者可以各自缺省，语义更清晰。
+var groupKey = ctxKey{name: "group"}
+
+// WithGroup 返回携带「本次请求所用分组」的 context。
+//
+// 分组来自调用该请求的令牌（令牌可指定走哪个分组的渠道、按哪个分组计费）。
+// 传空字符串表示令牌未指定分组——此时由转发层与计费层各自回退到默认分组，
+// 保证"未配置分组"的存量令牌行为与改动前完全一致。
+func WithGroup(ctx context.Context, group string) context.Context {
+	return context.WithValue(ctx, groupKey, group)
+}
+
+// Group 取出本次请求的分组名；空字符串表示未指定（调用方应回退到默认分组）。
+func Group(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	group, _ := ctx.Value(groupKey).(string)
+	return group
 }

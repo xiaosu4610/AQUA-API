@@ -410,7 +410,7 @@ func TestSelectChannel_ModelMatching(t *testing.T) {
 	ctx := context.Background()
 
 	// 请求 gpt-4o：高优先级渠道虽排在前，但不支持该模型，应落到低优先级渠道
-	ch, err := rl.SelectChannel(ctx, "gpt-4o")
+	ch, err := rl.SelectChannel(ctx, defaultGroup, "gpt-4o")
 	if err != nil {
 		t.Fatalf("选择渠道失败: %v", err)
 	}
@@ -419,7 +419,7 @@ func TestSelectChannel_ModelMatching(t *testing.T) {
 	}
 
 	// 请求不存在的模型：应返回 ErrNoAvailableChannel
-	if _, err := rl.SelectChannel(ctx, "no-such-model"); err == nil {
+	if _, err := rl.SelectChannel(ctx, defaultGroup, "no-such-model"); err == nil {
 		t.Error("请求无人支持的模型应返回错误")
 	} else if !strings.Contains(err.Error(), "没有可用") {
 		t.Errorf("错误信息不明确: %v", err)
@@ -433,7 +433,7 @@ func TestSelectChannel_EmptyModelsMeansWildcard(t *testing.T) {
 
 	rl := newRelay(repo)
 
-	ch, err := rl.SelectChannel(context.Background(), "whatever-model")
+	ch, err := rl.SelectChannel(context.Background(), defaultGroup, "whatever-model")
 	if err != nil {
 		t.Fatalf("空模型列表应视为通配，实际报错: %v", err)
 	}
@@ -454,7 +454,7 @@ func TestSelectChannel_IgnoresDisabledChannels(t *testing.T) {
 	}
 
 	rl := newRelay(repo)
-	if _, err := rl.SelectChannel(ctx, "any-model"); err == nil {
+	if _, err := rl.SelectChannel(ctx, defaultGroup, "any-model"); err == nil {
 		t.Error("仅存在禁用渠道时不应返回可用渠道")
 	}
 }
@@ -684,7 +684,7 @@ func TestSelectChannel_PrefersHigherPriorityTier(t *testing.T) {
 
 	rl := newRelay(repo)
 	for i := 0; i < 50; i++ {
-		ch, err := rl.SelectChannel(context.Background(), "any-model")
+		ch, err := rl.SelectChannel(context.Background(), defaultGroup, "any-model")
 		if err != nil {
 			t.Fatalf("第 %d 次选择渠道失败: %v", i+1, err)
 		}
@@ -712,7 +712,7 @@ func TestSelectChannel_WeightedDistributionWithinTier(t *testing.T) {
 
 	lightHits := 0
 	for i := 0; i < samples; i++ {
-		ch, err := rl.SelectChannel(context.Background(), "any-model")
+		ch, err := rl.SelectChannel(context.Background(), defaultGroup, "any-model")
 		if err != nil {
 			t.Fatalf("选择渠道失败: %v", err)
 		}

@@ -554,7 +554,7 @@ type fakeQuotaReserver struct {
 	lastRequestID string
 }
 
-func (f *fakeQuotaReserver) EstimateReserve(context.Context, string, int) (int64, bool) {
+func (f *fakeQuotaReserver) EstimateReserve(_ context.Context, _, _ string, _ int) (int64, bool) {
 	return f.estimateAmount, f.priced
 }
 
@@ -703,6 +703,53 @@ func TestTokenAuth_预留成功_注入幂等键(t *testing.T) {
 	}
 	if resp.RequestID != reserver.lastRequestID {
 		t.Errorf("上下文 requestID = %q，与预留时使用的不一致（%q）", resp.RequestID, reserver.lastRequestID)
+	}
+}
+
+// TestTokenAuth_写入令牌分组 验证鉴权成功后把令牌的有效分组写入请求上下文。
+//
+// 这是"按请求分组"链路的起点：中间件只负责把令牌的分组原样传下去，
+// 转发层（relay）与计费层据此选渠道、算价。分组为空时上层回退默认分组，
+// 因此这里只需断言"非空分组被如实写入"。
+func TestTokenAuth_写入令牌分组(t *testing.T) {
+	tokens := newTestTokenRepo(t)
+
+	key, err := model.GenerateTokenKey()
+	if err != nil {
+		t.Fatalf("生成令牌失败: %v", err)
+	}
+	token := &model.Token{
+		Name:           "group-probe",
+		Key:            key,
+		Status:         model.TokenStatusEnabled,
+		UnlimitedQuota: true, // 不限额度，避免被"额度耗尽"判定拦住
+		GroupName:      "vip",
+	}
+	if err := tokens.Create(context.Background(), token); err != nil {
+		t.Fatalf("创建令牌失败: %v", err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	engine.Use(TokenAuth(tokens, nil))
+	engine.POST("/v1/chat/completions", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"group": reqctx.Group(c.Request.Context())})
+	})
+
+	rec := doAuthRequest(t, engine, map[string]string{"Authorization": "Bearer " + key},
+		`{"model":"any-model"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d，期望 200（响应体：%s）", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Group string `json:"group"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("响应体解析失败: %v", err)
+	}
+	if resp.Group != "vip" {
+		t.Fatalf("上下文中的分组 = %q，期望 %q", resp.Group, "vip")
 	}
 }
 

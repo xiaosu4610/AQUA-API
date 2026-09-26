@@ -11,7 +11,7 @@
 //	ServeChatCompletions(w, req)
 //	  ├─ 步骤1 读取请求体（复用 oai.ReadBody：限长 + 还原 body）
 //	  ├─ 步骤2 探测 model 字段（oai.PeekModel）
-//	  ├─ 步骤3 选渠道并转发，失败按策略换渠道重试（见 forwardWithFallback）
+//	  ├─ 步骤3 解析请求分组并选渠道，失败按策略换渠道重试（见 forwardWithFallback）
 //	  ├─ 步骤4 构造上游请求：改写 URL / Authorization，保留 Accept 与 User-Agent
 //	  ├─ 步骤5 回写状态码与响应头（过滤逐跳头）
 //	  └─ 步骤6 流式拷贝响应体并逐段 Flush（SSE 关键）
@@ -166,8 +166,15 @@ func (r *Relay) forwardWithFallback(w http.ResponseWriter, req *http.Request, mo
 	// 保证同一次请求的各次重试使用完全相同的请求体。
 	body = withStreamUsageOption(body, injectStreamUsageOption)
 
+	// 解析本次请求分组：【只解析一次】，之后整条链路复用同一个值。
+	//
+	// 取值来自令牌（见 reqctx.Group），令牌未指定时回退到 Relay 默认分组。
+	// 渠道选择、失败重试换渠道、计费都必须使用这个值——
+	// 若中途按不同来源重新解析，就会出现"按 A 分组选渠道、按 B 分组计费"的错账。
+	group := r.groupFromContext(req.Context())
+
 	// 一次性取出候选集：同一次请求内的多次重试都基于它挑选，避免每次重试都查库
-	candidates, err := r.listCandidates(req.Context(), modelName)
+	candidates, err := r.listCandidates(req.Context(), group, modelName)
 	if err != nil {
 		// 仓储查询失败：不向客户端暴露细节
 		// TODO(relay): 接入结构化日志后在此记录 err
@@ -184,10 +191,11 @@ func (r *Relay) forwardWithFallback(w http.ResponseWriter, req *http.Request, mo
 		r.recordUsage(req.Context(), usageEntry{
 			UserID:     identityFromRequest(req.Context()).UserID,
 			TokenID:    identityFromRequest(req.Context()).TokenID,
+			Group:      group,
 			Model:      modelName,
 			IsStream:   oai.PeekStream(body),
 			StatusCode: http.StatusServiceUnavailable,
-			ErrorText:  "无可用渠道",
+			ErrorText:  "无可用渠道（分组=" + group + "）",
 		})
 		writeAdaptedError(w, adapter, http.StatusServiceUnavailable,
 			"当前没有可用的上游渠道能处理该模型",
@@ -248,7 +256,7 @@ retryLoop:
 		// 占用在途计数（供 least_in_flight 使用）：与下方的 releaseKey 成对，
 		// 覆盖本轮从"选定凭据"到"响应结束"的整个区间。
 		r.acquireKey(keyCtx, target.keyID)
-		outcome := r.forwardChat(w, req, target, modelName, body, adapter, upstreamPath, &lastFailure)
+		outcome := r.forwardChat(w, req, target, group, modelName, body, adapter, upstreamPath, &lastFailure)
 		// 归还本轮的在途占用：无论成功、换密钥还是换渠道，都必须释放，
 		// 否则 in_flight 只增不减，least_in_flight 会逐步失去参考价值。
 		r.releaseKey(target.keyID)
@@ -285,6 +293,7 @@ retryLoop:
 		r.recordUsage(req.Context(), usageEntry{
 			UserID:     identityFromRequest(req.Context()).UserID,
 			TokenID:    identityFromRequest(req.Context()).TokenID,
+			Group:      group,
 			Model:      modelName,
 			IsStream:   oai.PeekStream(body),
 			StatusCode: lastFailure.status,
@@ -309,6 +318,7 @@ retryLoop:
 	r.recordUsage(req.Context(), usageEntry{
 		UserID:     identityFromRequest(req.Context()).UserID,
 		TokenID:    identityFromRequest(req.Context()).TokenID,
+		Group:      group,
 		Model:      modelName,
 		IsStream:   oai.PeekStream(body),
 		StatusCode: http.StatusBadGateway,
@@ -665,8 +675,11 @@ const (
 // 参数 lastFailure 非 nil 时，会把"凭据级失败"的上游响应原样记进去，
 // 供上层在重试全部用尽后透传真实原因（而不是含糊的 502）。
 //
+// 参数 group 是本次请求的分组，由 forwardWithFallback 解析一次后透传：
+// 本函数只用它来记录用量（计费按同一分组进行），不再自行解析，避免串组。
+//
 // 参数 upstreamPath 为上游端点路径，由调用方按下游能力指定。
-func (r *Relay) forwardChat(w http.ResponseWriter, req *http.Request, target forwardTarget, modelName string, body []byte, adapter Adapter, upstreamPath string, lastFailure *upstreamFailure) forwardOutcome {
+func (r *Relay) forwardChat(w http.ResponseWriter, req *http.Request, target forwardTarget, group, modelName string, body []byte, adapter Adapter, upstreamPath string, lastFailure *upstreamFailure) forwardOutcome {
 	// 记录起始时间用于计算耗时（写入调用日志）
 	start := time.Now()
 	ch := target.channel
@@ -804,6 +817,7 @@ func (r *Relay) forwardChat(w http.ResponseWriter, req *http.Request, target for
 	entry := usageEntry{
 		UserID:     identity.UserID,
 		TokenID:    identity.TokenID,
+		Group:      group,
 		ChannelID:  ch.ID,
 		Model:      modelName,
 		Usage:      usage,

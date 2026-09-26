@@ -14,8 +14,8 @@
 //	  ├─ EffectiveStatus      结合时间与额度判定令牌自身状态
 //	  ├─ users.GetByID        账号级校验：是否禁用、可用额度是否耗尽
 //	  ├─ 模型白名单校验        仅当白名单非空时才读请求体（省开销）
-//	  ├─ 额度预留             计费模型且额度紧张时预扣额度（额度不足 → 429）
-//	  └─ SetToken → c.Next()  放行并把令牌与幂等键写入上下文
+//	  ├─ 额度预留             计费模型且额度紧张时预扣额度（额度不足 → 429），按令牌分组计价
+//	  └─ SetToken → c.Next()  放行并把令牌、幂等键与分组写入上下文
 //
 // 扩展（Extend）：
 //
@@ -72,7 +72,8 @@ const reservationTTL = 15 * time.Minute
 // 保持"鉴权只关心能否预留，不关心价格怎么算"的分层。
 type QuotaReserver interface {
 	// EstimateReserve 估算一次调用的预留额度；priced=false 表示该模型不计费（应跳过预留）。
-	EstimateReserve(ctx context.Context, modelName string, promptBytes int) (amount int64, priced bool)
+	// group 为本次请求的分组；空字符串表示未指定，由计费组件回退到默认分组。
+	EstimateReserve(ctx context.Context, group, modelName string, promptBytes int) (amount int64, priced bool)
 	// Reserve 预扣额度；可用额度不足时返回 model.ErrQuotaInsufficient。
 	Reserve(ctx context.Context, req model.ReserveRequest) (*model.QuotaReservation, error)
 	// PendingReserved 返回某用户在途预留的合计额度（用于计算可用额度）。
@@ -142,6 +143,13 @@ func TokenAuth(tokens model.TokenRepository, users model.UserRepository, reserve
 				"访问令牌额度已用尽", oai.TypeRateLimit, oai.CodeInsufficientQuota)
 			return
 		}
+
+		// 解析令牌的分组：令牌可指定走某个分组的渠道、按该分组的价格与倍率计费。
+		//
+		// 为空表示令牌未指定分组，由转发层与计费层各自回退到默认分组——
+		// 中间件不感知"默认分组"是什么，只负责把令牌自身的分组原样传下去，
+		// 保持"只传递、不判断"的职责（路由与计费规则都不该出现在鉴权层）。
+		tokenGroup := token.EffectiveGroupName("")
 
 		// ── 步骤 4：账号级额度校验 ──────────────────────────────
 		//
@@ -239,7 +247,7 @@ func TokenAuth(tokens model.TokenRepository, users model.UserRepository, reserve
 
 		requestID := ""
 		if reserveNeeded && modelName != "" {
-			id, ok := tryReserveQuota(c, reserver, token, owner, modelName, promptBytes, pending)
+			id, ok := tryReserveQuota(c, reserver, token, owner, tokenGroup, modelName, promptBytes, pending)
 			if !ok {
 				// 额度不足：tryReserveQuota 已写出 429
 				return
@@ -250,15 +258,17 @@ func TokenAuth(tokens model.TokenRepository, users model.UserRepository, reserve
 		// ── 步骤 6：放行 ────────────────────────────────────────
 		SetToken(c, token)
 
-		// 把调用者身份写入请求 context，供转发引擎在结束时落调用日志 / 结算预留。
+		// 把调用者身份与分组写入请求 context，供转发引擎按分组选渠道/计费，
+		// 并在结束时落调用日志 / 结算预留。
 		// 用标准库 context 而非 gin 上下文，是为了让 relay 不必依赖 Web 框架。
 		// RequestID 仅在实际做了预留时非空，转发结束后据此结算或退还。
-		identityCtx := reqctx.WithIdentity(c.Request.Context(), reqctx.Identity{
+		reqCtx := reqctx.WithIdentity(c.Request.Context(), reqctx.Identity{
 			UserID:    token.OwnerID,
 			TokenID:   token.ID,
 			RequestID: requestID,
 		})
-		c.Request = c.Request.WithContext(identityCtx)
+		reqCtx = reqctx.WithGroup(reqCtx, tokenGroup)
+		c.Request = c.Request.WithContext(reqCtx)
 
 		c.Next()
 	}
@@ -266,13 +276,16 @@ func TokenAuth(tokens model.TokenRepository, users model.UserRepository, reserve
 
 // tryReserveQuota 尝试为本次调用预扣额度。
 //
+// group 为本次请求的分组（空表示未指定，由计费组件回退到默认分组）；
+// 预留必须与后续结算使用同一分组，否则会出现"按 A 分组预扣、按 B 分组结算"的错账。
+//
 // 返回的第二个值为 false 表示已写出错误响应（额度不足），调用方应立即返回。
 // 返回空 requestID 且 true 表示"本次不预留"（不计费模型 / 信任额度旁路 / 台账降级）。
 func tryReserveQuota(c *gin.Context, reserver QuotaReserver, token *model.Token,
-	owner *model.User, modelName string, promptBytes int, pending int64) (string, bool) {
+	owner *model.User, group, modelName string, promptBytes int, pending int64) (string, bool) {
 	ctx := c.Request.Context()
 
-	amount, priced := reserver.EstimateReserve(ctx, modelName, promptBytes)
+	amount, priced := reserver.EstimateReserve(ctx, group, modelName, promptBytes)
 	if !priced || amount <= 0 {
 		// 【例外一】该模型未命中任何计价规则：调用不计费，跳过预留。
 		// 否则免费模型会被额度墙挡住——这正是此前线上事故的根因。

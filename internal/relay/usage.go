@@ -317,8 +317,14 @@ const usageMissingNote = "未取得 usage（上游未返回用量，token 记 0�
 
 // usageEntry 描述一条待记录的用量。
 type usageEntry struct {
-	UserID     uint64
-	TokenID    uint64
+	UserID  uint64
+	TokenID uint64
+	// Group 是本次请求的分组（由转发层解析一次后透传）。
+	//
+	// 为什么要把分组一路带到这里：计费必须用"与选渠道相同的分组"，
+	// 若在此处重新解析，可能因来源不同而与渠道选择不一致，造成错账。
+	// 空字符串表示未指定，由 Billing 回退到默认分组。
+	Group      string
 	ChannelID  uint64
 	Model      string
 	Usage      openAIUsage
@@ -408,7 +414,8 @@ func (r *Relay) settleQuota(ctx context.Context, entry usageEntry) int64 {
 	requestID := identityFromRequest(ctx).RequestID
 	if requestID == "" {
 		// 未预留：退化路径。Charge 内部同样只记录错误不返回错误。
-		return r.billing.Charge(ctx, entry.UserID, entry.TokenID, entry.Model,
+		// 计费分组沿用 entry.Group（与选渠道同一分组），空值由 Billing 回退到默认分组。
+		return r.billing.Charge(ctx, entry.Group, entry.UserID, entry.TokenID, entry.Model,
 			int64(entry.Usage.PromptTokens), int64(entry.Usage.CompletionTokens))
 	}
 
@@ -425,7 +432,7 @@ func (r *Relay) settleQuota(ctx context.Context, entry usageEntry) int64 {
 	// 成功：按实际用量结算。拿不到 usage 时传 QuotaUnknown（按预留量收）。
 	actual := int64(model.QuotaUnknown)
 	if hasUsage(entry.Usage) {
-		actual = r.billing.Quote(ctx, entry.Model,
+		actual = r.billing.Quote(ctx, entry.Group, entry.Model,
 			int64(entry.Usage.PromptTokens), int64(entry.Usage.CompletionTokens))
 	}
 
