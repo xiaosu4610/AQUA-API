@@ -210,8 +210,11 @@ func (r *usageLogRepository) DailySeries(ctx context.Context, q model.UsageLogQu
 		return nil, fmt.Errorf("store: 遍历按天聚合结果失败: %w", err)
 	}
 
+	// 补零循环使用半开区间 [since, until)：until 是"次日零点"，
+	// 若写成 !day.After(until) 会把次日也输出为一个全零数据点，
+	// 前端趋势图末尾会多出一根"未来"的空柱子。
 	series := make([]model.DailyUsage, 0, len(byDay)+1)
-	for day := since; !day.After(until); day = day.AddDate(0, 0, 1) {
+	for day := since; day.Before(until); day = day.AddDate(0, 0, 1) {
 		key := day.Format("2006-01-02")
 		if item, ok := byDay[key]; ok {
 			series = append(series, item)
