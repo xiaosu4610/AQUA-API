@@ -19,7 +19,10 @@ const groups: NavGroup[] = [
   {
     items: [
       { label: '概览', to: '/console', icon: 'home' },
+      { label: '模型广场', to: '/models', icon: 'grid' },
       { label: '访问令牌', to: '/console/tokens', icon: 'key' },
+      { label: '生成任务', to: '/console/tasks', icon: 'image' },
+      { label: '账户充值', to: '/console/recharge', icon: 'wallet' },
       { label: '调用日志', to: '/console/logs', icon: 'list' },
     ],
   },

@@ -373,6 +373,10 @@ export interface SiteSettings {
   email_service_ready: boolean
   /** 发件地址；未配置时为空字符串。只读 */
   email_from: string
+  /** 充值 / 支付运营参数（非密钥，可修改并即时生效） */
+  payment: PaymentSettings
+  /** 各支付通道的密钥是否已通过环境变量就绪；只读 */
+  payment_secrets: PaymentSecretStatus
 }
 
 /** PUT /api/admin/settings 请求体：只提交需要变更的字段 */
@@ -383,6 +387,7 @@ export type UpdateSiteSettingsPayload = Partial<{
   registration_require_email_code: boolean
   default_user_quota: number
   default_group: string
+  payment: PaymentSettings
 }>
 
 /* ────────────────────────── 查询参数 ────────────────────────── */
@@ -398,3 +403,281 @@ export interface LogQuery {
   /** 管理端专用：按渠道过滤（字段名待后端确认） */
   channel_id?: number | string
 }
+
+/* ────────────────────────── 模型计价规则 ────────────────────────── */
+
+/**
+ * 模型计价规则（GET /api/admin/prices）。
+ *
+ * 价格口径：字段表示「每 100 万 token 消耗的站点额度」，
+ * per_call_price 表示「每调用一次消耗的额度」（异步任务/图像等按次计费的能力）。
+ * 三处必须与后端 model.ModelPrice 保持一致：改动时同步本文件与价格页文案。
+ */
+export interface ModelPrice {
+  id: number
+  /** 模型名或通配模式（"gpt-4*" 前缀、"*" 全局） */
+  model: string
+  prompt_price: number
+  completion_price: number
+  per_call_price: number
+  group: string
+  enabled: boolean
+  remark: string
+  created_at: number
+  updated_at: number
+}
+
+/** 新增/更新计价规则请求体 */
+export interface ModelPricePayload {
+  model: string
+  prompt_price?: number
+  completion_price?: number
+  per_call_price?: number
+  group?: string
+  enabled?: boolean
+  remark?: string
+}
+
+/** GET /api/admin/prices/quote 响应：费用试算结果 */
+export interface QuotePreview {
+  model: string
+  prompt_tokens: number
+  completion_tokens: number
+  quota: number
+  priced: boolean
+}
+
+/* ────────────────────────── 模型分组 ────────────────────────── */
+
+/**
+ * 模型分组（GET /api/admin/groups）。
+ *
+ * ratio 是计费倍率的百分比整数：100 = 1.0 倍、150 = 1.5 倍。
+ * 实际扣费 = 基础额度 × ratio / 100（向下取整）。
+ */
+export interface ModelGroup {
+  id: number
+  name: string
+  display_name: string
+  /** 展示名（未设置 display_name 时等于 name） */
+  label: string
+  ratio: number
+  description: string
+  enabled: boolean
+  /** 引用统计：界面上据此提示「该分组正在被使用，删除会影响 N 个渠道」 */
+  channel_count: number
+  price_count: number
+  created_at: number
+  updated_at: number
+}
+
+export interface ModelGroupPayload {
+  name: string
+  display_name?: string
+  ratio?: number
+  description?: string
+  enabled?: boolean
+}
+
+/* ────────────────────────── 模型广场（公开） ────────────────────────── */
+
+/** 模型卡片上的某分组价格 */
+export interface PlazaPrice {
+  group: string
+  prompt_price: number
+  completion_price: number
+  per_call_price: number
+  /** 该分组的计费倍率（百分比） */
+  ratio: number
+}
+
+/** 模型广场里的一张模型卡片 */
+export interface PlazaModel {
+  model: string
+  /** 当前可用的分组（来自渠道声明） */
+  groups: string[]
+  /** 是否至少有一个启用渠道支持它 */
+  available: boolean
+  /** 支持该模型的启用渠道数量 */
+  channel_count: number
+  prices: PlazaPrice[]
+}
+
+/** 模型广场的分组视图 */
+export interface PlazaGroup {
+  name: string
+  label: string
+  ratio: number
+  description: string
+  model_count: number
+}
+
+/** GET /api/models 响应 */
+export interface ModelPlaza {
+  items: PlazaModel[]
+  groups: PlazaGroup[]
+  total: number
+}
+
+/* ────────────────────────── 异步任务 ────────────────────────── */
+
+/** 任务类别：与后端 model.TaskKind 一一对应 */
+export const TASK_KIND_IMAGE = 'image'
+export const TASK_KIND_VIDEO = 'video'
+export const TASK_KIND_MUSIC = 'music'
+
+/** 任务状态：与后端 model.TaskStatus 一一对应（3/4/5 为终态） */
+export const TASK_STATUS_QUEUED = 1
+export const TASK_STATUS_RUNNING = 2
+export const TASK_STATUS_SUCCEEDED = 3
+export const TASK_STATUS_FAILED = 4
+export const TASK_STATUS_CANCELED = 5
+
+/** 异步任务对象 */
+export interface Task {
+  task_ref: string
+  kind: string
+  kind_text: string
+  provider: string
+  model: string
+  prompt: string
+  /** 原始请求参数（JSON 字符串，原样交给上游适配器） */
+  params: string
+  status: number
+  status_text: string
+  progress: number
+  result_url: string
+  result_data: string
+  error: string
+  quota: number
+  user_id: number
+  channel_id: number
+  created_at: number
+  updated_at: number
+  finished_at: number
+}
+
+/** 已注册的上游任务适配器（GET /api/admin/task-providers） */
+export interface TaskProvider {
+  name: string
+  kinds: { kind: string; text: string }[]
+}
+
+/** 查询任务列表的参数 */
+export interface TaskQuery {
+  page?: number
+  size?: number
+  kind?: string
+  status?: number
+}
+
+/* ────────────────────────── 充值 / 支付 ────────────────────────── */
+
+/** 订单状态：与后端 model.PaymentStatus 一一对应 */
+export const ORDER_STATUS_PENDING = 1
+export const ORDER_STATUS_PAID = 2
+export const ORDER_STATUS_CLOSED = 3
+export const ORDER_STATUS_REFUNDED = 4
+
+/** 充值订单 */
+export interface PaymentOrder {
+  trade_no: string
+  amount_cents: number
+  /** 金额的可读形式（如 "10.50"），由后端格式化，避免前端浮点换算 */
+  amount_text: string
+  currency: string
+  quota: number
+  method: string
+  sub_method: string
+  status: number
+  status_text: string
+  /** 第三方收银台地址；人工确认通道为空 */
+  pay_url: string
+  remark: string
+  user_id: number
+  credited: boolean
+  created_at: number
+  paid_at: number
+  expires_at: number
+}
+
+/** 下单请求体：只传金额与通道，额度由服务端按当前汇率计算 */
+export interface CreateOrderPayload {
+  amount_cents: number
+  method: string
+  sub_method?: string
+  remark?: string
+}
+
+/** 公开的充值参数（GET /api/payment/public） */
+export interface PublicPaymentInfo {
+  enabled: boolean
+  methods: { name: string; label: string; ready: boolean }[]
+  exchange_rate: number
+  currency: string
+  min_cents: number
+  /** 0 表示不限 */
+  max_cents: number
+}
+
+/** 管理端支付运营参数（非密钥） */
+export interface PaymentSettings {
+  enabled: boolean
+  methods: string[]
+  exchange_rate: number
+  currency: string
+  min_cents: number
+  max_cents: number
+  order_ttl_minutes: number
+  notify_base: string
+  epay_gateway: string
+  epay_pid: string
+  epay_types: string[]
+  stripe_note: string
+}
+
+/** 各支付通道的密钥是否已通过环境变量就绪（只读，不回传密钥本身） */
+export type PaymentSecretStatus = Record<string, boolean>
+
+/** 订单查询参数 */
+export interface OrderQuery {
+  page?: number
+  size?: number
+  status?: number
+  method?: string
+  user_id?: number
+}
+
+/* ────────────────────────── OAuth 提供方 ────────────────────────── */
+
+/**
+ * OAuth 提供方配置（订阅账号池刷新令牌时使用）。
+ *
+ * 注意：client_secret 只写入不读出（后端只返回掩码），
+ * 因此编辑表单留空表示「不修改」。
+ */
+export interface OAuthProvider {
+  id: number
+  name: string
+  token_url: string
+  client_id: string
+  masked_client_secret: string
+  /** 授权范围，空格分隔（OAuth2 约定的 scope 字符串形式） */
+  scope: string
+  remark: string
+  enabled: boolean
+  created_at: number
+  updated_at: number
+}
+
+export interface OAuthProviderPayload {
+  name: string
+  token_url: string
+  client_id: string
+  /** 留空表示不修改（后端只返回掩码，不回传明文） */
+  client_secret?: string
+  scope?: string
+  remark?: string
+  enabled?: boolean
+}
+

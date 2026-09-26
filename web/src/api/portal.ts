@@ -15,10 +15,15 @@
 import { api } from './client'
 import type {
   AccessToken,
+  CreateOrderPayload,
   CreateTokenPayload,
   CreateTokenResult,
   LogQuery,
+  OrderQuery,
   Paged,
+  PaymentOrder,
+  Task,
+  TaskQuery,
   UpdateTokenPayload,
   UsageLog,
   UsageStats,
@@ -52,4 +57,37 @@ export function fetchMyUsage(days: number): Promise<UsageStats> {
 /** GET /api/user/logs：我的调用日志（分页 + 筛选） */
 export function listMyLogs(query: LogQuery): Promise<Paged<UsageLog>> {
   return api.get<Paged<UsageLog>>('/user/logs', { ...query })
+}
+
+/* ── 异步任务 ───────────────────────────────────────────── */
+
+/** GET /api/user/tasks：我的异步任务（图像/视频等生成类能力） */
+export function listMyTasks(query: TaskQuery = {}): Promise<Paged<Task>> {
+  return api.get<Paged<Task>>('/user/tasks', { ...query })
+}
+
+/* ── 充值 ───────────────────────────────────────────────── */
+
+/**
+ * GET /api/user/orders：我的充值记录。
+ *
+ * 说明：不提供"提交异步任务"的入口——任务接口走 /v1/tasks 并需要访问令牌，
+ * 门户页面只负责展示结果，避免在浏览器里暴露访问令牌。
+ */
+export function listMyOrders(query: OrderQuery = {}): Promise<Paged<PaymentOrder>> {
+  return api.get<Paged<PaymentOrder>>('/user/orders', { ...query })
+}
+
+/** POST /api/user/orders：下单（只传金额与通道，额度由服务端计算） */
+export function createOrder(payload: CreateOrderPayload): Promise<PaymentOrder> {
+  return api.post<PaymentOrder>('/user/orders', payload)
+}
+
+/**
+ * GET /api/user/orders/{tradeNo}：查询单笔订单。
+ *
+ * 用途：用户在第三方收银台支付完成后回到本站，前端轮询该接口确认到账。
+ */
+export function getMyOrder(tradeNo: string): Promise<PaymentOrder> {
+  return api.get<PaymentOrder>(`/user/orders/${encodeURIComponent(tradeNo)}`)
 }

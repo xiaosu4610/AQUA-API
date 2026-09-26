@@ -12,7 +12,7 @@
  *   新增公开接口时在本文件追加函数，并同步 api/types.ts 的类型定义。
  */
 import { api } from './client'
-import type { SiteStatus } from './types'
+import type { ModelPlaza, PublicPaymentInfo, SiteStatus } from './types'
 
 /** 站点信息缓存：多个页面共用，避免路由切换时重复请求（60s 内复用） */
 let cachedStatus: SiteStatus | null = null
@@ -50,4 +50,29 @@ export async function fetchSiteStatus(force = false): Promise<SiteStatus> {
 /** 供页脚等处读取「已缓存的」站点名，未加载时返回默认值（不触发请求） */
 export function peekSiteName(): string {
   return cachedStatus?.name || 'AQUA-API'
+}
+
+/* ── 模型广场与充值参数（均无需登录）─────────────────────── */
+
+/**
+ * GET /api/models：模型广场数据（模型卡片 + 分组视图）。
+ *
+ * 为什么会带查询参数：模型广场通常有几十到上百个模型，
+ * 让后端做过滤可以避免把整份清单都传到浏览器再筛。
+ * 参数：
+ *   - group：只看该分组下可用的模型
+ *   - keyword：按模型名模糊匹配
+ */
+export function fetchModelPlaza(params: { group?: string; keyword?: string } = {}): Promise<ModelPlaza> {
+  return api.get<ModelPlaza>('/models', { ...params })
+}
+
+/**
+ * GET /api/payment/public：充值参数（是否开放、有哪些通道、汇率与限额）。
+ *
+ * 登录页/落地页需要在未登录时就知道"本站是否支持充值"，
+ * 因此该接口不要求鉴权，且只返回非敏感参数。
+ */
+export function fetchPaymentInfo(): Promise<PublicPaymentInfo> {
+  return api.get<PublicPaymentInfo>('/payment/public')
 }

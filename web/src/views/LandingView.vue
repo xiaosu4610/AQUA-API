@@ -150,6 +150,7 @@ const consoleTarget = computed(() => (auth.isAdmin ? '/admin' : '/console'))
         <nav class="ml-4 hidden items-center gap-1 md:flex">
           <a href="#features" class="btn btn-ghost btn-sm">核心特性</a>
           <a href="#models" class="btn btn-ghost btn-sm">可用模型</a>
+          <RouterLink to="/models" class="btn btn-ghost btn-sm">模型广场</RouterLink>
           <a href="#quickstart" class="btn btn-ghost btn-sm">快速接入</a>
         </nav>
 

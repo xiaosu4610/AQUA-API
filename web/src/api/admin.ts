@@ -28,8 +28,20 @@ import type {
   FetchModelsPayload,
   FetchModelsResult,
   LogQuery,
+  ModelGroup,
+  ModelGroupPayload,
+  ModelPrice,
+  ModelPricePayload,
+  OAuthProvider,
+  OAuthProviderPayload,
+  OrderQuery,
   Paged,
+  PaymentOrder,
+  QuotePreview,
   SiteSettings,
+  Task,
+  TaskProvider,
+  TaskQuery,
   UpdateSiteSettingsPayload,
   UpdateUserPayload,
   UsageLog,
@@ -167,4 +179,132 @@ export function listChannelKeys(channelId: number): Promise<{ items: ChannelKey[
 /** PUT /api/admin/keys/{keyId}：修改单把密钥的状态（启用 / 禁用 / 恢复） */
 export function updateChannelKeyStatus(keyId: number, status: number): Promise<unknown> {
   return api.put<unknown>(`/admin/keys/${keyId}`, { status })
+}
+
+/* ── 模型分组 ───────────────────────────────────────────── */
+
+/**
+ * GET /api/admin/groups：分组列表（含引用统计）。
+ *
+ * 后端不分页（分组数量极少），返回 { items, total }。
+ */
+export function listGroups(): Promise<{ items: ModelGroup[]; total: number }> {
+  return api.get<{ items: ModelGroup[]; total: number }>('/admin/groups')
+}
+
+/** POST /api/admin/groups：新建分组（标识强制小写） */
+export function createGroup(payload: ModelGroupPayload): Promise<ModelGroup> {
+  return api.post<ModelGroup>('/admin/groups', payload)
+}
+
+/** PUT /api/admin/groups/{id}：更新分组（标识不可改，倍率改完立即生效） */
+export function updateGroup(id: number, payload: Partial<ModelGroupPayload>): Promise<ModelGroup> {
+  return api.put<ModelGroup>(`/admin/groups/${id}`, payload)
+}
+
+/** DELETE /api/admin/groups/{id}：删除分组（仍被渠道/价格引用时会被拒绝） */
+export function deleteGroup(id: number): Promise<unknown> {
+  return api.delete<unknown>(`/admin/groups/${id}`)
+}
+
+/* ── 计价规则 ───────────────────────────────────────────── */
+
+/** GET /api/admin/prices：计价规则列表（可按分组过滤） */
+export function listPrices(group = ''): Promise<{ items: ModelPrice[]; total: number }> {
+  return api.get<{ items: ModelPrice[]; total: number }>('/admin/prices', { group })
+}
+
+/** POST /api/admin/prices：新增计价规则 */
+export function createPrice(payload: ModelPricePayload): Promise<ModelPrice> {
+  return api.post<ModelPrice>('/admin/prices', payload)
+}
+
+/** PUT /api/admin/prices/{id}：更新计价规则 */
+export function updatePrice(id: number, payload: ModelPricePayload): Promise<ModelPrice> {
+  return api.put<ModelPrice>(`/admin/prices/${id}`, payload)
+}
+
+/** DELETE /api/admin/prices/{id}：删除计价规则（删除后该模型变为不计费） */
+export function deletePrice(id: number): Promise<unknown> {
+  return api.delete<unknown>(`/admin/prices/${id}`)
+}
+
+/** GET /api/admin/prices/quote：费用试算（核对定价是否合理） */
+export function quotePrice(model: string, promptTokens: number, completionTokens: number): Promise<QuotePreview> {
+  return api.get<QuotePreview>('/admin/prices/quote', {
+    model,
+    prompt_tokens: promptTokens,
+    completion_tokens: completionTokens,
+  })
+}
+
+/* ── 异步任务 ───────────────────────────────────────────── */
+
+/** GET /api/admin/tasks：全站异步任务（可按用户 / 类别 / 状态过滤） */
+export function listAllTasks(
+  query: TaskQuery & { user_id?: number } = {},
+): Promise<Paged<Task>> {
+  return api.get<Paged<Task>>('/admin/tasks', { ...query })
+}
+
+/** POST /api/admin/tasks/{ref}/cancel：取消任务并退还额度 */
+export function cancelTask(taskRef: string): Promise<Task> {
+  return api.post<Task>(`/admin/tasks/${encodeURIComponent(taskRef)}/cancel`)
+}
+
+/** GET /api/admin/task-providers：已注册的上游任务适配器（供表单提示可选 provider） */
+export function listTaskProviders(): Promise<{ items: TaskProvider[] }> {
+  return api.get<{ items: TaskProvider[] }>('/admin/task-providers')
+}
+
+/* ── 充值订单 ───────────────────────────────────────────── */
+
+/** GET /api/admin/orders：全站充值订单 */
+export function listAllOrders(query: OrderQuery = {}): Promise<Paged<PaymentOrder>> {
+  return api.get<Paged<PaymentOrder>>('/admin/orders', { ...query })
+}
+
+/**
+ * POST /api/admin/orders/{tradeNo}/mark-paid：人工确认入账。
+ *
+ * 两种用途：人工确认通道的核心动作；以及"用户已付款但回调丢失"的补救。
+ * 后端是幂等的，重复点击不会重复加额度。
+ */
+export function markOrderPaid(tradeNo: string): Promise<PaymentOrder> {
+  return api.post<PaymentOrder>(`/admin/orders/${encodeURIComponent(tradeNo)}/mark-paid`)
+}
+
+/** POST /api/admin/orders/{tradeNo}/close：关闭待支付订单 */
+export function closeOrder(tradeNo: string): Promise<PaymentOrder> {
+  return api.post<PaymentOrder>(`/admin/orders/${encodeURIComponent(tradeNo)}/close`)
+}
+
+/** POST /api/admin/orders/{tradeNo}/refund：退款（扣回已入账额度） */
+export function refundOrder(tradeNo: string): Promise<PaymentOrder> {
+  return api.post<PaymentOrder>(`/admin/orders/${encodeURIComponent(tradeNo)}/refund`)
+}
+
+/* ── OAuth 提供方 ───────────────────────────────────────── */
+
+/** GET /api/admin/oauth-providers：订阅账号刷新令牌所需的提供方配置 */
+export function listOAuthProviders(): Promise<{ items: OAuthProvider[]; total: number }> {
+  return api.get<{ items: OAuthProvider[]; total: number }>('/admin/oauth-providers')
+}
+
+/** POST /api/admin/oauth-providers：新增提供方配置 */
+export function createOAuthProvider(payload: OAuthProviderPayload): Promise<OAuthProvider> {
+  return api.post<OAuthProvider>('/admin/oauth-providers', payload)
+}
+
+/** PUT /api/admin/oauth-providers/{id}：更新提供方配置（client_secret 留空表示不修改） */
+export function updateOAuthProvider(
+  id: number,
+  payload: Partial<OAuthProviderPayload>,
+): Promise<OAuthProvider> {
+  return api.put<OAuthProvider>(`/admin/oauth-providers/${id}`, payload)
+}
+
+/** DELETE /api/admin/oauth-providers/{id}：删除提供方配置 */
+export function deleteOAuthProvider(id: number): Promise<unknown> {
+  return api.delete<unknown>(`/admin/oauth-providers/${id}`)
 }

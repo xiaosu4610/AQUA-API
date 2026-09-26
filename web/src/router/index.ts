@@ -53,6 +53,14 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/RegisterView.vue'),
     meta: { title: '注册', guestOnly: true },
   },
+  {
+    // 模型广场对访客开放：不登录也能看"能用什么、什么价"。
+    // 这是落地页之外最重要的公开页面（很多用户直接搜索模型名进来）。
+    path: '/models',
+    name: 'model-plaza',
+    component: () => import('@/views/ModelPlazaView.vue'),
+    meta: { title: '模型广场' },
+  },
 
   /* ── 用户门户 ─────────────────────────────────────────── */
   {
@@ -78,6 +86,18 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/console/LogsView.vue'),
         meta: { title: '调用日志' },
       },
+      {
+        path: 'tasks',
+        name: 'console-tasks',
+        component: () => import('@/views/console/TasksView.vue'),
+        meta: { title: '生成任务' },
+      },
+      {
+        path: 'recharge',
+        name: 'console-recharge',
+        component: () => import('@/views/console/RechargeView.vue'),
+        meta: { title: '账户充值' },
+      },
     ],
   },
 
@@ -98,6 +118,36 @@ const routes: RouteRecordRaw[] = [
         name: 'admin-channels',
         component: () => import('@/views/admin/ChannelsView.vue'),
         meta: { title: '渠道管理' },
+      },
+      {
+        path: 'groups',
+        name: 'admin-groups',
+        component: () => import('@/views/admin/GroupsView.vue'),
+        meta: { title: '模型分组' },
+      },
+      {
+        path: 'prices',
+        name: 'admin-prices',
+        component: () => import('@/views/admin/PricesView.vue'),
+        meta: { title: '计价规则' },
+      },
+      {
+        path: 'tasks',
+        name: 'admin-tasks',
+        component: () => import('@/views/admin/TasksView.vue'),
+        meta: { title: '异步任务' },
+      },
+      {
+        path: 'orders',
+        name: 'admin-orders',
+        component: () => import('@/views/admin/OrdersView.vue'),
+        meta: { title: '充值订单' },
+      },
+      {
+        path: 'oauth',
+        name: 'admin-oauth',
+        component: () => import('@/views/admin/OAuthView.vue'),
+        meta: { title: '订阅账号' },
       },
       {
         path: 'tokens',
