@@ -32,6 +32,7 @@ import (
 
 	"gitee.com/xiaosu4610/aqua-api/internal/config"
 	"gitee.com/xiaosu4610/aqua-api/internal/model"
+	"gitee.com/xiaosu4610/aqua-api/internal/relay"
 	"gitee.com/xiaosu4610/aqua-api/internal/store"
 )
 
@@ -39,10 +40,12 @@ import (
 //
 // 设计说明：用结构体聚合依赖，而非把依赖作为多个参数传递——
 // 这样后续新增依赖（如 relay 引擎、缓存）时，调用方无需修改函数签名。
+// 所有字段均为必需项，缺失会在启动或首次请求时立即暴露（而非静默降级）。
 type Deps struct {
 	Config   *config.Config          // 运行配置（监听地址、模式等）
 	Store    *store.Store            // 数据库（健康检查需要探测其连通性）
-	Channels model.ChannelRepository // 渠道仓储（M2 起供管理接口与路由使用）
+	Channels model.ChannelRepository // 渠道仓储（供管理接口与路由使用）
+	Relay    *relay.Relay            // 转发引擎（模型 API 的核心处理器）
 }
 
 // Server 是 HTTP 服务的运行时载体。

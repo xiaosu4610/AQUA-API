@@ -29,6 +29,7 @@ import (
 
 	"gitee.com/xiaosu4610/aqua-api/internal/config"
 	"gitee.com/xiaosu4610/aqua-api/internal/crypto"
+	"gitee.com/xiaosu4610/aqua-api/internal/relay"
 	"gitee.com/xiaosu4610/aqua-api/internal/store"
 )
 
@@ -65,10 +66,13 @@ func newTestServer(t *testing.T) (*Server, *store.Store) {
 	cfg.Server.Mode = "test"          // 使用 gin 测试模式，抑制调试输出
 	cfg.Server.Listen = "127.0.0.1:0" // 端口 0 表示由系统分配，测试中不会被真正使用
 
+	channels := store.NewChannelRepository(st.DB(), cipher)
+
 	srv := New(Deps{
 		Config:   cfg,
 		Store:    st,
-		Channels: store.NewChannelRepository(st.DB(), cipher),
+		Channels: channels,
+		Relay:    relay.New(channels, relay.Options{}),
 	})
 	return srv, st
 }

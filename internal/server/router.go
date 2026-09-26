@@ -15,6 +15,10 @@
 //	便于快速判断某接口是否已存在。管理类接口应挂到独立分组下（如 /api）。
 package server
 
+import (
+	"github.com/gin-gonic/gin"
+)
+
 // registerRoutes 注册全部路由。
 //
 // 命名约定（后续里程碑沿用）：
@@ -28,10 +32,13 @@ func (s *Server) registerRoutes() {
 	r.GET("/", s.handleRoot)           // 服务信息（名称/版本），便于人工确认服务是否正常
 	r.GET("/healthz", s.handleHealthz) // 健康检查：含数据库连通性探测
 
-	// ── 模型 API（M2 起启用）────────────────────────────────────
-	// v1 := r.Group("/v1")
-	// v1.Use(middleware.TokenAuth(s.deps.Channels))
-	// v1.POST("/chat/completions", s.handleChatCompletions)
+	// ── 模型 API ────────────────────────────────────────────────
+	// gin.WrapF 把标准库风格的 http.HandlerFunc 适配为 gin 处理器。
+	// 这样 relay 包只依赖 net/http，不必依赖 gin —— 核心域与 Web 框架保持解耦，
+	// 既便于单元测试（可直接用 httptest），也便于将来替换框架。
+	//
+	// TODO(server): M2 在本组挂载令牌鉴权中间件（校验 sk- 令牌、额度与模型白名单）。
+	r.POST("/v1/chat/completions", gin.WrapF(s.deps.Relay.ServeChatCompletions))
 
 	// ── 管理接口（M5 起启用）────────────────────────────────────
 	// api := r.Group("/api")
