@@ -94,18 +94,23 @@ func (p *epayProvider) Create(ctx context.Context, req *Request) (*CreateResult,
 		return nil, ErrProviderDisabled
 	}
 	key := strings.TrimSpace(p.opts.Secrets.EPayKey)
-	if strings.TrimSpace(settings.EPayGateway) == "" || strings.TrimSpace(settings.EPayPID) == "" || key == "" {
+	// 通道参数统一从设置表的 Params 读取（键 "epay.<字段>"）。
+	// 走 Param 而不是直接读结构体字段的原因：新增支付通道时不必再改设置模型，
+	// 且 Param 内部保留了"历史字段回退"，升级后旧的易支付配置仍然生效。
+	gateway := settings.Param(model.PaymentMethodEPay, "gateway")
+	pid := settings.Param(model.PaymentMethodEPay, "pid")
+	if gateway == "" || pid == "" || key == "" {
 		// 明确告诉使用者"缺什么"，而不是在跳转后由支付平台报一个含糊的错误
 		return nil, fmt.Errorf("%w：易支付需要配置网关地址、商户号（后台）与商户密钥（环境变量 AQUA_EPAY_KEY）", ErrNotConfigured)
 	}
 
 	subMethod := strings.TrimSpace(req.Order.SubMethod)
 	if subMethod == "" {
-		subMethod = defaultSubMethod(settings.EPayTypes)
+		subMethod = defaultSubMethod(settings.ParamList(model.PaymentMethodEPay, "types"))
 	}
 
 	params := map[string]string{
-		"pid":          settings.EPayPID,
+		"pid":          pid,
 		"type":         subMethod,
 		"out_trade_no": req.Order.TradeNo,
 		"notify_url":   req.NotifyURL,
@@ -129,7 +134,7 @@ func (p *epayProvider) Create(ctx context.Context, req *Request) (*CreateResult,
 	}
 
 	return &CreateResult{
-		PayURL: strings.TrimRight(settings.EPayGateway, "/") + epaySubmitPath + "?" + query.Encode(),
+		PayURL: strings.TrimRight(gateway, "/") + epaySubmitPath + "?" + query.Encode(),
 	}, nil
 }
 

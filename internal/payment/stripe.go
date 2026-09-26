@@ -109,7 +109,8 @@ func (p *stripeProvider) Create(ctx context.Context, req *Request) (*CreateResul
 		return nil, fmt.Errorf("%w：未配置 Stripe Secret Key（环境变量 AQUA_STRIPE_SECRET_KEY）", ErrNotConfigured)
 	}
 
-	note := strings.TrimSpace(settings.StripeNote)
+	// 商品名从通道参数读取（键 "stripe.note"），Param 内部保留了历史字段回退
+	note := settings.Param(model.PaymentMethodStripe, "note")
 	if note == "" {
 		note = req.Subject
 	}

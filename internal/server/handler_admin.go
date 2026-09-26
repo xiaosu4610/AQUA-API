@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -36,6 +37,7 @@ import (
 	"gitee.com/xiaosu4610/aqua-api/internal/mailer"
 	"gitee.com/xiaosu4610/aqua-api/internal/model"
 	"gitee.com/xiaosu4610/aqua-api/internal/oai"
+	"gitee.com/xiaosu4610/aqua-api/internal/payment"
 	"gitee.com/xiaosu4610/aqua-api/internal/relay"
 )
 
@@ -1133,6 +1135,10 @@ func (s *Server) handleGetSettings(c *gin.Context) {
 
 		// 充值 / 支付参数（非密钥，可在此修改并即时生效）
 		"payment": toPaymentSettingsDTO(settings.Payment),
+		// 支付通道清单：字段定义 + 当前已填值 + 密钥是否就绪。
+		// 前端据此做「勾选启用哪个通道，才展开该通道的配置项」的触发式渲染，
+		// 因此新增支付通道不需要改前端代码。
+		"payment_channels": buildPaymentChannels(settings.Payment, os.LookupEnv),
 		// 各支付通道的密钥是否已通过环境变量就绪。
 		// 只暴露布尔值，绝不回传密钥本身——密钥一旦出过服务端就等于泄露。
 		"payment_secrets": gin.H{
@@ -1154,14 +1160,118 @@ type paymentSettingsDTO struct {
 	MaxCents        int64    `json:"max_cents"`
 	OrderTTLMinutes int      `json:"order_ttl_minutes"`
 	NotifyBase      string   `json:"notify_base"`
-	EPayGateway     string   `json:"epay_gateway"`
-	EPayPID         string   `json:"epay_pid"`
-	EPayTypes       []string `json:"epay_types"`
-	StripeNote      string   `json:"stripe_note"`
+	// Params 是各支付通道的通道级参数，键形如 "<通道>.<字段>"（如 "epay.pid"）。
+	//
+	// 这是支持"任意多种支付通道"的承载：通道与字段由支付通道注册表声明，
+	// 前端按注册表渲染表单并原样回传，后端不再为每个通道定义专用字段。
+	Params map[string]string `json:"params"`
+	// 以下四个字段是旧版专用字段，仅为兼容老前端保留，新前端请用 Params。
+	EPayGateway string   `json:"epay_gateway"`
+	EPayPID     string   `json:"epay_pid"`
+	EPayTypes   []string `json:"epay_types"`
+	StripeNote  string   `json:"stripe_note"`
+}
+
+// paymentChannelFieldDTO 描述支付通道的一个配置字段（供前端触发式渲染）。
+type paymentChannelFieldDTO struct {
+	Key         string  `json:"key"`
+	Label       string  `json:"label"`
+	Kind        string  `json:"kind"`
+	Source      string  `json:"source"`
+	EnvVar      string  `json:"env_var"`
+	Placeholder string  `json:"placeholder"`
+	Help        string  `json:"help"`
+	Default     string  `json:"default"`
+	Required    bool    `json:"required"`
+	Options     []gin.H `json:"options,omitempty"`
+	Value       string  `json:"value"`
+	Ready       bool    `json:"ready"`
+	SettingKey  string  `json:"setting_key"`
+}
+
+// paymentChannelDTO 描述一个支付通道（含字段、密钥就绪状态与回调地址）。
+type paymentChannelDTO struct {
+	Key         string                   `json:"key"`
+	Label       string                   `json:"label"`
+	Description string                   `json:"description"`
+	Available   bool                     `json:"available"`
+	Enabled     bool                     `json:"enabled"`
+	NotifyPath  string                   `json:"notify_path"`
+	MissingEnv  []string                 `json:"missing_env"`
+	Fields      []paymentChannelFieldDTO `json:"fields"`
+}
+
+// buildPaymentChannels 组装支付通道清单：字段定义 + 当前已填值 + 密钥是否就绪。
+//
+// 为什么要一次返回"字段定义 + 当前值 + 就绪状态"三样：
+//   - 字段定义让前端做**触发式渲染**（勾选哪个通道才展开它的字段）；
+//   - 当前值让界面能回显站长已配好的内容；
+//   - 就绪状态让界面能明确提示"密钥还没注入、这个通道开了也用不了"。
+//
+// 密钥字段只返回"是否就绪"，绝不返回内容。
+func buildPaymentChannels(settings model.PaymentSettings, lookup func(string) (string, bool)) []paymentChannelDTO {
+	channels := payment.Channels()
+	result := make([]paymentChannelDTO, 0, len(channels))
+
+	for _, channel := range channels {
+		missing := channel.MissingSecrets(lookup)
+
+		fields := make([]paymentChannelFieldDTO, 0, len(channel.Fields))
+		for _, field := range channel.Fields {
+			item := paymentChannelFieldDTO{
+				Key:         field.Key,
+				Label:       field.Label,
+				Kind:        string(field.Kind),
+				Source:      string(field.Source),
+				EnvVar:      field.EnvVar,
+				Placeholder: field.Placeholder,
+				Help:        field.Help,
+				Default:     field.Default,
+				Required:    field.Required,
+				SettingKey:  channel.SettingKey(field.Key),
+			}
+			for _, option := range field.Options {
+				item.Options = append(item.Options, gin.H{"value": option.Value, "label": option.Label})
+			}
+
+			if field.Source == payment.SourceSecret {
+				// 密钥：只告诉前端"是否已就绪"，值永不出服务端
+				item.Ready = true
+				if field.EnvVar != "" {
+					if value, ok := lookup(field.EnvVar); !ok || strings.TrimSpace(value) == "" {
+						item.Ready = false
+					}
+				}
+			} else {
+				item.Value = settings.Param(channel.Key, field.Key)
+				if item.Value == "" {
+					item.Value = field.Default
+				}
+				item.Ready = item.Value != ""
+			}
+			fields = append(fields, item)
+		}
+
+		result = append(result, paymentChannelDTO{
+			Key:         channel.Key,
+			Label:       channel.Label,
+			Description: channel.Description,
+			Available:   channel.Available,
+			Enabled:     settings.MethodEnabled(channel.Key),
+			NotifyPath:  channel.NotifyPath,
+			MissingEnv:  nonNilStrings(missing),
+			Fields:      fields,
+		})
+	}
+	return result
 }
 
 // toPaymentSettingsDTO 把支付设置转为对外 DTO。
 func toPaymentSettingsDTO(settings model.PaymentSettings) paymentSettingsDTO {
+	params := make(map[string]string, len(settings.Params))
+	for key, value := range settings.Params {
+		params[key] = value
+	}
 	return paymentSettingsDTO{
 		Enabled:         settings.Enabled,
 		Methods:         nonNilStrings(settings.Methods),
@@ -1171,10 +1281,11 @@ func toPaymentSettingsDTO(settings model.PaymentSettings) paymentSettingsDTO {
 		MaxCents:        settings.MaxCents,
 		OrderTTLMinutes: settings.OrderTTLMinutes,
 		NotifyBase:      settings.NotifyBase,
-		EPayGateway:     settings.EPayGateway,
-		EPayPID:         settings.EPayPID,
-		EPayTypes:       nonNilStrings(settings.EPayTypes),
-		StripeNote:      settings.StripeNote,
+		Params:          params,
+		EPayGateway:     settings.Param(model.PaymentMethodEPay, "gateway"),
+		EPayPID:         settings.Param(model.PaymentMethodEPay, "pid"),
+		EPayTypes:       nonNilStrings(settings.ParamList(model.PaymentMethodEPay, "types")),
+		StripeNote:      settings.Param(model.PaymentMethodStripe, "note"),
 	}
 }
 
@@ -1289,19 +1400,33 @@ func mergePaymentSettings(current model.PaymentSettings, req *paymentSettingsDTO
 	updated := current
 
 	updated.Enabled = req.Enabled
-	// 通道白名单：只接受已知通道名，避免把拼写错误当成"已启用"
+	// 通道白名单：以支付通道注册表为准，而不是硬编码几个名字。
+	//
+	// 这里做两道闸门（防止"开了但用不了"）：
+	//  1) 未实现的通道不允许启用（Available=false 的会明确报错）；
+	//  2) 密钥未通过环境变量注入的通道不允许启用。
+	// 否则用户会在充值页看到支付入口、点下去却下单失败 —— 最糟糕的体验。
 	if req.Methods != nil {
 		methods := make([]string, 0, len(req.Methods))
+		seen := make(map[string]bool, len(req.Methods))
 		for _, method := range req.Methods {
 			trimmed := strings.TrimSpace(method)
-			switch trimmed {
-			case model.PaymentMethodEPay, model.PaymentMethodStripe, model.PaymentMethodManual:
-				methods = append(methods, trimmed)
-			case "":
-				// 忽略空项
-			default:
-				return updated, fmt.Errorf("不支持的支付通道 %q（可选 epay / stripe / manual）", trimmed)
+			if trimmed == "" {
+				continue // 忽略空项
 			}
+			if seen[trimmed] {
+				continue // 去重，避免同一通道在界面上出现两次
+			}
+			channel, ok := payment.FindChannel(trimmed)
+			if !ok {
+				return updated, fmt.Errorf("不支持的支付通道 %q（可选：%s）",
+					trimmed, strings.Join(payment.ChannelKeys(), " / "))
+			}
+			if err := payment.ValidateChannelEnabled(channel, os.LookupEnv); err != nil {
+				return updated, err
+			}
+			seen[trimmed] = true
+			methods = append(methods, trimmed)
 		}
 		updated.Methods = methods
 	}
@@ -1334,22 +1459,93 @@ func mergePaymentSettings(current model.PaymentSettings, req *paymentSettingsDTO
 	}
 
 	updated.NotifyBase = strings.TrimRight(strings.TrimSpace(req.NotifyBase), "/")
-	updated.EPayGateway = strings.TrimRight(strings.TrimSpace(req.EPayGateway), "/")
-	updated.EPayPID = strings.TrimSpace(req.EPayPID)
-	if req.EPayTypes != nil {
-		updated.EPayTypes = req.EPayTypes
+
+	// 通道级参数：以 Params 为唯一来源。
+	params := make(map[string]string, len(updated.Params)+len(req.Params)+4)
+	for key, value := range updated.Params {
+		params[key] = value
 	}
-	updated.StripeNote = strings.TrimSpace(req.StripeNote)
+	for key, value := range req.Params {
+		params[strings.TrimSpace(key)] = strings.TrimSpace(value)
+	}
+	foldLegacyPaymentFields(params, req)
+	// 只保留"已登记通道的已登记字段"，顺手丢掉误传的键，
+	// 防止设置表被垃圾键塞满（例如通道改名后遗留的旧键）。
+	updated.Params = sanitizePaymentParams(params)
 
 	// 启用某通道却没把必要参数填全时直接拒绝：
 	// 否则用户会看到一个"能下单却付不了款"的充值页，这是最令人困惑的故障。
-	if updated.Enabled && updated.MethodEnabled(model.PaymentMethodEPay) {
-		if updated.EPayGateway == "" || updated.EPayPID == "" {
-			return updated, fmt.Errorf("启用易支付需要填写网关地址与商户号（PID）")
+	if updated.Enabled {
+		for _, method := range updated.Methods {
+			channel, ok := payment.FindChannel(method)
+			if !ok {
+				continue
+			}
+			for _, field := range channel.SettingFields() {
+				if field.Required && updated.Param(method, field.Key) == "" {
+					return updated, fmt.Errorf("启用「%s」需要填写「%s」", channel.Label, field.Label)
+				}
+			}
 		}
 	}
 
 	return updated, nil
+}
+
+// foldLegacyPaymentFields 把旧版前端提交的专用字段折算进通道参数。
+//
+// 为什么需要它：升级后前端可能还没更新，仍会提交 epay_gateway / epay_pid 等旧字段。
+// 若直接忽略，站长一保存就会把已配好的易支付参数清空 —— 属于升级事故。
+// 因此这里把旧字段"翻译"成新的参数键，且不覆盖 Params 里已有的值。
+func foldLegacyPaymentFields(params map[string]string, req *paymentSettingsDTO) {
+	fold := func(key, value string) {
+		value = strings.TrimSpace(value)
+		if value == "" || strings.TrimSpace(params[key]) != "" {
+			return
+		}
+		params[key] = value
+	}
+	fold("epay.gateway", strings.TrimRight(req.EPayGateway, "/"))
+	fold("epay.pid", req.EPayPID)
+	fold("epay.types", strings.Join(req.EPayTypes, ","))
+	fold("stripe.note", req.StripeNote)
+}
+
+// sanitizePaymentParams 过滤通道参数，只保留已登记通道的已登记字段。
+//
+// 两道过滤缺一不可：
+//  1. 通道必须在注册表里（否则是拼错或已下线的通道）；
+//  2. 字段必须在该通道声明过（否则是拼错或已改名的字段）。
+//
+// 这样即使前端被改坏，也不可能往设置表里写入任意键。
+func sanitizePaymentParams(params map[string]string) map[string]string {
+	result := make(map[string]string, len(params))
+	for key, value := range params {
+		channelKey, fieldKey, found := strings.Cut(strings.TrimSpace(key), ".")
+		if !found {
+			continue
+		}
+		channel, ok := payment.FindChannel(channelKey)
+		if !ok {
+			continue
+		}
+		declared := false
+		for _, field := range channel.SettingFields() {
+			if field.Key == fieldKey {
+				declared = true
+				break
+			}
+		}
+		if !declared {
+			continue
+		}
+		// 空值不落库：让"没填"与"填了空串"在库里表现一致，便于判断通道是否已配置。
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		result[key] = strings.TrimSpace(value)
+	}
+	return result
 }
 
 // ---------------------------------------------------------------------------

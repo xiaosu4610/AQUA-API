@@ -26,6 +26,7 @@ package model
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 	"strings"
 	"time"
@@ -88,7 +89,22 @@ const (
 	// SettingKeyPaymentEPayTypes 易支付可用的支付类型，逗号分隔（如 "alipay,wxpay"）。
 	SettingKeyPaymentEPayTypes = "payment_epay_types"
 	// SettingKeyPaymentStripePriceNote Stripe 结账页显示的商品名。
+	//
+	// Deprecated: 新代码请用 PaymentSettings.Params（键 "stripe.note"）。
+	// 保留它只为读旧库时能把历史配置迁移进 Params，不再写入。
 	SettingKeyPaymentStripePriceNote = "payment_stripe_note"
+	// SettingKeyPaymentParams 各支付通道的通道级参数（JSON 对象）。
+	//
+	// 键名形如 "<通道>.<字段>"，例如：
+	//
+	//	{"epay.gateway":"https://pay.example.com","epay.pid":"1001","stripe.note":"充值"}
+	//
+	// 为什么用一个 JSON 键而不是每项一个设置键：
+	//	支付通道会不断增加（易支付/Stripe/支付宝/微信/PayPal…），
+	//	每个通道又有若干字段；若逐项建键，则每加一个通道都要动设置表键名、
+	//	加载映射与校验三处代码。用一个 JSON 键承载，新增通道只需在通道注册表里
+	//	声明字段（见 internal/payment 的通道注册表），存取逻辑完全复用。
+	SettingKeyPaymentParams = "payment_params"
 )
 
 // SiteSettings 是站点设置的强类型视图。
@@ -130,12 +146,68 @@ type PaymentSettings struct {
 	OrderTTLMinutes int
 	// NotifyBase 是回调基址（公网地址）；留空时按请求推导。
 	NotifyBase string
-	// EPayGateway / EPayPID / EPayTypes 是易支付通道的网关地址、商户号与可用类型。
+	// Params 是各支付通道的通道级参数，键形如 "<通道>.<字段>"。
+	//
+	// 这是"支持任意多种支付通道"的关键：通道与其字段由通道注册表声明
+	// （见 internal/payment），存取值统一走 Params，因此新增一个支付通道
+	// 不需要改动设置模型、设置表结构或存取代码。
+	//
+	// 约定：这里只放【非密钥】参数（网关地址、商户号、商品名等）。
+	// 密钥（商户密钥、Secret Key、API v3 密钥…）一律走环境变量，
+	// 因为设置表会随数据库备份/导出（见本文件头部的安全约束）。
+	Params map[string]string
+
+	// EPayGateway / EPayPID / EPayTypes 是易支付通道的历史字段。
+	//
+	// Deprecated: 已被 Params（"epay.gateway" / "epay.pid" / "epay.types"）取代。
+	// 保留它们只为一件事：读旧库时把历史配置迁移进 Params，避免升级后配置"看起来丢了"。
+	// 写入路径不再更新这三个字段。
 	EPayGateway string
 	EPayPID     string
 	EPayTypes   []string
 	// StripeNote 是 Stripe 结账页显示的商品名。
+	//
+	// Deprecated: 已被 Params 的 "stripe.note" 取代，保留原因同上。
 	StripeNote string
+}
+
+// Param 读取某个支付通道的某个字段值。
+//
+// 取值顺序：Params → 历史固定字段 → 空串。
+// 为什么要带历史回退：升级到 Params 之前配置过易支付/Stripe 的站点，
+// 其值只存在于旧字段里；回退能保证"升级后配置仍然生效"，
+// 而不是让站长以为得重新填一遍。
+func (p PaymentSettings) Param(channel, field string) string {
+	if v, ok := p.Params[channel+"."+field]; ok && strings.TrimSpace(v) != "" {
+		return strings.TrimSpace(v)
+	}
+	switch channel + "." + field {
+	case "epay.gateway":
+		return strings.TrimSpace(p.EPayGateway)
+	case "epay.pid":
+		return strings.TrimSpace(p.EPayPID)
+	case "epay.types":
+		return strings.Join(p.EPayTypes, ",")
+	case "stripe.note":
+		return strings.TrimSpace(p.StripeNote)
+	}
+	return ""
+}
+
+// ParamList 读取一个逗号分隔的列表型字段（自动去掉空白项）。
+func (p PaymentSettings) ParamList(channel, field string) []string {
+	return splitList(p.Param(channel, field))
+}
+
+// ParamKeys 返回当前已填写过值的参数键（形如 "epay.pid"），供后台展示"哪些通道已配置"。
+func (p PaymentSettings) ParamKeys() []string {
+	keys := make([]string, 0, len(p.Params))
+	for key, value := range p.Params {
+		if strings.TrimSpace(value) != "" {
+			keys = append(keys, key)
+		}
+	}
+	return keys
 }
 
 // MethodEnabled 判断某个支付通道是否启用。
@@ -228,6 +300,7 @@ func (s SiteSettings) ToMap() map[string]string {
 		SettingKeyPaymentMaxCents:        strconv.FormatInt(s.Payment.MaxCents, 10),
 		SettingKeyPaymentOrderTTLMinutes: strconv.Itoa(s.Payment.OrderTTLMinutes),
 		SettingKeyPaymentNotifyBase:      s.Payment.NotifyBase,
+		SettingKeyPaymentParams:          marshalPaymentParams(s.Payment.Params),
 		SettingKeyPaymentEPayGateway:     s.Payment.EPayGateway,
 		SettingKeyPaymentEPayPID:         s.Payment.EPayPID,
 		SettingKeyPaymentEPayTypes:       strings.Join(s.Payment.EPayTypes, ","),
@@ -328,6 +401,62 @@ func loadPaymentSettings(target *PaymentSettings, values map[string]string) {
 	}
 	if v, ok := values[SettingKeyPaymentStripePriceNote]; ok && strings.TrimSpace(v) != "" {
 		target.StripeNote = v
+	}
+	// 通道级参数（新）：解析 JSON 后再把历史字段迁移进来。
+	if v, ok := values[SettingKeyPaymentParams]; ok && strings.TrimSpace(v) != "" {
+		parsed := map[string]string{}
+		// 解析失败不报错：宁可用历史字段或默认值，也不要让整页设置加载失败
+		//（一个被手工写坏的 JSON 不该导致站点配置页打不开）。
+		if err := json.Unmarshal([]byte(v), &parsed); err == nil {
+			target.Params = parsed
+		}
+	}
+	seedLegacyPaymentParams(target)
+}
+
+// marshalPaymentParams 把通道级参数序列化为 JSON。
+//
+// 空 map 也返回 "{}" 而不是 ""：让"已被显式清空"与"从未配置"在库里可区分，
+// 便于排查"配置是不是被谁清掉了"。
+func marshalPaymentParams(params map[string]string) string {
+	if len(params) == 0 {
+		return "{}"
+	}
+	raw, err := json.Marshal(params)
+	if err != nil {
+		// map[string]string 理论上不会序列化失败；真失败时回退空对象，
+		// 避免把不可用的值写进库。
+		return "{}"
+	}
+	return string(raw)
+}
+
+// legacyPaymentParamKeys 是"历史固定字段 → 新 Params 键"的迁移映射。
+var legacyPaymentParamKeys = []string{
+	"epay.gateway", "epay.pid", "epay.types", "stripe.note",
+}
+
+// seedLegacyPaymentParams 把历史固定字段的值补进 Params（仅在 Params 缺该键时）。
+//
+// 为什么只在缺键时补：Params 是新代码的唯一写入路径，若它已有值，
+// 说明站长已在新界面配置过，此时再用历史值覆盖会"回滚"他的修改。
+func seedLegacyPaymentParams(target *PaymentSettings) {
+	if target.Params == nil {
+		target.Params = make(map[string]string)
+	}
+	for _, key := range legacyPaymentParamKeys {
+		if strings.TrimSpace(target.Params[key]) != "" {
+			continue
+		}
+		channel, field, found := strings.Cut(key, ".")
+		if !found {
+			continue
+		}
+		// Param 已包含"Params → 历史字段"的回退逻辑；此处 Params 缺该键，
+		// 因此取到的必然是历史字段值（没有则为空串，会被下面的判断跳过）。
+		if value := target.Param(channel, field); value != "" {
+			target.Params[key] = value
+		}
 	}
 }
 
