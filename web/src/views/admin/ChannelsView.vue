@@ -31,6 +31,7 @@ import {
   getChannel,
   listChannelKeys,
   listChannels,
+  listGroups,
   testChannel,
   updateChannel,
   updateChannelKeyStatus,
@@ -46,6 +47,7 @@ import {
   type ChannelPayload,
   type ChannelTestResult,
   type FetchModelsPayload,
+  type ModelGroup,
 } from '@/api/types'
 import { confirmDialog } from '@/composables/useConfirm'
 import { toastError, toastSuccess } from '@/composables/useToast'
@@ -104,7 +106,28 @@ async function loadChannels(): Promise<void> {
   }
 }
 
-onMounted(loadChannels)
+onMounted(() => {
+  void loadChannels()
+  void loadGroupOptions()
+})
+
+/**
+ * 分组候选：来源于「模型分组」页。
+ *
+ * 为什么需要它：分组名写错时，渠道不会报错，只是再也不会被任何请求选中
+ * （分组匹配不上），属于最难定位的一类配置事故。给出候选能大幅降低误填概率。
+ * 加载失败只影响便利性，因此静默忽略。
+ */
+const groupOptions = ref<ModelGroup[]>([])
+
+async function loadGroupOptions(): Promise<void> {
+  try {
+    const result = await listGroups()
+    groupOptions.value = result.items ?? []
+  } catch {
+    groupOptions.value = []
+  }
+}
 
 function changePage(next: number): void {
   page.value = next
@@ -695,8 +718,24 @@ const isEmpty = computed(() => !loading.value && !error.value && channels.value.
 
           <div>
             <label class="label" for="channel-group">分组</label>
-            <input id="channel-group" v-model="form.group" class="input input-mono" type="text" placeholder="default" />
-            <p class="hint">用于按业务线隔离渠道；不确定时保持 default。</p>
+            <input
+              id="channel-group"
+              v-model="form.group"
+              class="input input-mono"
+              type="text"
+              list="channel-group-options"
+              placeholder="default"
+            />
+            <!-- 下拉候选来自「模型分组」页：分组名写错会让渠道静默地从路由中消失，
+                 因此这里尽量让管理员从已有分组里选，而不是凭记忆手打。 -->
+            <datalist id="channel-group-options">
+              <option v-for="group in groupOptions" :key="group.name" :value="group.name">
+                {{ group.label }}（{{ (group.ratio / 100).toFixed(2) }}x）
+              </option>
+            </datalist>
+            <p class="hint">
+              用于按业务线隔离渠道；分组倍率在「模型分组」页配置。不确定时保持 default。
+            </p>
           </div>
         </div>
 
