@@ -41,6 +41,12 @@ const (
 	SettingKeySiteDescription = "site_description"
 	// SettingKeyRegistrationEnabled 是否开放注册（"true" / "false"）。
 	SettingKeyRegistrationEnabled = "registration_enabled"
+	// SettingKeyRegistrationRequireEmailCode 注册是否必须通过邮箱验证码校验。
+	//
+	// 与"是否开放注册"是两个独立开关：
+	//   registration_enabled=false 表示完全关闭注册入口；
+	//   本项=false 表示允许注册但不校验邮箱（适合内网/自用场景，不依赖邮件通道）。
+	SettingKeyRegistrationRequireEmailCode = "registration_require_email_code"
 	// SettingKeyDefaultUserQuota 新用户默认额度。
 	SettingKeyDefaultUserQuota = "default_user_quota"
 	// SettingKeyDefaultGroup 新用户默认分组。
@@ -55,8 +61,11 @@ type SiteSettings struct {
 	SiteName            string // 站点名称
 	SiteDescription     string // 站点描述
 	RegistrationEnabled bool   // 是否开放注册
-	DefaultUserQuota    int64  // 新用户默认额度（-1 表示不限）
-	DefaultGroup        string // 新用户默认分组
+	// RegistrationRequireEmailCode 注册是否必须通过邮箱验证码校验。
+	// 默认 true：注册即代表进入一个有额度的账号体系，验证邮箱能有效遏制脚本批量注册。
+	RegistrationRequireEmailCode bool   // 注册是否需要邮箱验证码
+	DefaultUserQuota             int64  // 新用户默认额度（-1 表示不限）
+	DefaultGroup                 string // 新用户默认分组
 }
 
 // DefaultSiteSettings 返回全部设置项的默认值。
@@ -67,19 +76,23 @@ func DefaultSiteSettings() SiteSettings {
 		SiteName:            "AQUA-API",
 		SiteDescription:     "新一代 AI 资产网关",
 		RegistrationEnabled: true,
-		DefaultUserQuota:    0, // 新用户默认无额度，由管理员分配（避免被白嫖）
-		DefaultGroup:        "default",
+		// 默认要求邮箱验证码：这是"防批量注册"的第一道闸门，
+		// 安全默认值应当偏严（需要放宽时由管理员在后台关闭）。
+		RegistrationRequireEmailCode: true,
+		DefaultUserQuota:             0, // 新用户默认无额度，由管理员分配（避免被白嫖）
+		DefaultGroup:                 "default",
 	}
 }
 
 // ToMap 把关类型视图转为 KV，供持久化使用。
 func (s SiteSettings) ToMap() map[string]string {
 	return map[string]string{
-		SettingKeySiteName:            s.SiteName,
-		SettingKeySiteDescription:     s.SiteDescription,
-		SettingKeyRegistrationEnabled: strconv.FormatBool(s.RegistrationEnabled),
-		SettingKeyDefaultUserQuota:    strconv.FormatInt(s.DefaultUserQuota, 10),
-		SettingKeyDefaultGroup:        s.DefaultGroup,
+		SettingKeySiteName:                     s.SiteName,
+		SettingKeySiteDescription:              s.SiteDescription,
+		SettingKeyRegistrationEnabled:          strconv.FormatBool(s.RegistrationEnabled),
+		SettingKeyRegistrationRequireEmailCode: strconv.FormatBool(s.RegistrationRequireEmailCode),
+		SettingKeyDefaultUserQuota:             strconv.FormatInt(s.DefaultUserQuota, 10),
+		SettingKeyDefaultGroup:                 s.DefaultGroup,
 	}
 }
 
@@ -104,6 +117,11 @@ func LoadSiteSettings(ctx context.Context, repo SettingRepository) (SiteSettings
 	if v, ok := values[SettingKeyRegistrationEnabled]; ok {
 		if parsed, err := strconv.ParseBool(v); err == nil {
 			settings.RegistrationEnabled = parsed
+		}
+	}
+	if v, ok := values[SettingKeyRegistrationRequireEmailCode]; ok {
+		if parsed, err := strconv.ParseBool(v); err == nil {
+			settings.RegistrationRequireEmailCode = parsed
 		}
 	}
 	if v, ok := values[SettingKeyDefaultUserQuota]; ok {

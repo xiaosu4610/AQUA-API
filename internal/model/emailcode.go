@@ -135,6 +135,12 @@ type EmailCodeRepository interface {
 
 	// DeleteExpired 清理过期记录，避免表无限增长。
 	DeleteExpired(ctx context.Context, before time.Time) (int64, error)
+
+	// DeleteByID 删除指定记录。
+	//
+	// 用途：邮件投递失败时回滚刚写入的记录——否则这条"用户从未收到"的记录
+	// 会占住 60 秒重发冷却窗口，用户需干等一分钟才能再次获取，体验很差。
+	DeleteByID(ctx context.Context, id uint64) error
 }
 
 // GenerateEmailCode 生成一个数字验证码。

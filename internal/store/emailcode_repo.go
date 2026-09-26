@@ -165,6 +165,14 @@ func (r *emailCodeRepository) DeleteExpired(ctx context.Context, before time.Tim
 	return affected, nil
 }
 
+// DeleteByID 删除指定记录（邮件投递失败时回滚用）。
+func (r *emailCodeRepository) DeleteByID(ctx context.Context, id uint64) error {
+	if _, err := r.db.ExecContext(ctx, "DELETE FROM email_codes WHERE id = ?", id); err != nil {
+		return fmt.Errorf("store: 删除验证码记录失败: %w", err)
+	}
+	return nil
+}
+
 // scanEmailCode 把一行数据映射为验证码对象。
 func scanEmailCode(sc rowScanner) (*model.EmailCode, error) {
 	var (
