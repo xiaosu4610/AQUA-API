@@ -709,7 +709,11 @@ const isEmpty = computed(() => !loading.value && !error.value && channels.value.
             type="url"
             placeholder="https://api.openai.com"
           />
-          <p class="hint">上游接口根地址，不要包含 /v1/chat/completions 等具体路径。</p>
+          <p class="hint">
+            只填到域名根：如 <code>https://integrate.api.nvidia.com</code>、<code>https://api.openai.com</code>。
+            <strong>不要</strong>带 <code>/v1</code> 或 <code>/chat/completions</code>——
+            版本前缀与端点路径由系统自动拼接（填多了会拼出 /v1/v1 而返回 404）。
+          </p>
         </div>
 
         <div>

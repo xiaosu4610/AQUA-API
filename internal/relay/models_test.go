@@ -121,8 +121,9 @@ func TestFetchModels_正常返回并携带鉴权头(t *testing.T) {
 	var gotAuth string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
-		if r.URL.Path != "/models" {
-			t.Errorf("应请求 /models，实际 %s", r.URL.Path)
+		// 必须是 /v1/models：base_url 约定只填到域名根，版本前缀由端点常量带
+		if r.URL.Path != "/v1/models" {
+			t.Errorf("应请求 /v1/models，实际 %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"data":[{"id":"meta/llama-3.1-8b-instruct"},{"id":"nvidia/nemotron-4-340b"}]}`))

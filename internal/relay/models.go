@@ -39,7 +39,13 @@ import (
 
 const (
 	// modelsPath 是 OpenAI 兼容的模型列表端点。
-	modelsPath = "/models"
+	//
+	// 必须带 /v1 前缀：本项目的 base_url 约定是"只填到域名根"，
+	// 版本前缀由各端点常量自己带上（见 oai.ChatCompletionsPath = "/v1/chat/completions"）。
+	// 曾经的坑：这里写成 "/models"，配合 base_url=https://host/v1 拉取能成功，
+	// 但同一渠道转发对话请求会拼成 /v1/v1/chat/completions 而返回 404——
+	// 两处路径约定必须严格一致。
+	modelsPath = "/v1/models"
 	// modelListTimeout 是拉取模型列表的整体超时。
 	//
 	// 取 20 秒：这只是列目录式的轻量请求，正常在数百毫秒内完成；
@@ -57,7 +63,7 @@ const (
 // FetchModels 向上游查询该渠道可用的模型名列表。
 //
 // 参数：
-//   - baseURL：上游基础地址（如 https://integrate.api.nvidia.com/v1）；
+//   - baseURL：上游基础地址，只填到域名根（如 https://integrate.api.nvidia.com）；
 //   - apiKey：用于鉴权的上游密钥（可为空——少数自建上游无需鉴权）。
 //
 // 返回的模型名已去重并排序，保证同一份上游数据每次返回顺序一致。
