@@ -37,6 +37,7 @@ func neutralizeEnv(t *testing.T) {
 		"AQUA_SERVER_LISTEN", "AQUA_SERVER_MODE",
 		"AQUA_DATABASE_DRIVER", "AQUA_DATABASE_DSN",
 		"AQUA_LOG_LEVEL", "AQUA_LOG_FORMAT",
+		"AQUA_RELAY_GROUP",
 		"AQUA_APP_KEY",
 	} {
 		t.Setenv(k, "")
@@ -82,6 +83,10 @@ func TestDefault_AllFieldsHaveValues(t *testing.T) {
 	if cfg.Log.Level != DefaultLogLevel || cfg.Log.Format != DefaultLogFormat {
 		t.Errorf("默认日志配置 = %q/%q，期望 %q/%q",
 			cfg.Log.Level, cfg.Log.Format, DefaultLogLevel, DefaultLogFormat)
+	}
+	// 默认分组必须与迁移初始化的分组一致，否则"零配置启动"会让所有令牌选不到渠道
+	if cfg.RelayGroup != DefaultRelayGroup {
+		t.Errorf("默认路由分组 = %q，期望 %q", cfg.RelayGroup, DefaultRelayGroup)
 	}
 	if cfg.Security.AppKey != "" {
 		t.Errorf("加密主密钥不应有默认值，实际为 %q", cfg.Security.AppKey)
@@ -184,6 +189,44 @@ func TestLoad_EnvOverridesFile(t *testing.T) {
 	}
 	if cfg.Log.Level != "debug" {
 		t.Errorf("日志级别 = %q，期望环境变量覆盖为 debug", cfg.Log.Level)
+	}
+}
+
+// TestLoad_RelayGroup 验证默认路由分组的三级覆盖语义。
+//
+// 重点锁定第一条：未配置时取默认值 "default"，保证"不配任何东西"的行为与改动前一致
+// （否则所有不带分组的令牌会因找不到渠道而报 503）。
+func TestLoad_RelayGroup(t *testing.T) {
+	neutralizeEnv(t)
+	setTestAppKey(t)
+
+	// 1) 不提供配置 → 默认分组
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load 返回错误: %v", err)
+	}
+	if cfg.RelayGroup != DefaultRelayGroup {
+		t.Errorf("未配置时 relay_group = %q，期望默认 %q", cfg.RelayGroup, DefaultRelayGroup)
+	}
+
+	// 2) 配置文件覆盖
+	path := writeConfigFile(t, `{"relay_group":"free"}`)
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load 返回错误: %v", err)
+	}
+	if cfg.RelayGroup != "free" {
+		t.Errorf("配置文件 relay_group = %q，期望被覆盖为 free", cfg.RelayGroup)
+	}
+
+	// 3) 环境变量优先级最高
+	t.Setenv("AQUA_RELAY_GROUP", "aqua")
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load 返回错误: %v", err)
+	}
+	if cfg.RelayGroup != "aqua" {
+		t.Errorf("环境变量 relay_group = %q，期望覆盖为 aqua", cfg.RelayGroup)
 	}
 }
 
@@ -295,6 +338,26 @@ func TestValidate_InvalidCases(t *testing.T) {
 		{
 			name:    "加密主密钥仅空白",
 			mutate:  func(c *Config) { c.Security.AppKey = "   " },
+			wantErr: true,
+		},
+		{
+			name:    "默认分组为空",
+			mutate:  func(c *Config) { c.RelayGroup = "" },
+			wantErr: true,
+		},
+		{
+			name:    "默认分组含大写",
+			mutate:  func(c *Config) { c.RelayGroup = "Free" },
+			wantErr: true,
+		},
+		{
+			name:    "默认分组含斜杠",
+			mutate:  func(c *Config) { c.RelayGroup = "free/vip" },
+			wantErr: true,
+		},
+		{
+			name:    "默认分组含空格",
+			mutate:  func(c *Config) { c.RelayGroup = "free vip" },
 			wantErr: true,
 		},
 		{

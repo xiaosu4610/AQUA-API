@@ -13,6 +13,7 @@
  *   注意：创建令牌会返回一次性明文 key，函数返回类型必须是 CreateTokenResult。
  */
 import { api } from './client'
+import { fetchModelPlaza } from './site'
 import type {
   AccessToken,
   CreateOrderPayload,
@@ -22,6 +23,7 @@ import type {
   OrderQuery,
   Paged,
   PaymentOrder,
+  PlazaGroup,
   Task,
   TaskQuery,
   UpdateTokenPayload,
@@ -47,6 +49,20 @@ export function updateMyToken(id: number, payload: UpdateTokenPayload): Promise<
 /** DELETE /api/user/tokens/{id}：删除令牌 */
 export function deleteMyToken(id: number): Promise<unknown> {
   return api.delete<unknown>(`/user/tokens/${id}`)
+}
+
+/**
+ * 读取门户可用的分组清单（用于创建令牌时选择「所属分组」）。
+ *
+ * 为什么复用公开的模型广场接口：门户端没有后台的 GET /api/admin/groups 权限，
+ * 而模型广场（GET /api/models）本就对登录用户开放，且已经带回了
+ * 分组的 name / label / ratio——正好是下拉所需的全部信息。
+ * 代价是只列出「有模型且已启用」的分组；这正是给用户选择时想要的口径
+ * （没有模型的分组选了也调不通）。
+ */
+export async function listAvailableGroups(): Promise<PlazaGroup[]> {
+  const plaza = await fetchModelPlaza()
+  return plaza.groups ?? []
 }
 
 /** GET /api/user/usage?days=7：我的用量统计（days 由页面控件决定） */

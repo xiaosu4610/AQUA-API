@@ -52,10 +52,20 @@ const (
 	DefaultDBDSN     = "./data/aqua.db" // 默认数据源（SQLite 文件路径）
 	DefaultLogLevel  = "info"           // 默认日志级别
 	DefaultLogFormat = "text"           // 默认日志格式
-	EnvPrefix        = "AQUA_"          // 环境变量统一前缀
-	driverSQLite     = "sqlite"         // M1 阶段仅实现该驱动
-	driverPostgres   = "postgres"       // 预留（M5+ 生产推荐）
-	driverMySQL      = "mysql"          // 预留
+
+	// DefaultRelayGroup 是网关的默认路由分组。
+	//
+	// 为什么必须可配（重要）：令牌未指定分组时，转发层会落到这个分组去选渠道。
+	// 默认值取 "default"，与迁移初始化的分组保持一致，保证"不配置任何东西"时
+	// 行为与旧版本完全相同；当站点把渠道整体迁到自有分组（如"免费公益 / AQUA 自营"）后，
+	// 可用 AQUA_RELAY_GROUP 指向新分组——否则所有不带分组的令牌都会因为
+	// "default 分组下已无渠道"而统一报 503。
+	DefaultRelayGroup = "default" // 默认路由分组
+
+	EnvPrefix      = "AQUA_"    // 环境变量统一前缀
+	driverSQLite   = "sqlite"   // M1 阶段仅实现该驱动
+	driverPostgres = "postgres" // 预留（M5+ 生产推荐）
+	driverMySQL    = "mysql"    // 预留
 
 	// 邮件发送（注册验证码）相关默认值。
 	//
@@ -77,6 +87,13 @@ type Config struct {
 	SMTP     SMTPConfig     `json:"smtp"`     // 邮件发送相关（口令仅来自环境变量）
 	Security SecurityConfig `json:"security"` // 安全相关（密钥仅来自环境变量）
 	Payment  PaymentConfig  `json:"payment"`  // 支付通道相关（密钥仅来自环境变量）
+
+	// RelayGroup 是网关的默认路由分组：令牌未指定分组时，请求在该分组内选渠道。
+	//
+	// 与 model.DefaultGroupName 语义相同，但 config 是底层包、不反向依赖领域包
+	// （见文件头分层约定），故此处用普通字符串表达；两处口径必须保持一致
+	// （小写、非空、不含空格/逗号/斜杠、≤64 字符）。
+	RelayGroup string `json:"relay_group"`
 }
 
 // ServerConfig 描述 HTTP 服务的监听与运行模式。
@@ -222,6 +239,8 @@ func Default() *Config {
 		// Security 刻意不提供默认值：加密主密钥必须由使用者显式提供，
 		// 若给出固定默认值等于"所有人都用同一把钥匙"，比没有加密更危险。
 		Security: SecurityConfig{},
+		// 默认分组固定为 default：保证未显式配置时，路由行为与旧版本完全一致。
+		RelayGroup: DefaultRelayGroup,
 	}
 }
 
@@ -295,6 +314,8 @@ func applyEnv(cfg *Config) {
 	setIfNotEmpty(&cfg.Database.DSN, EnvPrefix+"DATABASE_DSN")
 	setIfNotEmpty(&cfg.Log.Level, EnvPrefix+"LOG_LEVEL")
 	setIfNotEmpty(&cfg.Log.Format, EnvPrefix+"LOG_FORMAT")
+	// 默认路由分组：换站点的渠道分组后用它指向新分组，避免"令牌全量 503"。
+	setIfNotEmpty(&cfg.RelayGroup, EnvPrefix+"RELAY_GROUP")
 	setIfNotEmpty(&cfg.SMTP.Host, EnvPrefix+"SMTP_HOST")
 	setIfNotEmptyInt(&cfg.SMTP.Port, EnvPrefix+"SMTP_PORT")
 	setIfNotEmpty(&cfg.SMTP.Username, EnvPrefix+"SMTP_USERNAME")
@@ -377,6 +398,12 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("配置错误：log.format=%q 非法，可选 text/json", c.Log.Format)
 	}
 
+	// 默认路由分组：格式非法会导致"配置能启动但所有令牌都选不到渠道"，
+	// 属于最难排查的一类故障，因此在启动阶段就拦住。
+	if err := validateRelayGroup(c.RelayGroup); err != nil {
+		return err
+	}
+
 	// SMTP 校验策略：只校验「填了就一定要合法」，不强制必须填。
 	// 理由：不发邮件的部署（如仅用令牌调用）不应被邮件配置卡住启动；
 	// 是否真正需要邮件能力由站点开关（注册验证码）在运行期决定。
@@ -396,6 +423,33 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("配置错误：缺少加密主密钥，请设置环境变量 %sAPP_KEY（可用 aqua -gen-key 生成一个）", EnvPrefix)
 	}
 
+	return nil
+}
+
+// validateRelayGroup 校验默认分组标识的合法性。
+//
+// 口径刻意与 model.ValidateGroupName 保持一致（小写、非空、不含空格/逗号/斜杠、
+// ≤64 字符），但这里【不】import 领域包：config 是只依赖标准库的底层包，
+// 反向依赖 internal/model 会破坏分层（见文件头「扩展」约定）。
+//
+// 注意：两处规则必须同步修改。一旦漂移，就会出现"配置文件里填的分组能通过校验、
+// 却与令牌分组校验口径不一致"的矛盾，使用者会非常困惑。
+// 与 model 版本的差异：默认分组不允许为空（必须有值才能路由），故空值直接报错。
+func validateRelayGroup(name string) error {
+	if name == "" {
+		return fmt.Errorf("配置错误：relay_group 不能为空（默认值 %q）", DefaultRelayGroup)
+	}
+	if name != strings.ToLower(name) {
+		return fmt.Errorf("配置错误：relay_group=%q 只能使用小写字母", name)
+	}
+	// 只允许"干净"的分组名：空格/制表/换行/正反斜杠/中英文逗号都会导致
+	// 分组名在配置解析、SQL 查询、日志展示之间产生歧义。
+	if strings.ContainsAny(name, " \t\n/\\,，") {
+		return fmt.Errorf("配置错误：relay_group=%q 不能包含空格、逗号或斜杠", name)
+	}
+	if len(name) > 64 {
+		return fmt.Errorf("配置错误：relay_group 最多 64 个字符，当前 %d", len(name))
+	}
 	return nil
 }
 

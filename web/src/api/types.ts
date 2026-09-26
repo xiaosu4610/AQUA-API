@@ -129,6 +129,13 @@ export interface AccessToken {
   models: string[]
   created_at: number
   last_used_at?: number
+  /**
+   * 令牌所属分组标识；空串表示"使用网关默认分组"。
+   *
+   * 契约未定义该字段，但后端 DTO 已固定下发（见 internal/server/dto.go）。
+   * 声明为可选是为了兼容早期后端响应，展示时按「空 = 默认」处理。
+   */
+  group_name?: string
   /** 契约未定义：管理端列表可能带出的归属信息，前端有则展示 */
   user_id?: number
   username?: string
@@ -145,6 +152,12 @@ export interface CreateTokenPayload {
   remain_quota: number
   /** 仅管理端：为指定用户创建令牌 */
   user_id?: number
+  /**
+   * 令牌所属分组标识；空串表示"使用网关默认分组"。
+   *
+   * 后端会校验「格式合法 + 分组存在」，指向不存在的分组会返回 400。
+   */
+  group_name?: string
 }
 
 /** 创建令牌响应：额外返回一次性明文 key */
@@ -157,6 +170,13 @@ export interface CreateTokenResult extends AccessToken {
 export interface UpdateTokenPayload {
   name?: string
   status?: number
+  /**
+   * 令牌所属分组标识。
+   *
+   * 更新语义与创建不同：留空或空串表示"保持原分组不变"（后端如此约定），
+   * 因此不能用空串把已有分组改回默认。
+   */
+  group_name?: string
 }
 
 /**

@@ -25,8 +25,8 @@ import OneTimeKeyDialog from '@/components/OneTimeKeyDialog.vue'
 import Pagination from '@/components/Pagination.vue'
 import TokenFormFields from '@/components/TokenFormFields.vue'
 import { ApiError } from '@/api/client'
-import { createMyToken, deleteMyToken, listMyTokens, updateMyToken } from '@/api/portal'
-import { STATUS_DISABLED, STATUS_ENABLED, type AccessToken } from '@/api/types'
+import { createMyToken, deleteMyToken, listAvailableGroups, listMyTokens, updateMyToken } from '@/api/portal'
+import { STATUS_DISABLED, STATUS_ENABLED, type AccessToken, type PlazaGroup } from '@/api/types'
 import { confirmDialog } from '@/composables/useConfirm'
 import { emptyTokenForm, toTokenPayload, validateTokenForm, type TokenFormState } from '@/composables/tokenForm'
 import { toastError, toastSuccess } from '@/composables/useToast'
@@ -77,12 +77,48 @@ function changeSize(next: number): void {
   void loadTokens()
 }
 
+/* ── 分组列表（供「所属分组」选择）─────────────────────── */
+
+/**
+ * 分组选项：门户端没有后台的分组接口权限，改用公开的模型广场接口
+ * （见 api/portal.ts 的 listAvailableGroups，返回 name/label/ratio）。
+ * 惰性加载：仅在首次打开创建弹窗时拉取，避免页面加载即多一次请求。
+ */
+const groups = ref<PlazaGroup[]>([])
+const groupsLoading = ref(false)
+let groupsLoaded = false
+
+async function loadGroups(): Promise<void> {
+  if (groupsLoaded || groupsLoading.value) return
+  groupsLoading.value = true
+  try {
+    groups.value = await listAvailableGroups()
+    groupsLoaded = true
+  } catch (err) {
+    toastError(err instanceof ApiError ? err.message : '分组列表加载失败，将只能使用默认分组')
+  } finally {
+    groupsLoading.value = false
+  }
+}
+
+/** 分组下拉文案：优先展示名，缺省回退标识 */
+function groupText(group: PlazaGroup): string {
+  return group.label || group.name
+}
+
+/** 倍率展示：ratio 为百分比整数（100 = 1.0 倍） */
+function groupRatioText(ratio: number): string {
+  return (ratio / 100).toFixed(1)
+}
+
 /* ── 创建 ─────────────────────────────────────────────── */
 
 const createOpen = ref(false)
 const creating = ref(false)
 const createError = ref('')
 const form = ref<TokenFormState>(emptyTokenForm())
+/** 新建令牌的所属分组；空串 = 使用网关默认分组 */
+const groupName = ref('')
 
 /** 创建成功后的明文密钥（仅驻留内存，关闭弹窗即清空） */
 const createdKey = ref('')
@@ -92,7 +128,9 @@ const keyDialogOpen = ref(false)
 function openCreate(): void {
   form.value = emptyTokenForm()
   createError.value = ''
+  groupName.value = ''
   createOpen.value = true
+  void loadGroups()
 }
 
 async function submitCreate(): Promise<void> {
@@ -104,7 +142,11 @@ async function submitCreate(): Promise<void> {
   creating.value = true
   createError.value = ''
   try {
-    const result = await createMyToken(toTokenPayload(form.value))
+    const result = await createMyToken({
+      // group_name 为空串即"不指定分组"，后端会落到网关默认分组
+      ...toTokenPayload(form.value),
+      group_name: groupName.value,
+    })
     createdKey.value = result.key
     createdName.value = result.name
     createOpen.value = false
@@ -234,11 +276,12 @@ const isEmpty = computed(() => !loading.value && !error.value && tokens.value.le
     <p class="mb-2 hidden text-xs text-ink-400 lg:block">表格列较多，可左右滑动查看完整内容。</p>
 
     <div class="table-wrap table-cards">
-      <table class="data-table min-w-[1020px]">
+      <table class="data-table min-w-[1080px]">
         <thead>
           <tr>
             <th>名称</th>
             <th>密钥</th>
+            <th>分组</th>
             <th>状态</th>
             <th class="text-right">剩余额度</th>
             <th class="text-right">已用额度</th>
@@ -254,7 +297,7 @@ const isEmpty = computed(() => !loading.value && !error.value && tokens.value.le
             :loading="loading"
             :error="error"
             :empty="isEmpty"
-            :colspan="9"
+            :colspan="10"
             loading-text="正在加载令牌列表…"
             empty-text="还没有访问令牌"
             empty-hint="创建第一个令牌后，就可以用它调用 /v1 接口了。"
@@ -277,6 +320,8 @@ const isEmpty = computed(() => !loading.value && !error.value && tokens.value.le
                   <code class="chip">{{ token.masked_key }}</code>
                 </span>
               </td>
+
+              <td class="text-ink-200" data-label="分组">{{ token.group_name || '默认' }}</td>
 
               <td data-label="状态">
                 <span :class="statusBadgeClass(token.status)">
@@ -349,6 +394,17 @@ const isEmpty = computed(() => !loading.value && !error.value && tokens.value.le
       :close-on-backdrop="false"
       @close="createOpen = false"
     >
+      <div class="mb-5">
+        <label class="label" for="token-group">所属分组</label>
+        <select id="token-group" v-model="groupName" class="input max-w-[20rem]" :disabled="groupsLoading">
+          <option value="">{{ groupsLoading ? '正在加载分组…' : '默认分组（不指定）' }}</option>
+          <option v-for="group in groups" :key="group.name" :value="group.name">
+            {{ groupText(group) }}（{{ groupRatioText(group.ratio) }} 倍）
+          </option>
+        </select>
+        <p class="hint">分组决定该令牌可用的渠道与计费倍率；不指定时使用网关默认分组。</p>
+      </div>
+
       <TokenFormFields v-model="form" :available-models="site.models" />
 
       <p

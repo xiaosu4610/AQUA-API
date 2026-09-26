@@ -324,6 +324,10 @@ func run() error {
 	oauthRefresher := relay.NewOAuthRefresher(oauthProviders, channelKeys)
 
 	relayEngine := relay.New(channels, relay.Options{
+		// 默认路由分组：令牌未指定分组时落到这里。
+		// 由配置注入（AQUA_RELAY_GROUP，默认 default）——站点把渠道迁到自有分组后，
+		// 不改这里就会导致所有不带分组的令牌找不到渠道（表现为 503）。
+		Group:     cfg.RelayGroup,
 		UsageLogs: usageLogs,
 		Tokens:    tokens,
 		// 渠道密钥池：让一个渠道可以挂多把上游密钥并轮询使用
