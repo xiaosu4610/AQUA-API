@@ -31,7 +31,7 @@ import (
 )
 
 // modelPriceColumns 集中定义查询列，顺序必须与 scanModelPrice 的扫描顺序严格一致。
-const modelPriceColumns = `id, model, prompt_price, completion_price, group_name, enabled, remark, created_at, updated_at`
+const modelPriceColumns = `id, model, prompt_price, completion_price, per_call_price, group_name, enabled, remark, created_at, updated_at`
 
 // modelPriceRepository 是 model.ModelPriceRepository 的 SQL 实现，并发安全。
 type modelPriceRepository struct {
@@ -57,9 +57,9 @@ func (r *modelPriceRepository) Create(ctx context.Context, price *model.ModelPri
 
 	res, err := r.db.ExecContext(ctx, `
 		INSERT INTO model_prices
-			(model, prompt_price, completion_price, group_name, enabled, remark, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		price.Model, price.PromptPrice, price.CompletionPrice, price.Group,
+			(model, prompt_price, completion_price, per_call_price, group_name, enabled, remark, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		price.Model, price.PromptPrice, price.CompletionPrice, price.PerCallPrice, price.Group,
 		boolToInt(price.Enabled), price.Remark, price.CreatedAt.Unix(), price.UpdatedAt.Unix(),
 	)
 	if err != nil {
@@ -154,10 +154,10 @@ func (r *modelPriceRepository) Update(ctx context.Context, price *model.ModelPri
 	// 刻意不更新 created_at：创建时间应保持不可变，便于审计
 	res, err := r.db.ExecContext(ctx, `
 		UPDATE model_prices SET
-			model = ?, prompt_price = ?, completion_price = ?, group_name = ?,
+			model = ?, prompt_price = ?, completion_price = ?, per_call_price = ?, group_name = ?,
 			enabled = ?, remark = ?, updated_at = ?
 		WHERE id = ?`,
-		price.Model, price.PromptPrice, price.CompletionPrice, price.Group,
+		price.Model, price.PromptPrice, price.CompletionPrice, price.PerCallPrice, price.Group,
 		boolToInt(price.Enabled), price.Remark, price.UpdatedAt.Unix(), price.ID,
 	)
 	if err != nil {
@@ -201,6 +201,7 @@ func scanModelPrice(sc rowScanner) (*model.ModelPrice, error) {
 		modelName       string
 		promptPrice     int64
 		completionPrice int64
+		perCallPrice    int64
 		group           string
 		enabled         int
 		remark          string
@@ -208,7 +209,7 @@ func scanModelPrice(sc rowScanner) (*model.ModelPrice, error) {
 		updatedAt       int64
 	)
 
-	if err := sc.Scan(&id, &modelName, &promptPrice, &completionPrice, &group,
+	if err := sc.Scan(&id, &modelName, &promptPrice, &completionPrice, &perCallPrice, &group,
 		&enabled, &remark, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, err
@@ -221,6 +222,7 @@ func scanModelPrice(sc rowScanner) (*model.ModelPrice, error) {
 		Model:           modelName,
 		PromptPrice:     promptPrice,
 		CompletionPrice: completionPrice,
+		PerCallPrice:    perCallPrice,
 		Group:           group,
 		Enabled:         enabled != 0,
 		Remark:          remark,

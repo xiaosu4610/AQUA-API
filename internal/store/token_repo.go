@@ -303,16 +303,21 @@ func (r *tokenRepository) RecordUsage(ctx context.Context, id uint64, at time.Ti
 	return nil
 }
 
-// ConsumeQuota 扣减令牌额度。
+// ConsumeQuota 调整令牌额度：amount 为正表示扣减，为负表示退还。
 //
 // 实现要点（逐条说明为什么这样写）：
 //  1. 单条 SQL 完成"累加已用 + 自减剩余"，杜绝并发下的计数丢失；
 //  2. 用 CASE WHEN unlimited_quota 保证"不限额度"令牌的剩余额度不被扣成负数；
 //  3. 用 SQLite 的标量 MAX(x, 0) 兜底，防止管理员误设的余额被扣穿；
-//  4. amount <= 0 时直接返回：调用方可能传入 0（未定价模型），
+//  4. amount == 0 时直接返回：调用方可能传入 0（未定价模型），
 //     此时不应产生一次无意义的写操作。
+//
+// 关于退还（amount < 0）：SQL 中的减法在负数入参下自然变成加法
+// （remain_quota - (-x) = remain_quota + x），因此退还与扣减共用同一段语句。
+// 退还量由调用方保证不超过当初扣减的量（见 relay.Billing.Refund 的说明），
+// 因此 remain_quota 不会被加到不合理的高度。
 func (r *tokenRepository) ConsumeQuota(ctx context.Context, id uint64, amount int64, at time.Time) error {
-	if amount <= 0 {
+	if amount == 0 {
 		return nil
 	}
 

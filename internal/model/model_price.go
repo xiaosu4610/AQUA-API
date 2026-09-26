@@ -63,6 +63,7 @@ type ModelPrice struct {
 	Model           string    // 模型名或通配模式（"gpt-4*"、"*"）
 	PromptPrice     int64     // 每 1M 输入 token 的额度
 	CompletionPrice int64     // 每 1M 输出 token 的额度
+	PerCallPrice    int64     // 每调用一次的额度（异步任务 / 图像视频类）；0 表示不计费
 	Group           string    // 适用分组
 	Enabled         bool      // 是否启用（停用即视为未定价）
 	Remark          string    // 备注（便于说明定价依据）
@@ -79,8 +80,9 @@ func (p *ModelPrice) Validate() error {
 		return errors.New("分组不能为空")
 	}
 	// 价格为负会变成"调用反而加额度"，必须拦住
-	if p.PromptPrice < 0 || p.CompletionPrice < 0 {
-		return fmt.Errorf("价格不能为负数（输入 %d / 输出 %d）", p.PromptPrice, p.CompletionPrice)
+	if p.PromptPrice < 0 || p.CompletionPrice < 0 || p.PerCallPrice < 0 {
+		return fmt.Errorf("价格不能为负数（输入 %d / 输出 %d / 每次 %d）",
+			p.PromptPrice, p.CompletionPrice, p.PerCallPrice)
 	}
 	return nil
 }
@@ -163,6 +165,22 @@ func (p *ModelPrice) ComputeQuota(promptTokens, completionTokens int64) int64 {
 		completionTokens = 0
 	}
 	return (promptTokens*p.PromptPrice + completionTokens*p.CompletionPrice) / quotaScale
+}
+
+// ComputePerCallQuota 按"次数"计算应扣额度（异步任务 / 图像视频类）。
+//
+// 公式：quota = perCallPrice × count
+//
+// count <= 0 时按 1 次处理：缺省即"一次调用"，
+// 若按 0 次计算会变成免费，属于让站长白白亏钱的默认值。
+func (p *ModelPrice) ComputePerCallQuota(count int64) int64 {
+	if p == nil {
+		return 0
+	}
+	if count <= 0 {
+		count = 1
+	}
+	return p.PerCallPrice * count
 }
 
 // MatchModelPrice 从一组规则中挑出最适用的那一条。

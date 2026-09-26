@@ -135,6 +135,71 @@ func (b *Billing) Quote(ctx context.Context, modelName string, promptTokens, com
 	return price.ComputeQuota(promptTokens, completionTokens)
 }
 
+// QuoteOnce 计算"调用一次该模型"应扣的额度（只算不扣）。
+//
+// 用途：异步任务在【提交时】就要扣费（见 model.Task 的文件头说明），
+// 因此任务链路需要一个与 token 无关的计价入口。
+// count 为本次生成的份数（如一次画 4 张图），<=0 时按 1 次处理。
+func (b *Billing) QuoteOnce(ctx context.Context, modelName string, count int64) int64 {
+	price := b.priceFor(ctx, modelName)
+	return price.ComputePerCallQuota(count)
+}
+
+// ChargeOnce 按次计费并扣减额度，返回实际扣减的额度。
+//
+// 与 Charge 的关系：口径不同（按次 vs 按 token），扣减目标与容错策略完全一致。
+func (b *Billing) ChargeOnce(ctx context.Context, userID, tokenID uint64, modelName string, count int64) int64 {
+	if b == nil {
+		return 0
+	}
+
+	price := b.priceFor(ctx, modelName)
+	if price == nil {
+		// 未定价：不扣费（与 token 计费保持同一语义，避免"没配价格就报错"）
+		return 0
+	}
+
+	quota := price.ComputePerCallQuota(count)
+	if quota <= 0 {
+		return 0
+	}
+
+	b.applyDelta(ctx, userID, tokenID, quota, "扣减")
+	return quota
+}
+
+// Refund 退还额度（异步任务失败/取消时调用）。
+//
+// 为什么必须支持退还：任务在提交时就已扣费，若任务最终失败却不退，
+// 用户会为"没有拿到结果"的调用付费——这是最容易被投诉的计费缺陷。
+//
+// 幂等性说明：本方法自身不做幂等保护，由调用方保证"每个任务最多退一次"
+// （store 层的 Finish 通过 status NOT IN (终态) 条件天然实现了这一点）。
+func (b *Billing) Refund(ctx context.Context, userID, tokenID uint64, amount int64) {
+	if b == nil || amount <= 0 {
+		return
+	}
+	b.applyDelta(ctx, userID, tokenID, -amount, "退还")
+}
+
+// applyDelta 对令牌与用户额度施加同一个增量（正数为扣减、负数为退还）。
+//
+// 抽出来的理由：扣减与退还的目标、容错策略完全相同，
+// 各写一遍必然有一天会出现"退还时漏掉用户额度"的不一致。
+func (b *Billing) applyDelta(ctx context.Context, userID, tokenID uint64, delta int64, action string) {
+	now := time.Now()
+	if tokenID > 0 && b.tokens != nil {
+		if err := b.tokens.ConsumeQuota(ctx, tokenID, delta, now); err != nil {
+			slog.Warn(action+"令牌额度失败", "error", err, "token_id", tokenID, "delta", delta)
+		}
+	}
+	if userID > 0 && b.users != nil {
+		if err := b.users.AddUsedQuota(ctx, userID, delta); err != nil {
+			slog.Warn(action+"用户已用额度失败", "error", err, "user_id", userID, "delta", delta)
+		}
+	}
+}
+
 // Charge 按用量计费并扣减额度，返回实际扣减的额度。
 //
 // 安全约束（重要）：本方法绝不能影响客户端响应。

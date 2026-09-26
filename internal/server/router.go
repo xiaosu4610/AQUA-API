@@ -72,6 +72,8 @@ func (s *Server) registerRoutes() {
 	portal.DELETE("/tokens/:id", s.handleMyDeleteToken)
 	portal.GET("/usage", s.handleMyUsage)
 	portal.GET("/logs", s.handleMyLogs)
+	// 异步任务（用户只能看自己的）
+	portal.GET("/tasks", s.handleMyListTasks)
 
 	// ── 管理后台（需管理员）──────────────────────────────────────
 	admin := authed.Group("/admin")
@@ -125,6 +127,12 @@ func (s *Server) registerRoutes() {
 	admin.GET("/settings", s.handleGetSettings)
 	admin.PUT("/settings", s.handleUpdateSettings)
 
+	// 异步任务管理（管理员可见全部任务并取消）
+	admin.GET("/tasks", s.handleAdminListTasks)
+	admin.POST("/tasks/:ref/cancel", s.handleAdminCancelTask)
+	// 已注册的上游任务适配器（供任务表单提示可选 provider）
+	admin.GET("/task-providers", s.handleTaskProviders)
+
 	// ── 模型 API（访问令牌鉴权）──────────────────────────────────
 	//
 	// gin.WrapF 把标准库风格的 http.HandlerFunc 适配为 gin 处理器。
@@ -136,6 +144,14 @@ func (s *Server) registerRoutes() {
 	// Anthropic Messages 协议：Claude 官方 SDK、Claude Code 等客户端默认走这里。
 	// 网关内部会把请求转换为 OpenAI 格式再转发，响应再转换回 Anthropic 格式。
 	v1.POST("/messages", gin.WrapF(s.deps.Relay.ServeAnthropicMessages))
+
+	// 异步任务：提交后返回任务号，客户端凭任务号轮询取结果。
+	//
+	// 与对话接口共用同一套令牌鉴权与额度体系（任务在提交时即扣费，
+	// 失败/取消会自动退还），因此使用者无需学习第二套凭据机制。
+	v1.POST("/tasks", s.handleSubmitTask)
+	v1.GET("/tasks", s.handleListMyTasks)
+	v1.GET("/tasks/:ref", s.handleGetTask)
 
 	// Gemini 原生协议：模型名与动作都在路径里
 	// （/v1beta/models/{model}:generateContent 与 :streamGenerateContent），

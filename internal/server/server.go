@@ -64,6 +64,15 @@ type Deps struct {
 	// OAuthProviders 是 OAuth 提供方配置仓储（订阅账号池刷新令牌时使用）。
 	OAuthProviders model.OAuthProviderRepository
 
+	// Tasks 是异步任务仓储（列表查询、按任务号查询、取消）。
+	Tasks model.TaskRepository
+	// TaskService 是异步任务编排服务（提交上游、轮询推进、失败退还）。
+	//
+	// 与 Tasks 分开的原因：Tasks 只做存取，TaskService 才承载
+	// "选渠道 → 扣费 → 提交上游 → 落库"的业务流程；
+	// 前者用于纯查询场景（后台列表），后者用于需要副作用的操作。
+	TaskService *relay.TaskService
+
 	// EmailCodes 是注册邮箱验证码仓储（由 main 注入；验证码相关接口依赖它）。
 	EmailCodes model.EmailCodeRepository
 	// Mailer 是出站邮件发送器；未配置时验证码接口会返回明确的"邮件服务未配置"提示，

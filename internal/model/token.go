@@ -272,7 +272,7 @@ type TokenRepository interface {
 	// 说明：只更新一个字段，避免把整行写回造成并发覆盖。
 	RecordUsage(ctx context.Context, id uint64, at time.Time) error
 
-	// ConsumeQuota 扣减令牌额度：累加已用额度，并相应减少剩余额度。
+	// ConsumeQuota 调整令牌额度：amount 为正表示扣减，为负表示退还。
 	//
 	// 关键实现要求：必须在【单条 SQL】内完成自增与自减。
 	// 若写成"先读出来、在内存里加减、再写回"，并发请求会互相覆盖，
@@ -281,6 +281,8 @@ type TokenRepository interface {
 	// 不限额度（unlimited_quota）的令牌只累加已用额度、不动剩余额度，
 	// 但用量仍然照常记录，便于站长核算上游成本。
 	// 剩余额度扣到 0 为止（不允许为负），避免出现"倒欠额度"的怪异状态。
+	//
+	// 退还（amount < 0）用于异步任务失败时回滚提交阶段已扣的额度。
 	ConsumeQuota(ctx context.Context, id uint64, amount int64, at time.Time) error
 
 	// Update 按 ID 更新令牌（不修改创建时间），不存在时返回 ErrTokenNotFound。
