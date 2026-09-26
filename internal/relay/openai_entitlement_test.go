@@ -24,6 +24,7 @@ package relay
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -66,12 +67,15 @@ func TestClassifyKeyLevelFailure_识别账号无此模型并还原响应体(t *t
 	}
 
 	r := New(nil, Options{})
-	violation, reason := r.classifyKeyLevelFailure(resp)
+	violation, reason, snippet := r.classifyKeyLevelFailure(resp)
 	if !violation {
 		t.Fatal("404 + Not found for account 应判为密钥级失败（换把密钥可能就成功）")
 	}
 	if !strings.Contains(reason, "无权访问") {
 		t.Fatalf("失败原因应说明是凭据无权限，实际 %q", reason)
+	}
+	if len(snippet) == 0 {
+		t.Fatal("应同时返回响应体片段，供所有重试用尽时透传上游真实原因")
 	}
 
 	// 关键：判定过程中读过响应体，必须还原，否则透传路径会读到残缺内容
@@ -91,7 +95,7 @@ func TestClassifyKeyLevelFailure_普通业务错误不视为凭据问题(t *test
 	}
 
 	r := New(nil, Options{})
-	if violation, _ := r.classifyKeyLevelFailure(resp); violation {
+	if violation, _, _ := r.classifyKeyLevelFailure(resp); violation {
 		t.Fatal("与凭据无关的 404 不应触发密钥轮换（换密钥也没用，只会放大延迟）")
 	}
 }
@@ -101,15 +105,33 @@ func TestClassifyKeyLevelFailure_状态码路径(t *testing.T) {
 
 	for _, status := range []int{401, 402, 403, 429} {
 		resp := &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader("{}"))}
-		if violation, _ := r.classifyKeyLevelFailure(resp); !violation {
+		if violation, _, _ := r.classifyKeyLevelFailure(resp); !violation {
 			t.Errorf("状态码 %d 应判为凭据级失败", status)
 		}
 	}
 	for _, status := range []int{200, 400, 422, 500, 502, 503} {
 		resp := &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader("{}"))}
-		if violation, _ := r.classifyKeyLevelFailure(resp); violation {
+		if violation, _, _ := r.classifyKeyLevelFailure(resp); violation {
 			t.Errorf("状态码 %d 不应判为凭据级失败", status)
 		}
+	}
+}
+
+func TestExtractUpstreamErrorMessage_兼容RFC7807(t *testing.T) {
+	// NVIDIA 这类上游用的是 RFC7807 问题详情，不带 OpenAI 的 error 包裹
+	rfc7807 := []byte(`{"status":404,"title":"Not Found",` +
+		`"detail":"Function 'x': Not found for account 'y'"}`)
+	if got := extractUpstreamErrorMessage(rfc7807); !strings.Contains(got, "Not found for account") {
+		t.Fatalf("应能取出 detail 字段，实际 %q", got)
+	}
+
+	openaiStyle := []byte(`{"error":{"message":"invalid api key"}}`)
+	if got := extractUpstreamErrorMessage(openaiStyle); got != "invalid api key" {
+		t.Fatalf("应能取出 OpenAI 风格的 message，实际 %q", got)
+	}
+
+	if got := extractUpstreamErrorMessage(nil); got != "" {
+		t.Fatalf("空响应体应返回空字符串，实际 %q", got)
 	}
 }
 
@@ -178,5 +200,41 @@ func TestForward_全池均无该模型_透传上游404(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "Not found for account") {
 		t.Fatalf("上游错误体应被完整透传（含还原后的响应体），实际：%s", body)
+	}
+}
+
+// TestForward_密钥重试预算耗尽_仍透传上游真实原因 是"大密钥池"的兜底用例。
+//
+// 场景：池内密钥数量超过密钥级重试预算，且每一把所在的账号都没有该模型。
+// 期望：预算耗尽后仍然把上游的 404 与原因透传出去。
+// 若这里退化成通用的 502，管理员就无法判断"是模型没授权"还是"网关坏了"——
+// 这正是线上真实踩到的坑（池里 500 把密钥，20 次随机挑选全部落空）。
+func TestForward_密钥重试预算耗尽_仍透传上游真实原因(t *testing.T) {
+	channels, keys := newTestRepos(t)
+	ctx := context.Background()
+
+	upstream := newEntitlementAwareUpstream(t, nil) // 全部账号都无该模型
+
+	ch := addChannel(t, channels, upstream.URL, "", []string{"test-model"}, 10)
+	pool := make([]string, 0, maxKeyLevelAttempts+5)
+	for i := 0; i < maxKeyLevelAttempts+5; i++ {
+		pool = append(pool, fmt.Sprintf("nvapi-acct-%d", i))
+	}
+	if _, _, err := keys.ReplaceAll(ctx, ch.ID, pool, nil); err != nil {
+		t.Fatalf("导入密钥池失败: %v", err)
+	}
+
+	r := New(channels, Options{Keys: keys, MaxAttempts: 1})
+	gateway := newGateway(t, r)
+
+	resp := postChat(t, gateway.URL, `{"model":"test-model","messages":[{"role":"user","content":"hi"}]}`)
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("重试预算耗尽后应透传上游 404，实际 %d：%s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "Not found for account") {
+		t.Fatalf("应透传上游的真实原因（而不是含糊的 502），实际：%s", body)
 	}
 }

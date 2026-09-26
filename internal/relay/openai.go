@@ -26,6 +26,7 @@ package relay
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -159,6 +160,8 @@ func (r *Relay) forwardWithFallback(w http.ResponseWriter, req *http.Request, mo
 	// 此时"换一把密钥"的成本极低（同一上游、复用连接、上游是立即拒绝的），
 	// 所以值得多试几把；若沿用 3 次的渠道预算，绝大多数请求会白跑一趟。
 	channelAttempts := 0
+	// lastFailure 记录"最后一次上游失败"，用于所有重试耗尽后透传真实原因
+	var lastFailure upstreamFailure
 retryLoop:
 	for keyAttempts := 1; keyAttempts <= maxKeyLevelAttempts; keyAttempts++ {
 		ch := pickCandidate(candidates, excludedChannels)
@@ -186,7 +189,7 @@ retryLoop:
 			hasSpareChannel: r.hasOtherChannel(candidates, excludedChannels, ch.ID),
 		}
 
-		switch r.forwardChat(w, req, target, modelName, body, adapter) {
+		switch r.forwardChat(w, req, target, modelName, body, adapter, &lastFailure) {
 		case forwardResponded:
 			return
 		case forwardRetryKey:
@@ -203,7 +206,43 @@ retryLoop:
 		}
 	}
 
-	// 尝试预算耗尽或候选耗尽：记一条日志（channel_id 为 0，因为没有一个渠道成功完成会话）
+	// 所有尝试都用尽：优先把上游最后一次的真实响应透传出去。
+	//
+	// 为什么不统一回 502：多账号密钥池下最常见的失败是
+	// "该模型在池内所有账号上都没有授权"，上游已经明确说了原因
+	// （如 NVIDIA 的 "Not found for account"）。
+	// 把它换成含糊的"所有候选渠道均请求失败"，会让用户与管理员
+	// 都无从判断该换渠道、换模型还是换账号。
+	if lastFailure.status != 0 {
+		message := extractUpstreamErrorMessage(lastFailure.body)
+		if message == "" {
+			message = fmt.Sprintf("上游返回 HTTP %d", lastFailure.status)
+		}
+
+		r.recordUsage(req.Context(), usageEntry{
+			UserID:     identityFromRequest(req.Context()).UserID,
+			TokenID:    identityFromRequest(req.Context()).TokenID,
+			Model:      modelName,
+			IsStream:   oai.PeekStream(body),
+			StatusCode: lastFailure.status,
+			ErrorText:  truncateReason(message),
+		})
+
+		if adapter == nil {
+			// 直通路径：状态码与响应体原样透传，客户端可自助排查
+			copyResponseHeaders(w.Header(), lastFailure.header)
+			w.WriteHeader(lastFailure.status)
+			_, _ = w.Write(lastFailure.body)
+			return
+		}
+		// 转换路径：按下游协议生成错误（各协议的 Content-Type 不同）
+		writeAdaptedError(w, adapter, lastFailure.status, message,
+			oai.TypeInvalidRequest, oai.CodeUpstreamRequestFailed)
+		return
+	}
+
+	// 没有任何可透传的上游响应（例如候选渠道为空、全部连不上）：
+	// 记一条日志（channel_id 为 0，因为没有一个渠道成功完成会话）
 	r.recordUsage(req.Context(), usageEntry{
 		UserID:     identityFromRequest(req.Context()).UserID,
 		TokenID:    identityFromRequest(req.Context()).TokenID,
@@ -291,16 +330,29 @@ const maxCredentialAttempts = 3
 
 // maxKeyLevelAttempts 是单次请求内最多尝试的凭据轮数（密钥级重试预算）。
 //
-// 取值 20 的权衡：
+// 取值 50 的权衡：
 //   - 多账号密钥池里"同一个模型在不同账号授权不同"是常态
 //     （NVIDIA 免费额度池尤其明显：几十个账号各自只有部分模型权限），
 //     只试 3 把很可能全部落在没有该模型授权的小号上，用户会看到无意义的失败；
-//   - 上游对"无此模型/无权限"是【立即】拒绝（毫秒级、不消耗算力），
-//     所以多试几把的代价极低；而只要池里有一把可用，用户就能拿到结果。
+//   - 上游对"无此模型/无权限"是【立即】拒绝（实测每把约 75 毫秒、不消耗算力），
+//     所以 50 把也只花约 4 秒；而只要池里有一把可用，用户就能拿到结果。
+//     这个代价明显小于"模型明明在池里可用，用户却被告知调不通"。
 //
 // 它与 maxAttempts（渠道级预算）相互独立：渠道级失败要重新建连、代价高，
 // 仍严格限制在 maxAttempts；本预算只服务"换一把密钥"这种廉价重试。
-const maxKeyLevelAttempts = 20
+const maxKeyLevelAttempts = 50
+
+// upstreamFailure 记录"最后一次上游失败"的原始信息。
+//
+// 为什么需要它：当所有重试都用尽时，若只回一句"所有候选渠道均请求失败"（502），
+// 用户与管理員都无从判断到底是模型不存在、账号没权限、还是上游故障。
+// 把上游最后一次响应（状态码 + 响应头 + 响应体片段）留存下来原样透传，
+// 才能让人一眼看懂"该模型在当前账号池里确实不可用"。
+type upstreamFailure struct {
+	status int
+	header http.Header
+	body   []byte
+}
 
 // keyLevelPeekBytes 是判定"凭据被拒"时窥探响应体的字节数。
 //
@@ -363,39 +415,75 @@ func peekBody(resp *http.Response, limit int) ([]byte, error) {
 	return peek, nil
 }
 
+// extractUpstreamErrorMessage 从上游错误体里取一句可读说明。
+//
+// 兼容两种常见形态：
+//   - OpenAI 风格：{"error":{"message":"..."}}
+//   - RFC7807 问题详情：{"title":"Not Found","detail":"Function ...: Not found for account ..."}
+//     （NVIDIA NIM 用的就是这种）
+//
+// 这样"上游到底说了什么"才能如实呈现在错误信息里。
+func extractUpstreamErrorMessage(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	if message := extractErrorMessage(raw); message != "" && message != "上游请求失败" {
+		return message
+	}
+
+	var problem struct {
+		Title  string `json:"title"`
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(raw, &problem); err == nil {
+		if strings.TrimSpace(problem.Detail) != "" {
+			return problem.Detail
+		}
+		if strings.TrimSpace(problem.Title) != "" {
+			return problem.Title
+		}
+	}
+	return ""
+}
+
 // classifyKeyLevelFailure 判断这次上游响应是否属于"这把凭据自身的问题"。
 //
-// 判据分两类（顺序不能反）：
+// 判据分三类（顺序不能反）：
 //  1. 状态码直接表明凭据问题：401 / 403 / 402 / 429；
-//  2. 状态码是 400 / 404，但响应体文本表明"该账号无权访问/没有这个模型"。
+//  2. 状态码是 400 / 404，且响应体文本表明"该账号无权访问/没有这个模型"——
+//     多账号密钥池下这类"换把密钥就能成功"的情形必须被识别出来；
+//  3. 其余一律不算凭据问题（换密钥也没用，只会放大延迟）。
 //
-// 返回值第二项是记录到密钥失败原因里的说明（已脱敏，不含密钥）。
-func (r *Relay) classifyKeyLevelFailure(resp *http.Response) (bool, string) {
+// 返回值：
+//   - violation：是否凭据级失败；
+//   - reason：记录到密钥失败原因里的说明（已脱敏，不含密钥）；
+//   - snippet：本次响应体开头的一段（可能为空），供"所有重试都用尽"时透传上游真实原因。
+func (r *Relay) classifyKeyLevelFailure(resp *http.Response) (bool, string, []byte) {
 	if resp == nil {
-		return false, ""
+		return false, "", nil
 	}
 	if isKeyLevelFailure(resp.StatusCode) {
-		return true, fmt.Sprintf("上游返回 HTTP %d", resp.StatusCode)
+		return true, fmt.Sprintf("上游返回 HTTP %d", resp.StatusCode), nil
 	}
 	if resp.StatusCode != http.StatusBadRequest && resp.StatusCode != http.StatusNotFound {
-		return false, ""
+		return false, "", nil
 	}
 
 	peek, err := peekBody(resp, keyLevelPeekBytes)
 	if err != nil || len(peek) == 0 {
 		// 读不到内容就无法判定：按"请求本身的问题"处理，
 		// 宁可少重试，也不要因为一次读取失败而做无谓的密钥轮换。
-		return false, ""
+		return false, "", nil
 	}
 
 	lowered := strings.ToLower(string(peek))
 	for _, marker := range keyLevelRejectionMarkers {
 		if strings.Contains(lowered, marker) {
 			return true, fmt.Sprintf("上游返回 HTTP %d，并指出该凭据无权访问（命中 %q）",
-				resp.StatusCode, marker)
+				resp.StatusCode, marker), peek
 		}
 	}
-	return false, ""
+	return false, "", nil
 }
 
 // truncateReason 截断失败原因，避免超长错误信息撑大数据库字段。
@@ -457,7 +545,10 @@ const (
 // forwardChat 把请求转发到指定目标（渠道 + 密钥），并把上游响应回写给客户端。
 //
 // 返回值表示结局，供上层决定重试方向（见 forwardOutcome）。
-func (r *Relay) forwardChat(w http.ResponseWriter, req *http.Request, target forwardTarget, modelName string, body []byte, adapter Adapter) forwardOutcome {
+//
+// 参数 lastFailure 非 nil 时，会把"凭据级失败"的上游响应原样记进去，
+// 供上层在重试全部用尽后透传真实原因（而不是含糊的 502）。
+func (r *Relay) forwardChat(w http.ResponseWriter, req *http.Request, target forwardTarget, modelName string, body []byte, adapter Adapter, lastFailure *upstreamFailure) forwardOutcome {
 	// 记录起始时间用于计算耗时（写入调用日志）
 	start := time.Now()
 	ch := target.channel
@@ -501,9 +592,17 @@ func (r *Relay) forwardChat(w http.ResponseWriter, req *http.Request, target for
 	defer func() { _ = resp.Body.Close() }()
 
 	// ── 失败分流（关键：决定"换密钥"还是"换渠道"）──────────────
-	if violation, reason := r.classifyKeyLevelFailure(resp); violation && target.keyID != 0 {
+	if violation, reason, snippet := r.classifyKeyLevelFailure(resp); violation && target.keyID != 0 {
 		// 该密钥不可用（无效/受限/被限流/该账号无此模型）：记一次失败，达阈值会被自动摘除
 		r.markKeyFailure(req.Context(), target.keyID, truncateReason(reason))
+
+		// 留存本次上游响应：若后续所有重试都失败，就把这份真实原因透传给客户端。
+		// 复制响应头而不是直接引用：响应体关闭后引用仍可用，但复制能避免调用方误改。
+		if lastFailure != nil && len(snippet) > 0 {
+			lastFailure.status = resp.StatusCode
+			lastFailure.header = resp.Header.Clone()
+			lastFailure.body = snippet
+		}
 
 		if target.hasSpareKey {
 			// 同渠道还有别的密钥：丢弃本次响应，换一把密钥重试
