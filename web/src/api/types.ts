@@ -237,6 +237,48 @@ export interface Channel {
   last_test_ok?: boolean
   created_at?: number
   updated_at?: number
+  /** 密钥池概览；total 为 0 表示该渠道未配置密钥池（走单密钥模式） */
+  key_pool?: KeyPoolSummary
+}
+
+/** 渠道密钥池概览 */
+export interface KeyPoolSummary {
+  total: number
+  enabled: number
+  disabled: number
+  auto_removed: number
+}
+
+/** 密钥池内的单把密钥（只含掩码，明文永不返回） */
+export interface ChannelKey {
+  id: number
+  label: string
+  masked_key: string
+  status: number
+  status_text: string
+  fail_count: number
+  last_used_at: number
+  last_error: string
+  created_at: number
+}
+
+/** 密钥状态：与后端 model.ChannelKeyStatus 一一对应 */
+export const KEY_STATUS_ENABLED = 1
+export const KEY_STATUS_DISABLED = 2
+export const KEY_STATUS_AUTO_REMOVED = 3
+
+/** POST /api/admin/fetch-models 请求体 */
+export interface FetchModelsPayload {
+  /** > 0 时用该渠道已保存的地址与密钥；否则使用下面的 base_url / api_key */
+  channel_id?: number
+  base_url?: string
+  api_key?: string
+}
+
+/** POST /api/admin/fetch-models 响应 */
+export interface FetchModelsResult {
+  models: string[]
+  count: number
 }
 
 /** 新建 / 更新渠道请求体；更新时 api_key 留空表示不修改 */
@@ -250,6 +292,12 @@ export interface ChannelPayload {
   priority: number
   weight: number
   status: number
+  /**
+   * 批量密钥文本：每行一把，行内可用空格或逗号附加备注。
+   *
+   * 留空表示"不修改密钥池"（避免只改个名字就把几百把密钥清空）。
+   */
+  keys_text?: string
 }
 
 /** POST /api/admin/channels/{id}/test 响应 */

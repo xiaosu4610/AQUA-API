@@ -18,12 +18,15 @@ import type {
   AdminUpdateTokenPayload,
   AdminUser,
   Channel,
+  ChannelKey,
   ChannelPayload,
   ChannelTestResult,
   CreateTokenPayload,
   CreateTokenResult,
   CreateUserPayload,
   DashboardStats,
+  FetchModelsPayload,
+  FetchModelsResult,
   LogQuery,
   Paged,
   SiteSettings,
@@ -136,4 +139,32 @@ export function fetchSettings(): Promise<SiteSettings> {
  */
 export function updateSettings(payload: UpdateSiteSettingsPayload): Promise<unknown> {
   return api.put<unknown>('/admin/settings', payload)
+}
+
+/* ── 上游模型列表 ───────────────────────────────────────── */
+
+/**
+ * POST /api/admin/fetch-models：向上游查询可用模型列表。
+ *
+ * 两种用法：
+ *   - 传 channel_id：用该渠道已保存的地址与密钥（适用于已配好的渠道同步清单）；
+ *   - 传 base_url + api_key：用于"还没保存就想先看看有哪些模型"。
+ *
+ * 为什么不挂在 /channels 下：后端路由树中 `/channels/fetch-models` 会与
+ * `/channels/:id` 冲突，因此放在管理端顶层路径。
+ */
+export function fetchUpstreamModels(payload: FetchModelsPayload): Promise<FetchModelsResult> {
+  return api.post<FetchModelsResult>('/admin/fetch-models', payload)
+}
+
+/* ── 渠道密钥池 ─────────────────────────────────────────── */
+
+/** GET /api/admin/channels/{id}/keys：读取某渠道的密钥池明细（只含掩码） */
+export function listChannelKeys(channelId: number): Promise<{ items: ChannelKey[]; total: number }> {
+  return api.get<{ items: ChannelKey[]; total: number }>(`/admin/channels/${channelId}/keys`)
+}
+
+/** PUT /api/admin/keys/{keyId}：修改单把密钥的状态（启用 / 禁用 / 恢复） */
+export function updateChannelKeyStatus(keyId: number, status: number): Promise<unknown> {
+  return api.put<unknown>(`/admin/keys/${keyId}`, { status })
 }

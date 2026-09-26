@@ -24,13 +24,34 @@ import DataState from '@/components/DataState.vue'
 import Drawer from '@/components/Drawer.vue'
 import Pagination from '@/components/Pagination.vue'
 import { ApiError } from '@/api/client'
-import { createChannel, deleteChannel, getChannel, listChannels, testChannel, updateChannel } from '@/api/admin'
-import { STATUS_DISABLED, STATUS_ENABLED, type Channel, type ChannelPayload, type ChannelTestResult } from '@/api/types'
+import {
+  createChannel,
+  deleteChannel,
+  fetchUpstreamModels,
+  getChannel,
+  listChannelKeys,
+  listChannels,
+  testChannel,
+  updateChannel,
+  updateChannelKeyStatus,
+} from '@/api/admin'
+import {
+  KEY_STATUS_AUTO_REMOVED,
+  KEY_STATUS_DISABLED,
+  KEY_STATUS_ENABLED,
+  STATUS_DISABLED,
+  STATUS_ENABLED,
+  type Channel,
+  type ChannelKey,
+  type ChannelPayload,
+  type ChannelTestResult,
+  type FetchModelsPayload,
+} from '@/api/types'
 import { confirmDialog } from '@/composables/useConfirm'
 import { toastError, toastSuccess } from '@/composables/useToast'
 import { useSiteStore } from '@/stores/site'
 import { channelTypeLabel, statusBadgeClass } from '@/utils/display'
-import { joinModelList, parseModelList } from '@/utils/format'
+import { formatDateTime, joinModelList, parseModelList } from '@/utils/format'
 
 const site = useSiteStore()
 
@@ -46,6 +67,24 @@ const busyId = ref<number | null>(null)
 /** 测活结果：按渠道 id 缓存，用于在表格内展示延迟与结论 */
 const testResults = ref<Record<number, ChannelTestResult>>({})
 const testingId = ref<number | null>(null)
+
+/* ── 上游模型拉取状态 ─────────────────────────────────── */
+/** 是否正在拉取模型清单 */
+const fetchingModels = ref(false)
+/** 上游返回的模型清单（用于勾选） */
+const upstreamModels = ref<string[]>([])
+/** 拉取失败原因 */
+const upstreamError = ref('')
+
+/* ── 密钥池明细状态 ───────────────────────────────────── */
+const keysDrawerOpen = ref(false)
+/** 当前查看密钥池的渠道 */
+const keysOfChannel = ref<Channel | null>(null)
+const channelKeys = ref<ChannelKey[]>([])
+const keysLoading = ref(false)
+const keysError = ref('')
+/** 正在切换状态的密钥 id（避免重复点击） */
+const keyBusyId = ref<number | null>(null)
 
 /* ── 列表 ─────────────────────────────────────────────── */
 
@@ -86,6 +125,13 @@ interface ChannelForm {
   base_url: string
   /** 明文密钥：新建时必填；编辑时留空表示不修改 */
   api_key: string
+  /**
+   * 批量密钥文本：每行一把，支持行内备注（空格或逗号分隔）。
+   *
+   * 与 api_key 的关系：两者都填时以密钥池为准（池化优先）；
+   * 只填 api_key 走单密钥模式；只填批量密钥走池化轮询模式。
+   */
+  keysText: string
   modelText: string
   group: string
   priority: number
@@ -100,6 +146,7 @@ function emptyChannelForm(): ChannelForm {
     type: 1,
     base_url: '',
     api_key: '',
+    keysText: '',
     modelText: '',
     group: 'default',
     priority: 10,
@@ -116,11 +163,23 @@ const saving = ref(false)
 
 const drawerTitle = computed(() => (editing.value ? `编辑渠道 · ${editing.value.name}` : '新建渠道'))
 
+/**
+ * 已选模型的集合（用于勾选清单的高亮判断）。
+ *
+ * 用 computed + Set 而不是在模板里每次 parseModelList：
+ * 上游可能有几百个模型，若每次渲染都对文本框做一次解析，
+ * 勾选时会明显卡顿。
+ */
+const selectedModelSet = computed(() => new Set(parseModelList(form.value.modelText)))
+
 /** 打开新建抽屉 */
 function openCreate(): void {
   editing.value = null
   form.value = emptyChannelForm()
   formError.value = ''
+  // 清空上一次的上游模型缓存，避免把 A 上游的模型误选到 B 渠道
+  upstreamModels.value = []
+  upstreamError.value = ''
   drawerOpen.value = true
 }
 
@@ -135,6 +194,7 @@ async function openEdit(channel: Channel): Promise<void> {
     type: channel.type,
     base_url: channel.base_url,
     api_key: '',
+    keysText: '',
     modelText: joinModelList(channel.models),
     group: channel.group || 'default',
     priority: channel.priority,
@@ -152,6 +212,7 @@ async function openEdit(channel: Channel): Promise<void> {
       type: detail.type,
       base_url: detail.base_url,
       api_key: '',
+      keysText: '',
       modelText: joinModelList(detail.models),
       group: detail.group || 'default',
       priority: detail.priority,
@@ -168,10 +229,147 @@ function validateForm(): string | null {
   if (!form.value.name.trim()) return '请填写渠道名称'
   if (!form.value.base_url.trim()) return '请填写上游 Base URL'
   if (!/^https?:\/\//i.test(form.value.base_url.trim())) return 'Base URL 需以 http:// 或 https:// 开头'
-  if (!editing.value && !form.value.api_key.trim()) return '新建渠道必须填写密钥'
+  // 新建时必须至少提供一种密钥：单密钥或批量密钥池
+  if (!editing.value && !form.value.api_key.trim() && !form.value.keysText.trim()) {
+    return '新建渠道必须填写密钥（单密钥或批量密钥至少填一项）'
+  }
   if (form.value.priority < 0) return '优先级不能为负数'
   if (form.value.weight <= 0) return '权重必须大于 0'
   return null
+}
+
+/**
+ * 从表单里推测一把可用于上游鉴权的密钥。
+ *
+ * 为什么要"推测"：拉取模型清单需要真实密钥，而用户可能只填了批量密钥框
+ * （还没保存渠道）。这里取第一行有效密钥的首个字段作为探测用密钥。
+ */
+function firstKeyFromText(text: string): string {
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    // 与后端解析规则保持一致：优先按逗号/制表符切分，其次按空格
+    const [head] = trimmed.split(/[,，\t\s]/, 1)
+    if (head) return head
+  }
+  return ''
+}
+
+/** 从上游拉取模型列表，并展示为可勾选清单 */
+async function pullModels(): Promise<void> {
+  upstreamError.value = ''
+  const baseURL = form.value.base_url.trim()
+  const apiKey = form.value.api_key.trim() || firstKeyFromText(form.value.keysText)
+
+  const payload: FetchModelsPayload = {}
+  if (editing.value && !apiKey) {
+    // 编辑已有渠道且表单里没有新密钥：让后端用库里保存的地址与密钥池
+    payload.channel_id = editing.value.id
+  } else {
+    if (!baseURL) {
+      upstreamError.value = '请先填写上游 Base URL'
+      return
+    }
+    payload.base_url = baseURL
+    if (apiKey) payload.api_key = apiKey
+  }
+
+  fetchingModels.value = true
+  try {
+    const result = await fetchUpstreamModels(payload)
+    upstreamModels.value = result.models ?? []
+    toastSuccess(`已从上游拉取 ${result.count} 个模型`)
+  } catch (err) {
+    upstreamModels.value = []
+    upstreamError.value = err instanceof ApiError ? err.message : '拉取模型列表失败'
+  } finally {
+    fetchingModels.value = false
+  }
+}
+
+/** 勾选/取消勾选某个模型 */
+function toggleModel(name: string): void {
+  const current = parseModelList(form.value.modelText)
+  form.value.modelText = current.includes(name)
+    ? current.filter((item) => item !== name).join(', ')
+    : [...current, name].join(', ')
+}
+
+/** 一键选中上游返回的全部模型 */
+function selectAllModels(): void {
+  form.value.modelText = upstreamModels.value.join(', ')
+}
+
+/** 清空模型声明（等价于"支持全部模型"） */
+function clearModels(): void {
+  form.value.modelText = ''
+}
+
+/* ── 密钥池明细 ───────────────────────────────────────── */
+
+/** 打开某渠道的密钥池抽屉 */
+async function openKeys(channel: Channel): Promise<void> {
+  keysOfChannel.value = channel
+  keysDrawerOpen.value = true
+  await loadChannelKeys(channel.id)
+}
+
+/** 读取密钥池明细（只含掩码） */
+async function loadChannelKeys(channelId: number): Promise<void> {
+  keysLoading.value = true
+  keysError.value = ''
+  try {
+    const result = await listChannelKeys(channelId)
+    channelKeys.value = result.items ?? []
+  } catch (err) {
+    channelKeys.value = []
+    keysError.value = err instanceof ApiError ? err.message : '密钥列表加载失败'
+  } finally {
+    keysLoading.value = false
+  }
+}
+
+/** 启用 / 禁用 / 恢复某把密钥 */
+async function setKeyStatus(key: ChannelKey, status: number): Promise<void> {
+  keyBusyId.value = key.id
+  try {
+    await updateChannelKeyStatus(key.id, status)
+    toastSuccess(`密钥已${status === KEY_STATUS_ENABLED ? '启用' : '禁用'}`)
+    if (keysOfChannel.value) await loadChannelKeys(keysOfChannel.value.id)
+    // 池内可用密钥数会影响列表展示，一并刷新
+    await loadChannels()
+  } catch (err) {
+    toastError(err instanceof ApiError ? err.message : '操作失败')
+  } finally {
+    keyBusyId.value = null
+  }
+}
+
+/** 密钥状态样式 */
+function keyStatusClass(status: number): string {
+  if (status === KEY_STATUS_ENABLED) return 'badge badge-ok'
+  if (status === KEY_STATUS_AUTO_REMOVED) return 'badge badge-warn'
+  return 'badge badge-off'
+}
+
+/** 密钥池按状态统计（抽屉顶部概览用） */
+const keyStats = computed(() => {
+  const stats = { enabled: 0, disabled: 0, removed: 0 }
+  for (const key of channelKeys.value) {
+    if (key.status === KEY_STATUS_ENABLED) stats.enabled += 1
+    else if (key.status === KEY_STATUS_AUTO_REMOVED) stats.removed += 1
+    else stats.disabled += 1
+  }
+  return stats
+})
+
+/** 渠道在表格"密钥"列展示的文案 */
+function keyColumnText(channel: Channel): string {
+  const pool = channel.key_pool
+  if (pool && pool.total > 0) {
+    return `池 ${pool.total} 把（可用 ${pool.enabled}）`
+  }
+  return channel.masked_key || '未配置'
 }
 
 async function submitForm(): Promise<void> {
@@ -193,6 +391,8 @@ async function submitForm(): Promise<void> {
   }
   // 编辑时密钥留空表示「不修改」，因此不发送该字段（避免把密钥覆盖为空）
   if (form.value.api_key.trim()) payload.api_key = form.value.api_key.trim()
+  // 批量密钥同理：留空即不动密钥池，防止"只改个名字却清空了 500 把密钥"
+  if (form.value.keysText.trim()) payload.keys_text = form.value.keysText
 
   saving.value = true
   formError.value = ''
@@ -358,7 +558,19 @@ const isEmpty = computed(() => !loading.value && !error.value && channels.value.
                 </span>
               </td>
 
-              <td><code class="chip">{{ channel.masked_key || '未配置' }}</code></td>
+              <td>
+                <!-- 配了密钥池的渠道：显示池概况并可点开看明细（含失效密钥） -->
+                <button
+                  v-if="channel.key_pool && channel.key_pool.total > 0"
+                  type="button"
+                  class="chip transition hover:border-brand-500/40 hover:text-brand-700"
+                  title="查看密钥池明细"
+                  @click="openKeys(channel)"
+                >
+                  {{ keyColumnText(channel) }}
+                </button>
+                <code v-else class="chip">{{ channel.masked_key || '未配置' }}</code>
+              </td>
 
               <td class="cell-num">
                 <span v-if="channel.models && channel.models.length" :title="channel.models.join(', ')">
@@ -513,37 +725,105 @@ const isEmpty = computed(() => !loading.value && !error.value && channels.value.
           />
           <p class="hint">
             <template v-if="editing">
-              当前密钥：<code class="chip">{{ editing.masked_key }}</code>。为避免误改，留空即保持原密钥不变。
+              当前密钥：<code class="chip">{{ editing.masked_key || '未配置' }}</code>。为避免误改，留空即保持原密钥不变。
             </template>
-            <template v-else>密钥仅保存于服务端，接口永不返回明文。</template>
+            <template v-else>单个密钥。需要多把密钥轮询时用下面的「批量密钥」。</template>
+          </p>
+        </div>
+
+        <!-- 批量密钥池：支持一次粘贴几百把密钥并轮询使用 -->
+        <div>
+          <label class="label" for="channel-keys">批量密钥（密钥池）</label>
+          <textarea
+            id="channel-keys"
+            v-model="form.keysText"
+            class="input input-mono h-32 resize-y"
+            placeholder="每行一把密钥，可粘贴数百行。&#10;例：&#10;nvapi-xxxxxxxxxxxx&#10;nvapi-yyyyyyyyyyyy 备注文字"
+          />
+          <p class="hint">
+            每行一把，行内可用空格或逗号附加备注；以 <code>#</code> 开头的行会被忽略。
+            填了本项即启用池化轮询：请求会在池内轮换，某把失效会被自动摘除并换下一把。
+            <span v-if="editing" class="text-amber-700">编辑时留空表示不修改现有密钥池。</span>
+          </p>
+          <p v-if="editing && editing.key_pool && editing.key_pool.total > 0" class="mt-1 text-xs text-ink-300">
+            当前池：
+            共 {{ editing.key_pool.total }} 把 ·
+            可用 {{ editing.key_pool.enabled }} ·
+            已禁用 {{ editing.key_pool.disabled }} ·
+            已摘除 {{ editing.key_pool.auto_removed }}
+            <button type="button" class="ml-1 text-brand-700 underline hover:text-brand-800" @click="openKeys(editing)">
+              查看明细
+            </button>
           </p>
         </div>
 
         <div>
           <label class="label" for="channel-models">声明支持的模型</label>
-          <input
-            id="channel-models"
-            v-model="form.modelText"
-            class="input input-mono"
-            type="text"
-            placeholder="留空表示支持全部模型"
-          />
-          <div v-if="site.models.length" class="mt-2 flex flex-wrap gap-1.5">
+          <div class="flex gap-2">
+            <input
+              id="channel-models"
+              v-model="form.modelText"
+              class="input input-mono flex-1"
+              type="text"
+              placeholder="留空表示支持全部模型"
+            />
+            <button type="button" class="btn btn-secondary shrink-0" :disabled="fetchingModels" @click="pullModels">
+              <span
+                v-if="fetchingModels"
+                class="h-3.5 w-3.5 animate-spin rounded-full border-2 border-ink-500/40 border-t-ink-500"
+                aria-hidden="true"
+              />
+              <AppIcon v-else name="refresh" :size="15" />
+              {{ fetchingModels ? '拉取中…' : '从上游拉取' }}
+            </button>
+          </div>
+
+          <p v-if="upstreamError" class="field-error">{{ upstreamError }}</p>
+
+          <!-- 上游模型勾选清单：把真实模型名一键勾进来，避免手抄出错 -->
+          <div v-if="upstreamModels.length" class="mt-2 rounded-lg border border-ink-800 bg-ink-950/60 p-2.5">
+            <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <span class="text-xs text-ink-400">上游共 {{ upstreamModels.length }} 个模型，点击即可勾选</span>
+              <span class="flex gap-2">
+                <button type="button" class="text-xs text-brand-700 hover:text-brand-800" @click="selectAllModels">
+                  全选
+                </button>
+                <button type="button" class="text-xs text-ink-400 hover:text-ink-200" @click="clearModels">
+                  清空
+                </button>
+              </span>
+            </div>
+            <div class="flex max-h-56 flex-wrap gap-1.5 overflow-y-auto">
+              <button
+                v-for="model in upstreamModels"
+                :key="model"
+                type="button"
+                class="chip transition"
+                :class="selectedModelSet.has(model) ? 'border-brand-500/50 text-brand-700' : 'hover:border-brand-500/40'"
+                @click="toggleModel(model)"
+              >
+                {{ model }}
+              </button>
+            </div>
+          </div>
+
+          <!-- 未拉取上游时的快捷补全：用站点已有模型 -->
+          <div v-else-if="site.models.length" class="mt-2 flex flex-wrap gap-1.5">
             <button
               v-for="model in site.models.slice(0, 8)"
               :key="model"
               type="button"
               class="chip transition hover:border-brand-500/40 hover:text-brand-700"
-              @click="
-                form.modelText = parseModelList(form.modelText).includes(model)
-                  ? form.modelText
-                  : [...parseModelList(form.modelText), model].join(', ')
-              "
+              @click="toggleModel(model)"
             >
               {{ model }}
             </button>
           </div>
-          <p class="hint">留空表示该渠道支持全部模型；多个模型用英文逗号分隔。</p>
+
+          <p class="hint">
+            留空表示该渠道支持全部模型；多个模型用英文逗号分隔。
+            点击「从上游拉取」可自动获取该上游支持的全部模型（如 NIM 平台的全部模型）。
+          </p>
         </div>
 
         <div class="grid gap-5 sm:grid-cols-2">
@@ -589,6 +869,85 @@ const isEmpty = computed(() => !loading.value && !error.value && channels.value.
           {{ saving ? '保存中…' : editing ? '保存修改' : '创建渠道' }}
         </button>
       </template>
+    </Drawer>
+
+    <!-- 密钥池明细抽屉 -->
+    <Drawer
+      :open="keysDrawerOpen"
+      :title="`密钥池 · ${keysOfChannel?.name ?? ''}`"
+      subtitle="仅显示掩码。连续失败达阈值的密钥会被自动摘除，可在此手动恢复。"
+      @close="keysDrawerOpen = false"
+    >
+      <DataState
+        :loading="keysLoading"
+        :error="keysError"
+        :empty="!keysLoading && !keysError && channelKeys.length === 0"
+        loading-text="正在读取密钥池…"
+        empty-text="该渠道没有配置密钥池"
+        empty-hint="在渠道表单的「批量密钥」里粘贴密钥即可启用池化轮询。"
+        @retry="keysOfChannel && loadChannelKeys(keysOfChannel.id)"
+      />
+
+      <div v-if="!keysLoading && !keysError && channelKeys.length" class="space-y-3">
+        <p class="text-xs text-ink-400">
+          共 {{ channelKeys.length }} 把 ·
+          <span class="text-emerald-700">可用 {{ keyStats.enabled }}</span> ·
+          已禁用 {{ keyStats.disabled }} ·
+          <span class="text-amber-700">已自动摘除 {{ keyStats.removed }}</span>
+        </p>
+
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>密钥</th>
+                <th>备注</th>
+                <th>状态</th>
+                <th class="text-right">连续失败</th>
+                <th>最近使用</th>
+                <th class="cell-actions">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="key in channelKeys" :key="key.id">
+                <td><code class="chip">{{ key.masked_key }}</code></td>
+                <td class="cell-muted">{{ key.label || '—' }}</td>
+                <td>
+                  <span :class="keyStatusClass(key.status)" :title="key.last_error || undefined">
+                    {{ key.status_text }}
+                  </span>
+                </td>
+                <td class="cell-num">{{ key.fail_count }}</td>
+                <td class="cell-muted">
+                  {{ key.last_used_at ? formatDateTime(key.last_used_at) : '未使用' }}
+                </td>
+                <td class="cell-actions">
+                  <button
+                    v-if="key.status !== KEY_STATUS_ENABLED"
+                    type="button"
+                    class="btn btn-row"
+                    title="启用 / 恢复该密钥"
+                    :disabled="keyBusyId === key.id"
+                    @click="setKeyStatus(key, KEY_STATUS_ENABLED)"
+                  >
+                    <AppIcon name="bolt" :size="14" />
+                  </button>
+                  <button
+                    v-else
+                    type="button"
+                    class="btn btn-row"
+                    title="禁用该密钥"
+                    :disabled="keyBusyId === key.id"
+                    @click="setKeyStatus(key, KEY_STATUS_DISABLED)"
+                  >
+                    <AppIcon name="lock" :size="14" />
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </Drawer>
   </div>
 </template>
