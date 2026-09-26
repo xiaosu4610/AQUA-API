@@ -85,6 +85,16 @@ func (s *Server) registerRoutes() {
 	admin.PUT("/channels/:id", s.handleUpdateChannel)
 	admin.DELETE("/channels/:id", s.handleDeleteChannel)
 	admin.POST("/channels/:id/test", s.handleTestChannel)
+	// 密钥池明细与单把密钥的状态管理
+	admin.GET("/channels/:id/keys", s.handleListChannelKeys)
+	admin.PUT("/keys/:keyId", s.handleUpdateChannelKeyStatus)
+
+	// 从上游拉取模型列表。
+	//
+	// 刻意不挂在 /channels/ 之下：gin 的路由树中 `/channels/fetch-models`
+	// 会与已有的 `/channels/:id` 在同一层级产生静态段/参数段冲突，
+	// 放在顶层既避免冲突，也更贴合它的语义——它可能被用于"尚未保存的渠道"。
+	admin.POST("/fetch-models", s.handleFetchModels)
 
 	admin.GET("/tokens", s.handleAdminListTokens)
 	admin.POST("/tokens", s.handleAdminCreateToken)

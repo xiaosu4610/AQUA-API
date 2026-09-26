@@ -166,6 +166,16 @@ type channelUpsertRequest struct {
 	Priority int      `json:"priority"`
 	Weight   int      `json:"weight"`
 	Status   int      `json:"status"`
+	// KeysText 是"批量密钥"文本框内容：每行一把密钥，行内可用空格或逗号附加备注。
+	//
+	// 为什么用文本而不是 []string：
+	//   - 使用者通常从表格/记事本里直接粘几百行，文本是最自然的输入形态；
+	//   - 后端解析（model.ParseKeyList）能统一处理空行、注释、备注与去重，
+	//     前端只需原样提交，不必自己实现一遍解析规则。
+	//
+	// 语义：非空时把该渠道的密钥池整体替换为这批密钥（差集增删，幂等）；
+	// 为空时不动密钥池（避免"只改个名字却把 500 把密钥清空"）。
+	KeysText string `json:"keys_text"`
 }
 
 // handleListChannels 返回渠道列表（统一分页格式）。
@@ -195,7 +205,36 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, newPagedResponse(toChannelDTOList(channels), total, page, size))
+	dtos := toChannelDTOList(channels)
+	s.attachKeyPoolSummaries(ctx, channels, dtos)
+
+	c.JSON(http.StatusOK, newPagedResponse(dtos, total, page, size))
+}
+
+// attachKeyPoolSummaries 为一批渠道补充密钥池概览。
+//
+// 用一次 GROUP BY 查询覆盖全部渠道，避免"每个渠道查一次"的 N+1 问题
+// （渠道列表页通常有几十行，N+1 会让响应时间随渠道数线性增长）。
+//
+// 查询失败时不阻断列表：密钥池只是展示信息，缺少它不应导致管理页面打不开。
+func (s *Server) attachKeyPoolSummaries(ctx context.Context, channels []*model.Channel, dtos []channelDTO) {
+	if s.deps.ChannelKeys == nil || len(channels) == 0 {
+		return
+	}
+
+	ids := make([]uint64, 0, len(channels))
+	for _, ch := range channels {
+		ids = append(ids, ch.ID)
+	}
+	summaries, err := s.deps.ChannelKeys.Summary(ctx, ids)
+	if err != nil {
+		return
+	}
+	for i, ch := range channels {
+		if summary, ok := summaries[ch.ID]; ok {
+			applyKeyPool(&dtos[i], summary)
+		}
+	}
 }
 
 // handleGetChannel 返回单个渠道详情。
@@ -225,6 +264,13 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 		return
 	}
 
+	// 先解析批量密钥：解析失败时直接返回，避免"渠道建好了但密钥没进去"的半成品状态
+	keys, labels, err := parseKeysText(req.KeysText)
+	if err != nil {
+		oai.WriteError(c.Writer, http.StatusBadRequest, err.Error(), oai.TypeInvalidRequest, "invalid_keys")
+		return
+	}
+
 	channel := &model.Channel{
 		Name:     strings.TrimSpace(req.Name),
 		Type:     req.Type,
@@ -239,13 +285,65 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 		channel.APIKey = *req.APIKey
 	}
 
-	if err := s.deps.Channels.Create(c.Request.Context(), channel); err != nil {
+	ctx := c.Request.Context()
+	if err := s.deps.Channels.Create(ctx, channel); err != nil {
 		// 领域校验的错误信息（如"base_url 必须以 http:// 开头"）对使用者有直接帮助，
 		// 且不包含内部细节，因此原样回传，便于管理员自助修正。
 		oai.WriteError(c.Writer, http.StatusBadRequest, err.Error(), oai.TypeInvalidRequest, "invalid_channel")
 		return
 	}
-	c.JSON(http.StatusOK, toChannelDTO(channel))
+
+	if err := s.replaceChannelKeys(ctx, channel.ID, keys, labels); err != nil {
+		s.respondInternalError(c, "导入渠道密钥失败")
+		return
+	}
+
+	dto, err := s.channelDTOWithPool(ctx, channel)
+	if err != nil {
+		s.respondInternalError(c, "读取渠道信息失败")
+		return
+	}
+	c.JSON(http.StatusOK, dto)
+}
+
+// parseKeysText 预解析"批量密钥"文本。
+//
+// 返回 (明文密钥列表, 备注列表, 错误)。文本为空时返回 (nil, nil, nil)，
+// 表示"本次不修改密钥池"。
+func parseKeysText(keysText string) ([]string, []string, error) {
+	if strings.TrimSpace(keysText) == "" {
+		return nil, nil, nil
+	}
+	keys, labels := model.ParseKeyList(keysText)
+	if len(keys) == 0 {
+		return nil, nil, errors.New("未能从提交内容中解析出任何密钥，请检查格式（每行一把）")
+	}
+	return keys, labels, nil
+}
+
+// replaceChannelKeys 用给定密钥整体替换渠道密钥池（差集增删，幂等）。
+func (s *Server) replaceChannelKeys(ctx context.Context, channelID uint64, keys, labels []string) error {
+	if s.deps.ChannelKeys == nil || len(keys) == 0 {
+		return nil
+	}
+	_, _, err := s.deps.ChannelKeys.ReplaceAll(ctx, channelID, keys, labels)
+	return err
+}
+
+// channelDTOWithPool 组装带密钥池概览的渠道 DTO。
+func (s *Server) channelDTOWithPool(ctx context.Context, channel *model.Channel) (channelDTO, error) {
+	dto := toChannelDTO(channel)
+	if s.deps.ChannelKeys == nil {
+		return dto, nil
+	}
+	summaries, err := s.deps.ChannelKeys.Summary(ctx, []uint64{channel.ID})
+	if err != nil {
+		return dto, err
+	}
+	if summary, ok := summaries[channel.ID]; ok {
+		applyKeyPool(&dto, summary)
+	}
+	return dto, nil
 }
 
 // handleUpdateChannel 更新渠道。
@@ -272,6 +370,13 @@ func (s *Server) handleUpdateChannel(c *gin.Context) {
 		return
 	}
 
+	// 先解析批量密钥（与创建一致：解析失败直接返回，不留半成品状态）
+	keys, labels, err := parseKeysText(req.KeysText)
+	if err != nil {
+		oai.WriteError(c.Writer, http.StatusBadRequest, err.Error(), oai.TypeInvalidRequest, "invalid_keys")
+		return
+	}
+
 	// 逐字段覆盖。注意 api_key 只在请求显式提供时才替换，
 	// 这样前端"编辑时留空"不会清空已配置的密钥。
 	channel.Name = strings.TrimSpace(req.Name)
@@ -294,7 +399,19 @@ func (s *Server) handleUpdateChannel(c *gin.Context) {
 		oai.WriteError(c.Writer, http.StatusBadRequest, err.Error(), oai.TypeInvalidRequest, "invalid_channel")
 		return
 	}
-	c.JSON(http.StatusOK, toChannelDTO(channel))
+
+	// 密钥池为空文本时不动（见 parseKeysText 的语义），避免误清空
+	if err := s.replaceChannelKeys(ctx, channel.ID, keys, labels); err != nil {
+		s.respondInternalError(c, "导入渠道密钥失败")
+		return
+	}
+
+	dto, err := s.channelDTOWithPool(ctx, channel)
+	if err != nil {
+		s.respondInternalError(c, "读取渠道信息失败")
+		return
+	}
+	c.JSON(http.StatusOK, dto)
 }
 
 // handleDeleteChannel 删除渠道。
@@ -304,7 +421,8 @@ func (s *Server) handleDeleteChannel(c *gin.Context) {
 		return
 	}
 
-	if err := s.deps.Channels.Delete(c.Request.Context(), id); err != nil {
+	ctx := c.Request.Context()
+	if err := s.deps.Channels.Delete(ctx, id); err != nil {
 		if errors.Is(err, model.ErrChannelNotFound) {
 			oai.WriteError(c.Writer, http.StatusNotFound, "渠道不存在", oai.TypeInvalidRequest, "channel_not_found")
 			return
@@ -312,6 +430,12 @@ func (s *Server) handleDeleteChannel(c *gin.Context) {
 		s.respondInternalError(c, "删除渠道失败")
 		return
 	}
+
+	// 级联清理密钥池：渠道已不存在，残留的密钥既无用又属于敏感数据，不应留在库里
+	if s.deps.ChannelKeys != nil {
+		_ = s.deps.ChannelKeys.DeleteByChannel(ctx, id)
+	}
+
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
@@ -342,12 +466,174 @@ func (s *Server) handleTestChannel(c *gin.Context) {
 		return
 	}
 
+	// 若渠道配置了密钥池，测活要用池中的一把密钥。
+	//
+	// 为什么必须这样做：密钥池渠道通常【不填】单密钥（api_key 为空），
+	// 若测活仍用 channel.APIKey，这类渠道会永远显示"测活失败"，
+	// 管理员会误以为渠道配错了。
+	if s.deps.ChannelKeys != nil {
+		if pool, err := s.deps.ChannelKeys.ListUsable(ctx, channel.ID); err == nil && len(pool) > 0 {
+			channel.APIKey = model.PickKey(pool).Key
+		}
+	}
+
 	result := probeChannel(ctx, channel)
 
 	// 记录测活结果（失败不影响本次响应：测活结果本身就是"可能失败"的信息）
 	_ = s.deps.Channels.RecordTestResult(ctx, channel.ID, time.Now(), result.OK)
 
 	c.JSON(http.StatusOK, result)
+}
+
+// ---------------------------------------------------------------------------
+// 上游模型列表
+// ---------------------------------------------------------------------------
+
+// fetchModelsRequest 是拉取上游模型列表的请求体。
+//
+// 两种用法：
+//   - ChannelID > 0：用该渠道已保存的 base_url 与密钥。适用于"渠道已配好，只是想同步模型清单"；
+//   - ChannelID = 0：用请求体里的 base_url 与 api_key。
+//     适用于"还没保存渠道，先看看这个上游有哪些模型可勾选"。
+type fetchModelsRequest struct {
+	ChannelID uint64 `json:"channel_id"`
+	BaseURL   string `json:"base_url"`
+	APIKey    string `json:"api_key"`
+}
+
+// fetchModelsResponse 是模型列表响应。
+type fetchModelsResponse struct {
+	Models []string `json:"models"`
+	Count  int      `json:"count"`
+}
+
+// handleFetchModels 向上游拉取可用模型列表。
+//
+// 存在的意义：NIM 这类平台上架了几百个模型，人工抄写模型名必然出错
+// （名字形如 "meta/llama-3.1-70b-instruct"，错一个字符整条路由就失效）。
+func (s *Server) handleFetchModels(c *gin.Context) {
+	var req fetchModelsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		oai.WriteError(c.Writer, http.StatusBadRequest, "请求体格式错误", oai.TypeInvalidRequest, oai.CodeInvalidJSON)
+		return
+	}
+
+	if s.deps.Relay == nil {
+		oai.WriteError(c.Writer, http.StatusServiceUnavailable, "转发引擎未就绪", oai.TypeServer, oai.CodeInternal)
+		return
+	}
+
+	ctx := c.Request.Context()
+	baseURL := strings.TrimSpace(req.BaseURL)
+	apiKey := strings.TrimSpace(req.APIKey)
+
+	if req.ChannelID > 0 {
+		channel, err := s.deps.Channels.GetByID(ctx, req.ChannelID)
+		if err != nil {
+			if errors.Is(err, model.ErrChannelNotFound) {
+				oai.WriteError(c.Writer, http.StatusNotFound, "渠道不存在", oai.TypeInvalidRequest, "channel_not_found")
+				return
+			}
+			s.respondInternalError(c, "查询渠道失败")
+			return
+		}
+		// 以库中数据为准：避免"编辑现有渠道时用错地址/密钥"，导致拉回来的清单
+		// 与实际渠道配置不一致——那比不拉取更危险（会配错模型）
+		baseURL = channel.BaseURL
+		if apiKey == "" {
+			apiKey = channel.APIKey
+		}
+		// 渠道"只有密钥池、没有单密钥"是常态，此时从池里取一把可用密钥
+		if apiKey == "" && s.deps.ChannelKeys != nil {
+			if pool, err := s.deps.ChannelKeys.ListUsable(ctx, channel.ID); err == nil && len(pool) > 0 {
+				apiKey = model.PickKey(pool).Key
+			}
+		}
+	}
+
+	if baseURL == "" {
+		oai.WriteError(c.Writer, http.StatusBadRequest, "缺少上游地址（base_url）", oai.TypeInvalidRequest, "missing_base_url")
+		return
+	}
+
+	models, err := s.deps.Relay.FetchModels(ctx, baseURL, apiKey)
+	if err != nil {
+		// 上游返回的错误信息（如 "invalid api key"）对管理员排查有直接价值，
+		// 且不包含网关内部细节，因此原样回传。
+		oai.WriteError(c.Writer, http.StatusBadGateway, err.Error(), oai.TypeServer, "fetch_models_failed")
+		return
+	}
+
+	c.JSON(http.StatusOK, fetchModelsResponse{Models: models, Count: len(models)})
+}
+
+// ---------------------------------------------------------------------------
+// 渠道密钥池
+// ---------------------------------------------------------------------------
+
+// handleListChannelKeys 返回某渠道的密钥池明细（只含掩码，绝不返回明文）。
+func (s *Server) handleListChannelKeys(c *gin.Context) {
+	id, ok := parseIDParam(c)
+	if !ok {
+		return
+	}
+	if s.deps.ChannelKeys == nil {
+		oai.WriteError(c.Writer, http.StatusServiceUnavailable, "密钥池功能未启用", oai.TypeServer, oai.CodeInternal)
+		return
+	}
+
+	keys, err := s.deps.ChannelKeys.ListByChannel(c.Request.Context(), id)
+	if err != nil {
+		s.respondInternalError(c, "查询渠道密钥失败")
+		return
+	}
+
+	items := toChannelKeyDTOList(keys)
+	c.JSON(http.StatusOK, gin.H{"items": items, "total": len(items)})
+}
+
+// channelKeyStatusRequest 是修改密钥状态的请求体。
+type channelKeyStatusRequest struct {
+	Status int `json:"status"`
+}
+
+// handleUpdateChannelKeyStatus 手动启用 / 禁用 / 恢复某把密钥。
+//
+// 典型场景：
+//   - 恢复被误杀（连续失败自动摘除）的密钥；
+//   - 临时禁用一个正在被上游限流的密钥，避免它继续拖慢请求。
+func (s *Server) handleUpdateChannelKeyStatus(c *gin.Context) {
+	keyID, err := strconv.ParseUint(c.Param("keyId"), 10, 64)
+	if err != nil || keyID == 0 {
+		oai.WriteError(c.Writer, http.StatusBadRequest, "密钥 ID 非法", oai.TypeInvalidRequest, "invalid_id")
+		return
+	}
+
+	var req channelKeyStatusRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		oai.WriteError(c.Writer, http.StatusBadRequest, "请求体格式错误", oai.TypeInvalidRequest, oai.CodeInvalidJSON)
+		return
+	}
+
+	status := model.ChannelKeyStatus(req.Status)
+	if !status.IsValid() {
+		oai.WriteError(c.Writer, http.StatusBadRequest, "密钥状态非法", oai.TypeInvalidRequest, "invalid_status")
+		return
+	}
+	if s.deps.ChannelKeys == nil {
+		oai.WriteError(c.Writer, http.StatusServiceUnavailable, "密钥池功能未启用", oai.TypeServer, oai.CodeInternal)
+		return
+	}
+
+	if err := s.deps.ChannelKeys.UpdateStatus(c.Request.Context(), keyID, status); err != nil {
+		if errors.Is(err, model.ErrChannelKeyNotFound) {
+			oai.WriteError(c.Writer, http.StatusNotFound, "密钥不存在", oai.TypeInvalidRequest, "key_not_found")
+			return
+		}
+		s.respondInternalError(c, "更新密钥状态失败")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "status": int(status), "status_text": status.String()})
 }
 
 // probeChannel 向渠道发起一次最小请求，用于验证连通与凭据有效性。

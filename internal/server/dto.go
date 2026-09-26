@@ -122,6 +122,73 @@ type channelDTO struct {
 	LastTestOK bool     `json:"last_test_ok"`
 	CreatedAt  int64    `json:"created_at"`
 	UpdatedAt  int64    `json:"updated_at"`
+	// KeyPool 是密钥池概览（渠道可挂多把上游密钥并轮询使用）。
+	// 零值表示该渠道没有配置密钥池，走"单密钥"模式。
+	KeyPool keyPoolDTO `json:"key_pool"`
+}
+
+// keyPoolDTO 是密钥池的概览统计。
+//
+// 只给计数不给明细：一个渠道可能挂 500 把密钥，
+// 若列表接口把每把密钥都带上，页面数据量会大到不可用。
+// 需要明细时再单独请求该渠道的密钥列表。
+type keyPoolDTO struct {
+	Total       int `json:"total"`
+	Enabled     int `json:"enabled"`
+	Disabled    int `json:"disabled"`
+	AutoRemoved int `json:"auto_removed"`
+}
+
+// channelKeyDTO 是密钥池中单把密钥的对外表示。
+//
+// 安全约束：只输出掩码（masked_key），明文永不返回给前端。
+type channelKeyDTO struct {
+	ID         uint64 `json:"id"`
+	Label      string `json:"label"`
+	MaskedKey  string `json:"masked_key"`
+	Status     int    `json:"status"`
+	StatusText string `json:"status_text"`
+	FailCount  int    `json:"fail_count"`
+	LastUsedAt int64  `json:"last_used_at"`
+	LastError  string `json:"last_error"`
+	CreatedAt  int64  `json:"created_at"`
+}
+
+// toChannelKeyDTO 把密钥模型转为对外 DTO。
+func toChannelKeyDTO(key *model.ChannelKey) channelKeyDTO {
+	if key == nil {
+		return channelKeyDTO{}
+	}
+	return channelKeyDTO{
+		ID:         key.ID,
+		Label:      key.Label,
+		MaskedKey:  key.Masked(),
+		Status:     int(key.Status),
+		StatusText: key.Status.String(),
+		FailCount:  key.FailCount,
+		LastUsedAt: unixOrZero(key.LastUsedAt),
+		LastError:  key.LastError,
+		CreatedAt:  unixOrZero(key.CreatedAt),
+	}
+}
+
+// toChannelKeyDTOList 批量转换密钥。
+func toChannelKeyDTOList(keys []*model.ChannelKey) []channelKeyDTO {
+	result := make([]channelKeyDTO, 0, len(keys))
+	for _, key := range keys {
+		result = append(result, toChannelKeyDTO(key))
+	}
+	return result
+}
+
+// applyKeyPool 把密钥池概览填充到渠道 DTO 上。
+func applyKeyPool(dto *channelDTO, summary model.KeyPoolSummary) {
+	dto.KeyPool = keyPoolDTO{
+		Total:       summary.Total,
+		Enabled:     summary.Enabled,
+		Disabled:    summary.Disabled,
+		AutoRemoved: summary.AutoRemoved,
+	}
 }
 
 // toChannelDTO 把渠道模型转为对外 DTO。
