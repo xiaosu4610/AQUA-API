@@ -114,6 +114,10 @@ func TestSitemap_可解析且lastmod为北京当天(t *testing.T) {
 	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "application/xml") {
 		t.Fatalf("Content-Type = %q，期望 application/xml", ct)
 	}
+	// 与 robots.txt 同理：显式 no-cache，避免 CDN 用旧域名缓存住站点地图。
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-cache" {
+		t.Fatalf("Cache-Control = %q，期望 no-cache", cc)
+	}
 
 	var doc sitemapDoc
 	if err := xml.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
@@ -214,6 +218,11 @@ func TestRobots_内容含Sitemap与Disallow(t *testing.T) {
 	}
 	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "text/plain") {
 		t.Fatalf("Content-Type = %q，期望 text/plain", ct)
+	}
+	// 必须显式声明 no-cache：否则 CDN（如 Cloudflare）会对 .txt 施加默认缓存，
+	// 站长改完域名后 robots.txt 仍返回旧域名的 Sitemap 地址。
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-cache" {
+		t.Fatalf("Cache-Control = %q，期望 no-cache", cc)
 	}
 
 	body := rec.Body.String()

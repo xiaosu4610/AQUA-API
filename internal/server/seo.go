@@ -144,6 +144,7 @@ func (s *Server) handleSitemap(c *gin.Context) {
 	}
 
 	base := resolveBaseURL(settings, c)
+	setSEOCacheControl(c)
 	if cached, ok := s.cachedSitemap(base); ok {
 		c.Data(http.StatusOK, "application/xml; charset=utf-8", cached)
 		return
@@ -177,7 +178,22 @@ func (s *Server) handleRobots(c *gin.Context) {
 	b.WriteString("Disallow: /admin/\n")
 	b.WriteString("Sitemap: " + base + "/sitemap.xml\n")
 
+	setSEOCacheControl(c)
 	c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(b.String()))
+}
+
+// setSEOCacheControl 给 sitemap.xml / robots.txt 显式声明不缓存。
+//
+// 为什么必须显式设置（实测教训）：
+//
+//	Cloudflare 这类 CDN 对部分扩展名（尤其 .txt）有"默认缓存 + 注入
+//	Cache-Control: max-age=14400"的行为。站长在后台把域名改掉后，
+//	sitemap.xml 会立刻更新，但 robots.txt 仍由边缘节点返回 4 小时前的旧域名，
+//	且爬虫拿到的 Sitemap 指向旧地址——排查起来极具迷惑性（源站逻辑其实是对的）。
+//	在源站显式声明 no-cache 可覆盖 CDN 的默认缓存策略，保证"后台改完立即生效"。
+//	两个端点都由进程内缓存承担重复生成开销，no-cache 不会带来实际性能问题。
+func setSEOCacheControl(c *gin.Context) {
+	c.Header("Cache-Control", "no-cache")
 }
 
 // buildSitemap 组装 sitemap.xml 字节。
