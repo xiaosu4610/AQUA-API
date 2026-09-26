@@ -127,4 +127,14 @@ func (s *Server) registerRoutes() {
 	v1 := r.Group("/v1")
 	v1.Use(middleware.TokenAuth(s.deps.Tokens, s.deps.Users))
 	v1.POST("/chat/completions", gin.WrapF(s.deps.Relay.ServeChatCompletions))
+	// Anthropic Messages 协议：Claude 官方 SDK、Claude Code 等客户端默认走这里。
+	// 网关内部会把请求转换为 OpenAI 格式再转发，响应再转换回 Anthropic 格式。
+	v1.POST("/messages", gin.WrapF(s.deps.Relay.ServeAnthropicMessages))
+
+	// Gemini 原生协议：模型名与动作都在路径里
+	// （/v1beta/models/{model}:generateContent 与 :streamGenerateContent），
+	// 因此用通配段承接，由适配器自行解析路径。
+	gemini := r.Group("/v1beta")
+	gemini.Use(middleware.TokenAuth(s.deps.Tokens, s.deps.Users))
+	gemini.POST("/models/*action", gin.WrapF(s.deps.Relay.ServeGeminiGenerate))
 }

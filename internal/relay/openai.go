@@ -78,7 +78,8 @@ func (r *Relay) ServeChatCompletions(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// ── 步骤 3~6：转发（含失败换渠道重试）───────────────────────
-	r.forwardWithFallback(w, req, modelName, body)
+	// adapter 为 nil：入站已是 OpenAI 协议，响应直接透传，无需转换。
+	r.forwardWithFallback(w, req, modelName, body, nil)
 }
 
 // forwardTarget 描述「一次转发尝试」的完整目标：哪个渠道 + 用哪把密钥。
@@ -110,13 +111,16 @@ type forwardTarget struct {
 //
 // 重试的硬约束：只有在【尚未向客户端写出任何内容】时才允许重试，
 // 因此判定必须发生在 WriteHeader 之前——状态码一旦发出就无法撤回。
-func (r *Relay) forwardWithFallback(w http.ResponseWriter, req *http.Request, modelName string, body []byte) {
+//
+// 参数 adapter 为 nil 时按 OpenAI 协议原样透传；非 nil 时由适配器
+// 把上游响应转换为下游协议（见 adapter.go）。
+func (r *Relay) forwardWithFallback(w http.ResponseWriter, req *http.Request, modelName string, body []byte, adapter Adapter) {
 	// 一次性取出候选集：同一次请求内的多次重试都基于它挑选，避免每次重试都查库
 	candidates, err := r.listCandidates(req.Context(), modelName)
 	if err != nil {
 		// 仓储查询失败：不向客户端暴露细节
 		// TODO(relay): 接入结构化日志后在此记录 err
-		oai.WriteError(w, http.StatusInternalServerError, "网关内部错误",
+		writeAdaptedError(w, adapter, http.StatusInternalServerError, "网关内部错误",
 			oai.TypeServer, oai.CodeInternal)
 		return
 	}
@@ -134,7 +138,7 @@ func (r *Relay) forwardWithFallback(w http.ResponseWriter, req *http.Request, mo
 			StatusCode: http.StatusServiceUnavailable,
 			ErrorText:  "无可用渠道",
 		})
-		oai.WriteError(w, http.StatusServiceUnavailable,
+		writeAdaptedError(w, adapter, http.StatusServiceUnavailable,
 			"当前没有可用的上游渠道能处理该模型",
 			oai.TypeServer, oai.CodeNoAvailableChannel)
 		return
@@ -169,7 +173,7 @@ func (r *Relay) forwardWithFallback(w http.ResponseWriter, req *http.Request, mo
 			hasSpareChannel: r.hasOtherChannel(candidates, excludedChannels, ch.ID),
 		}
 
-		switch r.forwardChat(w, req, target, modelName, body) {
+		switch r.forwardChat(w, req, target, modelName, body, adapter) {
 		case forwardResponded:
 			return
 		case forwardRetryKey:
@@ -190,7 +194,7 @@ func (r *Relay) forwardWithFallback(w http.ResponseWriter, req *http.Request, mo
 		StatusCode: http.StatusBadGateway,
 		ErrorText:  "所有候选渠道均请求失败",
 	})
-	oai.WriteError(w, http.StatusBadGateway, "所有候选渠道均请求失败",
+	writeAdaptedError(w, adapter, http.StatusBadGateway, "所有候选渠道均请求失败",
 		oai.TypeServer, oai.CodeUpstreamRequestFailed)
 }
 
@@ -282,7 +286,7 @@ const (
 // forwardChat 把请求转发到指定目标（渠道 + 密钥），并把上游响应回写给客户端。
 //
 // 返回值表示结局，供上层决定重试方向（见 forwardOutcome）。
-func (r *Relay) forwardChat(w http.ResponseWriter, req *http.Request, target forwardTarget, modelName string, body []byte) forwardOutcome {
+func (r *Relay) forwardChat(w http.ResponseWriter, req *http.Request, target forwardTarget, modelName string, body []byte, adapter Adapter) forwardOutcome {
 	// 记录起始时间用于计算耗时（写入调用日志）
 	start := time.Now()
 	ch := target.channel
@@ -346,15 +350,21 @@ func (r *Relay) forwardChat(w http.ResponseWriter, req *http.Request, target for
 		return forwardRetryChannel
 	}
 
-	// ── 步骤 5：回写响应头 ──────────────────────────────────────
-	// 上游返回的错误状态码（如 401、403）原样透传，便于客户端自助排查。
-	copyResponseHeaders(w.Header(), resp.Header)
-	w.WriteHeader(resp.StatusCode)
-
-	// ── 步骤 6：流式拷贝响应体 ──────────────────────────────────
+	// ── 步骤 5~6：回写响应 ──────────────────────────────────────
 	// 同时把内容喂给抓取器，用于事后解析 usage（token 数）。
 	sniffer := newUsageSniffer()
-	flushCopy(w, resp.Body, sniffer)
+
+	if adapter == nil {
+		// 直通路径：入站与上游同为 OpenAI 协议，状态码与响应体原样透传
+		// （上游的错误状态码如 401/403 一并透传，便于客户端自助排查）。
+		copyResponseHeaders(w.Header(), resp.Header)
+		w.WriteHeader(resp.StatusCode)
+		flushCopy(w, resp.Body, sniffer)
+	} else {
+		// 转换路径：由适配器把上游的 OpenAI 响应改写为下游协议格式。
+		// 注意此时响应头由 writeAdapted 决定（各协议的 Content-Type 不同）。
+		r.writeAdapted(w, req, resp, adapter, sniffer, body)
+	}
 
 	// 成功响应：清零该密钥的连续失败计数（"连续失败"语义要求成功即重置）
 	if resp.StatusCode < http.StatusMultipleChoices {
