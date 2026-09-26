@@ -1,14 +1,36 @@
 AQUA-API
-Copyright 2026 小涑 (xiaosu4610)
+Copyright (C) 2026 小涑 (xiaosu4610)
 
-This product includes software developed as an original implementation.
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version.
 
-Brand assets (including favicon.ico and the "AQUA-API" name/logo) are the
-property of the project owner and are NOT covered by the Apache-2.0 license
-grant for source code. See the "Trademarks" section of the LICENSE file.
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU Affero General Public License for more details.
 
-----
+You should have received a copy of the GNU Affero General Public License along
+with this program. If not, see <https://www.gnu.org/licenses/>.
 
-本产品为原创实现。开发过程中仅参考了同类开源项目（one-api / new-api /
-sub2api 等）的公开功能与算法思想（思想与算法不受著作权保护），未复制其
-任何源代码、注释、常量表或品牌标识。详见内部文档《开发约束规范》。
+-------------------------------------------------------------------------------
+
+Brand assets and trademark notice
+
+The "AQUA-API" name, the project logo and favicon.ico are the property of the
+project owner and are NOT licensed under the GNU Affero General Public License.
+
+No trademark, trade name or service-mark rights are granted by this license.
+This is an additional term permitted by section 7(e) of the GNU Affero General
+Public License. You may redistribute the source code, but you may not use the
+project's name or brand assets to endorse or promote a derived product without
+prior written permission from the project owner.
+
+-------------------------------------------------------------------------------
+
+Source form of this program
+
+This program is a network server application. Operators who run a modified
+version and let users interact with it over a network are required by section 13
+of the GNU Affero General Public License to offer those users the corresponding
+source code of the running version.
