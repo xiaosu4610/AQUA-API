@@ -104,6 +104,9 @@ type Options struct {
 	OAuth *OAuthRefresher
 	// Billing 为计费组件；为 nil 时只记录用量而不扣减额度。
 	Billing *Billing
+	// ChannelModelMappings 为渠道级模型映射仓储；为 nil 时禁用模型名映射改写
+	// （请求与响应均按原样透传，行为与引入映射前完全一致）。
+	ChannelModelMappings model.ChannelModelMappingRepository
 }
 
 // Relay 是转发引擎，持有渠道仓储与上游 HTTP 客户端。
@@ -124,6 +127,10 @@ type Relay struct {
 	billing *Billing
 	// oauth 为订阅账号令牌刷新器（可选）。为 nil 时 OAuth 凭据不刷新。
 	oauth *OAuthRefresher
+	// channelMappings 为渠道级模型映射仓储（可选）。为 nil 时禁用模型名映射。
+	channelMappings model.ChannelModelMappingRepository
+	// mappingCache 缓存"渠道 → 映射列表"（见 model_map.go）。仅在启用映射仓储时非 nil。
+	mappingCache *channelMappingCache
 }
 
 // New 创建转发引擎。
@@ -150,15 +157,24 @@ func New(channels model.ChannelRepository, opts Options) *Relay {
 		maxAttempts = defaultMaxAttempts
 	}
 
+	// 仅在启用映射仓储时才建缓存：仓储为 nil 意味着该部署不使用映射，
+	// 此时留空缓存可让 modelMappingsForChannel 直接短路，避免无谓开销。
+	var mappingCache *channelMappingCache
+	if opts.ChannelModelMappings != nil {
+		mappingCache = newChannelMappingCache(defaultMappingCacheTTL, defaultMappingCacheMax)
+	}
+
 	return &Relay{
-		channels:    channels,
-		group:       group,
-		maxAttempts: maxAttempts,
-		usageLogs:   opts.UsageLogs,
-		tokens:      opts.Tokens,
-		keys:        opts.Keys,
-		billing:     opts.Billing,
-		oauth:       opts.OAuth,
+		channels:        channels,
+		group:           group,
+		maxAttempts:     maxAttempts,
+		usageLogs:       opts.UsageLogs,
+		tokens:          opts.Tokens,
+		keys:            opts.Keys,
+		billing:         opts.Billing,
+		oauth:           opts.OAuth,
+		channelMappings: opts.ChannelModelMappings,
+		mappingCache:    mappingCache,
 		client: &http.Client{
 			Transport: &http.Transport{
 				// 走系统代理环境变量：便于在受限网络中经代理访问上游

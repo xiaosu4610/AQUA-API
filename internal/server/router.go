@@ -56,6 +56,9 @@ func (s *Server) registerRoutes() {
 	// 只暴露模型名、分组、价格与可用状态，不暴露渠道名与上游地址。
 	api.GET("/models", s.handleModelPlaza)
 
+	// 站点公告（无需登录）：前台横幅据此展示当前生效的公告。
+	api.GET("/announcements", s.handlePublicListAnnouncements)
+
 	// 支付平台异步回调：必须公开（第三方服务器无法携带我们的会话），
 	// 其安全性完全由通道适配器的验签保证（见 internal/payment）。
 	api.POST("/payments/:method/notify", s.handlePaymentNotify)
@@ -103,9 +106,18 @@ func (s *Server) registerRoutes() {
 	// 兑换码：用户输入兑换码领取额度（归属约束由会话强制，无需传用户 id）
 	portal.POST("/redeem", s.handleUserRedeem)
 
+	// 邀请返利与每日签到（用户自己的邀请码/关系与签到记录）
+	portal.GET("/referral", s.handleReferralInfo)
+	portal.GET("/checkin", s.handleGetCheckin)
+	portal.POST("/checkin", s.handleCheckin)
+
 	// ── 管理后台（需管理员）──────────────────────────────────────
 	admin := authed.Group("/admin")
 	admin.Use(middleware.RequireAdmin())
+	// 审计中间件：记录后台所有写操作（POST/PUT/PATCH/DELETE）。
+	// 必须挂在 RequireAdmin 之后，才能从上下文取到已鉴权的管理员身份；
+	// 只读请求不记录，避免审计表被列表页刷新淹没。
+	admin.Use(middleware.AdminAudit(s.deps.Audit))
 
 	admin.GET("/dashboard", s.handleDashboard)
 
@@ -145,6 +157,14 @@ func (s *Server) registerRoutes() {
 	admin.DELETE("/users/:id", s.handleDeleteUser)
 
 	admin.GET("/logs", s.handleAdminListLogs)
+	// 后台操作审计日志（只读查询；写操作由中间件自动记录）
+	admin.GET("/audit-logs", s.handleAdminListAuditLogs)
+
+	// 站点公告（发布/编辑/删除；列表含停用与已过期）
+	admin.GET("/announcements", s.handleAdminListAnnouncements)
+	admin.POST("/announcements", s.handleAdminCreateAnnouncement)
+	admin.PUT("/announcements/:id", s.handleAdminUpdateAnnouncement)
+	admin.DELETE("/announcements/:id", s.handleAdminDeleteAnnouncement)
 
 	// 模型计价规则（用量 → 费用的换算依据）
 	admin.GET("/prices", s.handleListPrices)

@@ -37,7 +37,13 @@ const (
 )
 
 // userColumns 集中定义查询列，顺序必须与 scanUser 的扫描顺序严格一致。
-const userColumns = `id, username, password_hash, email, role, status, quota, used_quota, created_at, updated_at`
+const userColumns = `id, username, password_hash, email, role, status, quota, used_quota, invite_code, inviter_id, created_at, updated_at`
+
+// maxInviteCodeAttempts 是注册时生成邀请码的最大重试次数。
+//
+// 邀请码是 8 位 32 字符集（约 40 bit 熵），撞码概率极低；
+// 设一个小的上限只是为了让"极端异常"（索引损坏、随机源异常）不会变成死循环。
+const maxInviteCodeAttempts = 5
 
 // userRepository 是 model.UserRepository 的 SQL 实现，并发安全。
 type userRepository struct {
@@ -50,6 +56,11 @@ func NewUserRepository(db *sql.DB) model.UserRepository {
 }
 
 // Create 新增用户。
+//
+// 邀请码在【注册时生成】（若未显式指定）：让每个用户从建号起就拥有邀请凭证，
+// 无需等到首次访问邀请页再补。生成与插入放在同一重试循环里，因为唯一索引
+// （users.invite_code 部分索引）才是并发下"邀请码唯一"的唯一可靠保证——
+// 撞码（概率极低）时换一个重试即可，而用户名冲突必须立即返回而不是重试。
 func (r *userRepository) Create(ctx context.Context, u *model.User) error {
 	if err := u.Validate(); err != nil {
 		return fmt.Errorf("store: 用户数据非法: %w", err)
@@ -59,27 +70,44 @@ func (r *userRepository) Create(ctx context.Context, u *model.User) error {
 	u.CreatedAt = now
 	u.UpdatedAt = now
 
-	res, err := r.db.ExecContext(ctx, `
-		INSERT INTO users (username, password_hash, email, role, status, quota, used_quota, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		u.Username, u.PasswordHash, u.Email, int(u.Role), int(u.Status),
-		u.Quota, u.UsedQuota, u.CreatedAt.Unix(), u.UpdatedAt.Unix(),
-	)
-	if err != nil {
-		// 唯一索引冲突即用户名重复。这里用错误文本判断而非预查：
-		// 预查存在并发窗口（两个请求同时通过检查后都插入），依赖唯一索引才是可靠的。
-		if strings.Contains(strings.ToUpper(err.Error()), "UNIQUE") {
-			return model.ErrUsernameTaken
+	for attempt := 0; ; attempt++ {
+		if u.InviteCode == "" {
+			code, err := model.GenerateInviteCode()
+			if err != nil {
+				return fmt.Errorf("store: 生成邀请码失败: %w", err)
+			}
+			u.InviteCode = code
 		}
-		return fmt.Errorf("store: 新增用户失败: %w", err)
-	}
 
-	id, err := res.LastInsertId()
-	if err != nil {
-		return fmt.Errorf("store: 读取新增用户的 ID 失败: %w", err)
+		res, err := r.db.ExecContext(ctx, `
+			INSERT INTO users (username, password_hash, email, role, status, quota, used_quota, invite_code, inviter_id, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			u.Username, u.PasswordHash, u.Email, int(u.Role), int(u.Status),
+			u.Quota, u.UsedQuota, u.InviteCode, u.InviterID, u.CreatedAt.Unix(), u.UpdatedAt.Unix(),
+		)
+		if err != nil {
+			// 唯一索引冲突有两种来源，必须区分：用户名重复是【业务错误】，直接上抛；
+			// 邀请码撞码是【极小概率的随机冲突】，清空后重新生成再试一次。
+			if strings.Contains(strings.ToUpper(err.Error()), "UNIQUE") {
+				if strings.Contains(strings.ToUpper(err.Error()), "INVITE_CODE") {
+					u.InviteCode = ""
+					if attempt+1 >= maxInviteCodeAttempts {
+						return fmt.Errorf("store: 连续 %d 次生成到重复邀请码，请重试: %w", maxInviteCodeAttempts, err)
+					}
+					continue
+				}
+				return model.ErrUsernameTaken
+			}
+			return fmt.Errorf("store: 新增用户失败: %w", err)
+		}
+
+		id, err := res.LastInsertId()
+		if err != nil {
+			return fmt.Errorf("store: 读取新增用户的 ID 失败: %w", err)
+		}
+		u.ID = uint64(id)
+		return nil
 	}
-	u.ID = uint64(id)
-	return nil
 }
 
 // GetByID 按主键查询用户。
@@ -164,6 +192,10 @@ func (r *userRepository) Count(ctx context.Context, q model.UserQuery) (int, err
 }
 
 // Update 按 ID 更新用户。
+//
+// 刻意不更新 invite_code 与 inviter_id：它们是"身份/关系"字段，不属于资料编辑。
+// 若在此处一并写回，用户编辑资料用的陈旧副本会把刚生成的邀请码或刚建立的邀请关系覆盖掉。
+// 这两列的变更只允许经由专门的路径（Create 生成、BindInviter 建立、EnsureInviteCode 懒生成）。
 func (r *userRepository) Update(ctx context.Context, u *model.User) error {
 	if u.ID == 0 {
 		return errors.New("store: 更新用户时 ID 不能为 0")
@@ -314,12 +346,14 @@ func scanUser(sc rowScanner) (*model.User, error) {
 		status       int
 		quota        int64
 		usedQuota    int64
+		inviteCode   string
+		inviterID    uint64
 		createdAt    int64
 		updatedAt    int64
 	)
 
 	if err := sc.Scan(&id, &username, &passwordHash, &email, &role, &status,
-		&quota, &usedQuota, &createdAt, &updatedAt); err != nil {
+		&quota, &usedQuota, &inviteCode, &inviterID, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, err
 		}
@@ -335,6 +369,8 @@ func scanUser(sc rowScanner) (*model.User, error) {
 		Status:       model.UserStatus(status),
 		Quota:        quota,
 		UsedQuota:    usedQuota,
+		InviteCode:   inviteCode,
+		InviterID:    inviterID,
 		CreatedAt:    time.Unix(createdAt, 0),
 		UpdatedAt:    time.Unix(updatedAt, 0),
 	}, nil

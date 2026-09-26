@@ -537,6 +537,12 @@ func (s *Server) handleReplaceChannelMappings(c *gin.Context) {
 		return
 	}
 
+	// 让转发层立即看到新映射：清除该渠道的映射缓存。
+	// 不主动失效时，后台改动最多要等缓存 TTL（60 秒）才生效。
+	if s.deps.Relay != nil {
+		s.deps.Relay.InvalidateChannelModelMappings(id)
+	}
+
 	stored, err := s.deps.ChannelModelMappings.ListByChannel(ctx, id)
 	if err != nil {
 		s.respondInternalError(c, "读取保存后的模型映射失败")

@@ -123,8 +123,19 @@ type User struct {
 	Status       UserStatus // 状态
 	Quota        int64      // 总额度；QuotaUnlimited(-1) 表示不限
 	UsedQuota    int64      // 已用额度
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	// InviteCode 是该用户唯一的邀请码（注册时生成，老用户由懒生成补齐）。
+	//
+	// 为什么放在用户表而不是单独一张表：邀请码是"用户的一个属性"，
+	// 与用户同生命周期（建号即有、销号即废），拆表只会增加一次不必要的连接。
+	// 唯一性由部分唯一索引保证（空串不参与约束，见迁移 0021）。
+	InviteCode string
+	// InviterID 是邀请人用户 id；0 表示"无邀请人"（如管理员创建或早期注册的用户）。
+	//
+	// 刻意用 0 而非 NULL 表示"无"：与项目其余外键风格一致，
+	// 也让"是否被邀请"的判定无需处理 NULL 三态。
+	InviterID uint64
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // IsAdmin 判断是否为管理员。

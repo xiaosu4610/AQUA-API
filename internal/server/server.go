@@ -88,6 +88,16 @@ type Deps struct {
 	// Payment 是支付通道注册表（按通道名取适配器做下单与验签）。
 	Payment *payment.Registry
 
+	// Audit 是后台操作审计日志仓储（查询用；写入由 middleware.AdminAudit 完成）。
+	//
+	// 之所以把"写"放在中间件而不是各处理器：后台写接口会持续增加，
+	// 逐个补调用必然漏；挂在分组上才能保证"任何写操作都被记录"这一硬要求。
+	Audit model.AuditLogRepository
+	// Announcements 是站点公告仓储（后台发布维护，前台横幅读取生效公告）。
+	Announcements model.AnnouncementRepository
+	// Referrals 是邀请返利与签到仓储（邀请码、邀请关系、奖励台账、签到记录）。
+	Referrals model.ReferralRepository
+
 	// EmailCodes 是注册邮箱验证码仓储（由 main 注入；验证码相关接口依赖它）。
 	EmailCodes model.EmailCodeRepository
 	// Mailer 是出站邮件发送器；未配置时验证码接口会返回明确的"邮件服务未配置"提示，

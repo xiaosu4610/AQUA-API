@@ -324,14 +324,20 @@ type usageEntry struct {
 	// 为什么要把分组一路带到这里：计费必须用"与选渠道相同的分组"，
 	// 若在此处重新解析，可能因来源不同而与渠道选择不一致，造成错账。
 	// 空字符串表示未指定，由 Billing 回退到默认分组。
-	Group      string
-	ChannelID  uint64
-	Model      string
-	Usage      openAIUsage
-	LatencyMS  int
-	IsStream   bool
-	StatusCode int
-	ErrorText  string
+	Group     string
+	ChannelID uint64
+	Model     string
+	// UpstreamModel 是本次实际发给上游的模型名（映射改写后的名字）。
+	//
+	// 语义约定：无映射或映射未改变模型名时为空串（表示"上游模型 = 对外模型"），
+	// 只有真正经过映射改写时才填入。这样日志既能一眼看出"哪些请求走了映射"，
+	// 又不会让绝大多数行重复记录同一个名字。
+	UpstreamModel string
+	Usage         openAIUsage
+	LatencyMS     int
+	IsStream      bool
+	StatusCode    int
+	ErrorText     string
 }
 
 // recordUsage 记录调用用量。
@@ -353,6 +359,7 @@ func (r *Relay) recordUsage(ctx context.Context, entry usageEntry) {
 		TokenID:          entry.TokenID,
 		ChannelID:        entry.ChannelID,
 		Model:            entry.Model,
+		UpstreamModel:    entry.UpstreamModel,
 		PromptTokens:     entry.Usage.PromptTokens,
 		CompletionTokens: entry.Usage.CompletionTokens,
 		TotalTokens:      entry.Usage.TotalTokens,

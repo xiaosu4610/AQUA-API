@@ -684,12 +684,19 @@ func (r *Relay) forwardChat(w http.ResponseWriter, req *http.Request, target for
 	start := time.Now()
 	ch := target.channel
 
+	// 解析"渠道级模型映射"：把对外模型名改写为上游模型名。
+	//
+	// 只有命中映射且确实改变了模型名时才会重建请求体（modelRewritten=true）：
+	// 未命中时 outboundBody 就是入参 body 本身，逐字节原样透传，行为与引入映射前一致。
+	// 上游模型名同时用于请求体、路径模板（{model}/{deployment}）与调用日志。
+	upstreamModel, outboundBody, modelRewritten := r.resolveUpstreamModel(req.Context(), ch.ID, modelName, body)
+
 	// 取渠道类型规格，并按该类型决定"怎么发这个请求"：解析规格 → 请求体协议转换
 	// （Anthropic / Gemini 会改写请求体）→ 组装 URL / 请求头（含类型专属路径、
 	// 查询参数与鉴权）。type_key 为空的渠道回退为 OpenAI 兼容，行为与旧实现一致。
 	wantStream := oai.PeekStream(body)
 	spec, outBody, built, prepareErr := prepareChannelUpstream(
-		ch, target.apiKey, modelName, upstreamPath, body,
+		ch, target.apiKey, upstreamModel, upstreamPath, outboundBody,
 		upstreamForwardHeaders(req.Header), wantStream)
 	if prepareErr != nil {
 		if errors.Is(prepareErr, errRequestBodyConversion) {
@@ -788,6 +795,18 @@ func (r *Relay) forwardChat(w http.ResponseWriter, req *http.Request, target for
 		return forwardRetryChannel
 	}
 
+	// 响应方向的模型名回写：把上游回包的 model 改回对外名（modelName）。
+	//
+	// 位置很关键：必须在 normalizeUpstreamResponse 之后——此时响应体已被统一为
+	// 内部 OpenAI 形态，无论下游是 OpenAI 直通还是 Anthropic/Gemini 适配器，
+	// 都能看到正确的对外模型名。
+	//
+	// 仅在请求侧确实改写时才回写：无映射时响应体逐字节保持上游原样。
+	// 流式为逐行增量改写（绝不整段缓冲），非流式为整体 JSON 改写。
+	if modelRewritten {
+		applyResponseModelRewrite(resp, wantStream, modelName)
+	}
+
 	// ── 步骤 5~6：回写响应 ──────────────────────────────────────
 	// 同时把内容喂给抓取器，用于事后解析 usage（token 数）。
 	sniffer := newUsageSniffer()
@@ -815,15 +834,17 @@ func (r *Relay) forwardChat(w http.ResponseWriter, req *http.Request, target for
 	usage, hasUsage := sniffer.Usage()
 	identity := identityFromRequest(req.Context())
 	entry := usageEntry{
-		UserID:     identity.UserID,
-		TokenID:    identity.TokenID,
-		Group:      group,
-		ChannelID:  ch.ID,
-		Model:      modelName,
-		Usage:      usage,
-		LatencyMS:  int(time.Since(start).Milliseconds()),
-		IsStream:   oai.PeekStream(body),
-		StatusCode: resp.StatusCode,
+		UserID:    identity.UserID,
+		TokenID:   identity.TokenID,
+		Group:     group,
+		ChannelID: ch.ID,
+		Model:     modelName,
+		// 仅当映射改写了模型名时才记录上游名（否则为空串，表示与对外名一致）。
+		UpstreamModel: upstreamModelForLog(upstreamModel, modelRewritten),
+		Usage:         usage,
+		LatencyMS:     int(time.Since(start).Milliseconds()),
+		IsStream:      oai.PeekStream(body),
+		StatusCode:    resp.StatusCode,
 	}
 	if !hasUsage {
 		// 上游确实没返回 usage：token 只能记 0，但必须留下标注，

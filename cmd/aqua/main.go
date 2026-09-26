@@ -199,6 +199,12 @@ func run() error {
 	modelMetas := store.NewModelMetaRepository(st.DB())
 	channelModelMappings := store.NewChannelModelMappingRepository(st.DB())
 	redeemCodes := store.NewRedeemCodeRepository(st.DB())
+	// 操作审计日志：后台写操作的追溯记录（写入由审计中间件完成，这里提供查询/清理）。
+	auditLogs := store.NewAuditLogRepository(st.DB())
+	// 站点公告：后台发布维护，前台横幅读取生效公告。
+	announcements := store.NewAnnouncementRepository(st.DB())
+	// 邀请返利 / 签到：注册与充值发的奖励、每人每天的签到记录。
+	referrals := store.NewReferralRepository(st.DB())
 	// 额度预留台账：鉴权时预扣、响应后结算/退还，堵住并发超支漏洞。
 	quotaReservations := store.NewQuotaRepository(st.DB())
 
@@ -336,6 +342,9 @@ func run() error {
 		OAuth: oauthRefresher,
 		// 计费：把 usage 换算成额度并扣减
 		Billing: billing,
+		// 渠道级模型映射：让"对外名 ↔ 上游名"的改写真正在转发链路生效
+		// （后台改完映射会主动清缓存，见 handler_model_meta.go）
+		ChannelModelMappings: channelModelMappings,
 	})
 
 	// 异步任务编排：把"选渠道 → 扣费 → 提交上游 → 落库 → 轮询推进"串起来。
@@ -364,6 +373,10 @@ func run() error {
 		ChannelModelMappings: channelModelMappings,
 		// 兑换码：后台批量生成，用户在门户兑换领取额度
 		RedeemCodes: redeemCodes,
+		// 后台操作审计、站点公告、邀请返利与签到
+		Audit:         auditLogs,
+		Announcements: announcements,
+		Referrals:     referrals,
 		// 订阅账号：OAuth 提供方配置（后台维护）
 		OAuthProviders: oauthProviders,
 		// 异步任务：仓储（查询）+ 编排服务（提交/轮询/取消）

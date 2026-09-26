@@ -41,7 +41,7 @@ const (
 const defaultSeriesDays = 7
 
 // usageLogColumns 集中定义查询列，顺序必须与 scanUsageLog 的扫描顺序严格一致。
-const usageLogColumns = `id, user_id, token_id, channel_id, model, prompt_tokens, completion_tokens,
+const usageLogColumns = `id, user_id, token_id, channel_id, model, upstream_model, prompt_tokens, completion_tokens,
 	total_tokens, quota, latency_ms, is_stream, status_code, error, request_id, created_at`
 
 // usageLogRepository 是 model.UsageLogRepository 的 SQL 实现，并发安全。
@@ -68,10 +68,10 @@ func (r *usageLogRepository) Create(ctx context.Context, log *model.UsageLog) er
 
 	res, err := r.db.ExecContext(ctx, `
 		INSERT INTO usage_logs
-			(user_id, token_id, channel_id, model, prompt_tokens, completion_tokens, total_tokens,
+			(user_id, token_id, channel_id, model, upstream_model, prompt_tokens, completion_tokens, total_tokens,
 			 quota, latency_ms, is_stream, status_code, error, request_id, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		log.UserID, log.TokenID, log.ChannelID, log.Model,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		log.UserID, log.TokenID, log.ChannelID, log.Model, log.UpstreamModel,
 		log.PromptTokens, log.CompletionTokens, log.TotalTokens,
 		log.Quota, log.LatencyMS, boolToInt(log.IsStream), log.StatusCode,
 		log.Error, log.RequestID, log.CreatedAt.Unix(),
@@ -353,6 +353,7 @@ func scanUsageLog(sc rowScanner) (*model.UsageLog, error) {
 		tokenID          uint64
 		channelID        uint64
 		modelName        string
+		upstreamModel    string
 		promptTokens     int
 		completionTokens int
 		totalTokens      int
@@ -365,7 +366,7 @@ func scanUsageLog(sc rowScanner) (*model.UsageLog, error) {
 		createdAt        int64
 	)
 
-	if err := sc.Scan(&id, &userID, &tokenID, &channelID, &modelName,
+	if err := sc.Scan(&id, &userID, &tokenID, &channelID, &modelName, &upstreamModel,
 		&promptTokens, &completionTokens, &totalTokens, &quota, &latencyMS,
 		&isStream, &statusCode, &errMsg, &requestID, &createdAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -380,6 +381,7 @@ func scanUsageLog(sc rowScanner) (*model.UsageLog, error) {
 		TokenID:          tokenID,
 		ChannelID:        channelID,
 		Model:            modelName,
+		UpstreamModel:    upstreamModel,
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
 		TotalTokens:      totalTokens,

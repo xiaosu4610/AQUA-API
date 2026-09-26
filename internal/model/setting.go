@@ -27,6 +27,7 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -135,6 +136,31 @@ const (
 	SettingKeySEOSitemapEnabled = "seo_sitemap_enabled"
 	// SettingKeySEOSitemapPaths 额外的公开路径，逗号分隔（如 "/pricing,/faq"）。
 	SettingKeySEOSitemapPaths = "seo_sitemap_paths"
+
+	// ── 邀请返利 / 每日签到（M7）─────────────────────────────────
+	//
+	// 增长（拉新）与留存（日活）两类运营开关，均为"非密钥"参数：站长随时可调、
+	// 改完立即生效。默认全部关闭/为 0，保证升级后不会突然给用户发额度。
+
+	// SettingKeyReferralEnabled 邀请返利总开关（"true" / "false"）。
+	//
+	// 它是"总闸"：即便下面两项配了数值，关闭本项也不会产生任何奖励，
+	// 便于站长在活动结束后一键停发而不必逐项清零。
+	SettingKeyReferralEnabled = "referral_enabled"
+	// SettingKeyReferralRegisterBonus 被邀请人注册成功后，邀请人获得的额度。
+	//
+	// 0 表示关闭"注册奖"（默认 0）。正整数才发放。
+	SettingKeyReferralRegisterBonus = "referral_register_bonus"
+	// SettingKeyReferralRechargeRatio 被邀请人充值时，邀请人获得的额度比例（整数百分比 0~100）。
+	//
+	// 用整数百分比而非浮点：额度是"钱"，浮点会在多次累计后产生可见的舍入误差；
+	// 计算式为 quota × ratio / 100，向下取整（宁可少给，不可凭空多给）。
+	SettingKeyReferralRechargeRatio = "referral_recharge_ratio"
+	// SettingKeyCheckinEnabled 每日签到总开关（"true" / "false"），默认 false。
+	SettingKeyCheckinEnabled = "checkin_enabled"
+	// SettingKeyCheckinDailyQuota 每次签到发放的额度，默认 0（0 表示签到不发放额度，
+	// 仅记录连续天数）。若要"签到得额度"，站长需同时把本项设为正数。
+	SettingKeyCheckinDailyQuota = "checkin_daily_quota"
 )
 
 // SiteSettings 是站点设置的强类型视图。
@@ -156,6 +182,57 @@ type SiteSettings struct {
 
 	// SEO 是搜索引擎优化相关的运营参数（域名、关键词、站长验证码、Geo 信息）。
 	SEO SEOSettings
+
+	// Referral 是邀请返利与每日签到的运营参数（关闭时不影响任何既有功能）。
+	Referral ReferralSettings
+}
+
+// ReferralSettings 是邀请返利 / 每日签到的运营参数。
+//
+// 为什么整体放在一个子结构体：它们同属"增长与留存"这一块运营能力，
+// 日后还可能扩展（邀请排行榜、连续签到递增奖励等）。聚在一起，
+// 新增子项时 ToMap/Load 的键名前缀一目了然，也便于后台按区块渲染。
+type ReferralSettings struct {
+	// Enabled 是邀请返利总开关；关闭时注册奖与充值返利都不发放。
+	Enabled bool
+	// RegisterBonus 是被邀请人注册成功后邀请人获得的额度（0 表示不开注册奖）。
+	RegisterBonus int64
+	// RechargeRatio 是被邀请人充值返利比例（整数百分比 0~100，0 表示不返利）。
+	RechargeRatio int
+	// CheckinEnabled 是每日签到总开关。
+	CheckinEnabled bool
+	// CheckinDailyQuota 是每次签到发放的额度（0 表示只记天数、不发额度）。
+	CheckinDailyQuota int64
+}
+
+// 邀请返利 / 签到相关数值的取值上限。
+//
+// 设上限的目的：这些额度会直接加到用户账户上，是"凭空产生"的额度，
+// 一旦被误填成天文数字（例如压键盘产生的一长串 9），就是直接的资损。
+const (
+	// maxReferralQuota 是单项奖励额度的上限（10 亿）。
+	maxReferralQuota int64 = 1_000_000_000
+	// maxRechargeRatio 是充值返利比例上限（100%）。
+	maxRechargeRatio = 100
+)
+
+// ValidateReferralQuota 校验一笔"邀请/签到"奖励额度是否在允许区间 [0, maxReferralQuota]。
+//
+// 供后台保存设置与运行期发奖前双重把关：设置层挡住误填，
+// 运行期再挡一次，避免历史脏数据（曾被手工写入库的值）被用于发奖。
+func ValidateReferralQuota(name string, value int64) error {
+	if value < 0 || value > maxReferralQuota {
+		return fmt.Errorf("%s 必须在 0 ~ %d 之间，当前 %d", name, maxReferralQuota, value)
+	}
+	return nil
+}
+
+// ValidateRechargeRatio 校验充值返利比例是否在 [0, 100]。
+func ValidateRechargeRatio(ratio int) error {
+	if ratio < 0 || ratio > maxRechargeRatio {
+		return fmt.Errorf("充值返利比例必须在 0 ~ %d 之间，当前 %d", maxRechargeRatio, ratio)
+	}
+	return nil
 }
 
 // PaymentSettings 是充值 / 支付的运营参数。
@@ -327,6 +404,18 @@ func DefaultSiteSettings() SiteSettings {
 			// SitemapEnabled 默认开启：让搜索引擎自动发现站点页面，无需站长手动配置。
 			SitemapEnabled: true,
 		},
+		// 邀请返利 / 签到默认值：全部关闭、额度为 0。
+		//
+		// 为什么默认全关：这些都是"凭空发额度"的功能，一旦默认开启，
+		// 升级到新版本的站点会在站长毫不知情的情况下开始发额度（直接成本）。
+		// 需要时由站长在后台显式开启。
+		Referral: ReferralSettings{
+			Enabled:           false,
+			RegisterBonus:     0,
+			RechargeRatio:     0,
+			CheckinEnabled:    false,
+			CheckinDailyQuota: 0,
+		},
 	}
 }
 
@@ -364,6 +453,12 @@ func (s SiteSettings) ToMap() map[string]string {
 		SettingKeySEOGeoPosition:        s.SEO.GeoPosition,
 		SettingKeySEOSitemapEnabled:     strconv.FormatBool(s.SEO.SitemapEnabled),
 		SettingKeySEOSitemapPaths:       strings.Join(s.SEO.SitemapPaths, ","),
+
+		SettingKeyReferralEnabled:       strconv.FormatBool(s.Referral.Enabled),
+		SettingKeyReferralRegisterBonus: strconv.FormatInt(s.Referral.RegisterBonus, 10),
+		SettingKeyReferralRechargeRatio: strconv.Itoa(s.Referral.RechargeRatio),
+		SettingKeyCheckinEnabled:        strconv.FormatBool(s.Referral.CheckinEnabled),
+		SettingKeyCheckinDailyQuota:     strconv.FormatInt(s.Referral.CheckinDailyQuota, 10),
 	}
 }
 
@@ -406,8 +501,41 @@ func LoadSiteSettings(ctx context.Context, repo SettingRepository) (SiteSettings
 
 	loadPaymentSettings(&settings.Payment, values)
 	loadSEOSettings(&settings.SEO, values)
+	loadReferralSettings(&settings.Referral, values)
 
 	return settings, nil
+}
+
+// loadReferralSettings 把 KV 中的邀请/签到参数合并进强类型结构。
+//
+// 逐项"存在且解析成功且取值合法才覆盖"：越界的值（例如比例 150、额度为负）
+// 一律丢弃并保留默认，避免一个脏设置导致"给用户发负额度"这类资损性后果。
+func loadReferralSettings(target *ReferralSettings, values map[string]string) {
+	if v, ok := values[SettingKeyReferralEnabled]; ok {
+		if parsed, err := strconv.ParseBool(v); err == nil {
+			target.Enabled = parsed
+		}
+	}
+	if v, ok := values[SettingKeyReferralRegisterBonus]; ok {
+		if parsed, err := strconv.ParseInt(v, 10, 64); err == nil && parsed >= 0 && parsed <= maxReferralQuota {
+			target.RegisterBonus = parsed
+		}
+	}
+	if v, ok := values[SettingKeyReferralRechargeRatio]; ok {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed >= 0 && parsed <= maxRechargeRatio {
+			target.RechargeRatio = parsed
+		}
+	}
+	if v, ok := values[SettingKeyCheckinEnabled]; ok {
+		if parsed, err := strconv.ParseBool(v); err == nil {
+			target.CheckinEnabled = parsed
+		}
+	}
+	if v, ok := values[SettingKeyCheckinDailyQuota]; ok {
+		if parsed, err := strconv.ParseInt(v, 10, 64); err == nil && parsed >= 0 && parsed <= maxReferralQuota {
+			target.CheckinDailyQuota = parsed
+		}
+	}
 }
 
 // loadPaymentSettings 把 KV 中的支付参数合并进强类型结构。

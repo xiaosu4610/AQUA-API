@@ -399,6 +399,10 @@ func (s *Server) handleAdminMarkOrderPaid(c *gin.Context) {
 			s.respondInternalError(c, "入账失败")
 			return
 		}
+		if err := s.rewardReferralOnRecharge(ctx, order); err != nil {
+			s.respondInternalError(c, "发放充值返利失败")
+			return
+		}
 	} else if order.Status != model.PaymentStatusPending {
 		oai.WriteError(c.Writer, http.StatusConflict,
 			"仅待支付订单可以确认入账（当前状态："+order.Status.String()+"）",
@@ -411,6 +415,12 @@ func (s *Server) handleAdminMarkOrderPaid(c *gin.Context) {
 		}
 		if err := s.creditOrder(ctx, order.TradeNo); err != nil {
 			s.respondInternalError(c, "入账失败")
+			return
+		}
+		// 入账成功后再挂充值返利：返利幂等（同一订单只发一次），
+		// 因此此处重复确认也安全，失败时重试即可补发。
+		if err := s.rewardReferralOnRecharge(ctx, order); err != nil {
+			s.respondInternalError(c, "发放充值返利失败")
 			return
 		}
 	}
@@ -561,6 +571,12 @@ func (s *Server) handlePaymentNotify(c *gin.Context) {
 		// 入账失败：返回 500 让支付平台重试——重试会再次走到这里，
 		// 而 CreditOrder 是幂等的，不会重复给额度。
 		c.String(http.StatusInternalServerError, "credit failed")
+		return
+	}
+	// 入账成功后再挂充值返利（幂等：同一订单只返一次）。
+	// 返利失败同样返回 500 促发重试：重试时入账幂等跳过，返利会在此补发。
+	if err := s.rewardReferralOnRecharge(ctx, order); err != nil {
+		c.String(http.StatusInternalServerError, "reward failed")
 		return
 	}
 

@@ -1319,6 +1319,15 @@ func (s *Server) handleGetSettings(c *gin.Context) {
 			"sitemap_url": seoBase + "/sitemap.xml",
 			"robots_url":  seoBase + "/robots.txt",
 		},
+
+		// 邀请返利 / 每日签到参数（非密钥，可在此修改并即时生效）
+		"referral": gin.H{
+			"enabled":             settings.Referral.Enabled,
+			"register_bonus":      settings.Referral.RegisterBonus,
+			"recharge_ratio":      settings.Referral.RechargeRatio,
+			"checkin_enabled":     settings.Referral.CheckinEnabled,
+			"checkin_daily_quota": settings.Referral.CheckinDailyQuota,
+		},
 	})
 }
 
@@ -1499,6 +1508,20 @@ type settingsUpdateRequest struct {
 
 	// SEO / 搜索引擎优化参数（逐项覆盖，见 mergeSEOSettings）
 	SEO *seoSettingsDTO `json:"seo"`
+
+	// 邀请返利 / 每日签到参数（逐项覆盖，见 mergeReferralSettings）
+	Referral *referralSettingsDTO `json:"referral"`
+}
+
+// referralSettingsDTO 是邀请返利 / 签到设置的可写入参。
+//
+// 字段全用指针：未提交的项保持原值，避免前端只改一项却把其他项清空。
+type referralSettingsDTO struct {
+	Enabled           *bool  `json:"enabled"`
+	RegisterBonus     *int64 `json:"register_bonus"`
+	RechargeRatio     *int   `json:"recharge_ratio"`
+	CheckinEnabled    *bool  `json:"checkin_enabled"`
+	CheckinDailyQuota *int64 `json:"checkin_daily_quota"`
 }
 
 // seoSettingsDTO 是 SEO 设置的可写入参。
@@ -1578,6 +1601,13 @@ func (s *Server) handleUpdateSettings(c *gin.Context) {
 		if err := mergeSEOSettings(&current.SEO, req.SEO); err != nil {
 			oai.WriteError(c.Writer, http.StatusBadRequest, err.Error(),
 				oai.TypeInvalidRequest, "invalid_seo_settings")
+			return
+		}
+	}
+	if req.Referral != nil {
+		if err := mergeReferralSettings(&current.Referral, req.Referral); err != nil {
+			oai.WriteError(c.Writer, http.StatusBadRequest, err.Error(),
+				oai.TypeInvalidRequest, "invalid_referral_settings")
 			return
 		}
 	}
@@ -1674,6 +1704,39 @@ func mergeSEOSettings(target *model.SEOSettings, req *seoSettingsDTO) error {
 		target.SitemapEnabled = *req.SitemapEnabled
 	}
 
+	return nil
+}
+
+// mergeReferralSettings 校验并合并邀请返利 / 签到设置（只覆盖请求中出现的字段）。
+//
+// 校验使用 model 层导出的校验函数，确保"后台保存"与"运行期发奖前再校验"口径一致：
+// 比例限 0~100，额度限 0~1e9（越界一律拒绝保存，而不是静默截断——
+// 静默截断会让站长以为自己填的值生效了，实际没有）。
+func mergeReferralSettings(target *model.ReferralSettings, req *referralSettingsDTO) error {
+	if req.Enabled != nil {
+		target.Enabled = *req.Enabled
+	}
+	if req.RegisterBonus != nil {
+		if err := model.ValidateReferralQuota("邀请注册奖励", *req.RegisterBonus); err != nil {
+			return err
+		}
+		target.RegisterBonus = *req.RegisterBonus
+	}
+	if req.RechargeRatio != nil {
+		if err := model.ValidateRechargeRatio(*req.RechargeRatio); err != nil {
+			return err
+		}
+		target.RechargeRatio = *req.RechargeRatio
+	}
+	if req.CheckinEnabled != nil {
+		target.CheckinEnabled = *req.CheckinEnabled
+	}
+	if req.CheckinDailyQuota != nil {
+		if err := model.ValidateReferralQuota("每日签到额度", *req.CheckinDailyQuota); err != nil {
+			return err
+		}
+		target.CheckinDailyQuota = *req.CheckinDailyQuota
+	}
 	return nil
 }
 

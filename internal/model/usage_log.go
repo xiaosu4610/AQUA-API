@@ -56,7 +56,8 @@ type UsageLog struct {
 	UserID           uint64    // 调用者用户 ID（0 表示未认证或系统调用）
 	TokenID          uint64    // 使用的访问令牌 ID
 	ChannelID        uint64    // 命中的上游渠道 ID
-	Model            string    // 请求的模型名
+	Model            string    // 请求的模型名（对外模型名）
+	UpstreamModel    string    // 实际发给上游的模型名（经渠道映射改写）；空串表示与 Model 相同
 	PromptTokens     int       // 输入 token 数
 	CompletionTokens int       // 输出 token 数
 	TotalTokens      int       // 总 token 数

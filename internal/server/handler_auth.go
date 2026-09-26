@@ -27,6 +27,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -162,6 +163,10 @@ type registerRequest struct {
 	Email    string `json:"email"`
 	// Code 是邮箱验证码；仅在站点开启"注册必须邮箱验证码"时必填。
 	Code string `json:"code"`
+	// InviteCode 是可选邀请码；由邀请链接 /register?invite=CODE 带出。
+	//
+	// 语义：非法邀请码一律【忽略】并照常注册成功（取舍理由见 applyInviteOnRegister）。
+	InviteCode string `json:"invite_code"`
 }
 
 // handleRegister 处理用户注册。
@@ -257,7 +262,57 @@ func (s *Server) handleRegister(c *gin.Context) {
 		return
 	}
 
+	// 邀请关系与注册奖：在账号创建成功之后处理（失败不影响注册，见方法注释）。
+	s.applyInviteOnRegister(ctx, user, req.InviteCode, settings)
+
 	s.issueSession(c, user, http.StatusOK)
+}
+
+// applyInviteOnRegister 在注册成功后建立邀请关系并（按配置）给邀请人发注册奖。
+//
+// 取舍（为什么"忽略非法邀请码"而不是报错拒绝注册）：
+//
+//	邀请码多由他人转述/手抄，填错是高频且低恶意的失误。若因此让注册整体失败，
+//	用户会以为"网站坏了"而直接流失——为了一个可选的推广机制丢掉一个真实用户，
+//	得不偿失。因此本方法只在能解析出合法、非自己的邀请人时才建立关系与发奖，
+//	其余情况（空码、不存在、指向自己）一律静默忽略，账号照常创建。
+//
+// 失败处理：关系建立与发奖都是"锦上添花"，任何失败都不影响已成功创建的账号，
+// 故各自显式吞掉错误并留注释，不向上抛（抛了会让用户看到莫名其妙的注册失败）。
+func (s *Server) applyInviteOnRegister(ctx context.Context, user *model.User, rawCode string, settings model.SiteSettings) {
+	code := model.NormalizeInviteCode(rawCode)
+	if code == "" {
+		return
+	}
+
+	inviterID, err := s.deps.Referrals.UserIDByInviteCode(ctx, code)
+	if err != nil {
+		// 邀请码不存在（或查询失败）：忽略，不阻断注册
+		return
+	}
+	if inviterID == 0 || inviterID == user.ID {
+		return
+	}
+
+	// 建立邀请关系（仅当被邀请人尚未绑定邀请人时才写入，幂等）。
+	if err := s.deps.Referrals.BindInviter(ctx, user.ID, inviterID); err != nil {
+		return
+	}
+
+	// 发放注册奖：仅在总开关开启且额度为正时。
+	if !settings.Referral.Enabled || settings.Referral.RegisterBonus <= 0 {
+		return
+	}
+	reward := &model.ReferralReward{
+		InviterID: inviterID,
+		InviteeID: user.ID,
+		Kind:      model.ReferralKindRegister,
+		Quota:     settings.Referral.RegisterBonus,
+	}
+	if _, err := s.deps.Referrals.GrantReward(ctx, reward); err != nil {
+		// 发奖失败不回滚账号：关系已建立，站长可据台账人工补发。
+		return
+	}
 }
 
 // ---------------------------------------------------------------------------
