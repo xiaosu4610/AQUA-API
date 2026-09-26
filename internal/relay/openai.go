@@ -147,7 +147,20 @@ func (r *Relay) forwardWithFallback(w http.ResponseWriter, req *http.Request, mo
 	excludedChannels := make(map[uint64]struct{}) // 本次请求已放弃的渠道
 	usedKeys := make(map[uint64]struct{})         // 本次请求已用过的密钥（避免重复撞同一把）
 
-	for attempt := 1; attempt <= r.maxAttempts; attempt++ {
+	// 两套独立的尝试预算（重要，别合并成一个）：
+	//
+	//   · channelAttempts：渠道级失败（连不上、5xx）的预算 = maxAttempts。
+	//     渠道级失败每次都要重新建连，代价高，必须严格限制，否则故障时延迟被放大。
+	//   · 密钥级失败不走渠道预算，而是由 keyAttempts 单独计量，上限 maxKeyLevelAttempts。
+	//
+	// 为什么密钥级需要更大的预算：一个渠道的密钥池可能来自几百个不同账号
+	// （例如 NVIDIA NIM 的免费额度池），而每个账号的模型授权是不同的——
+	// 同一个模型在 A 账号"没有权限"、在 B 账号完全可用。
+	// 此时"换一把密钥"的成本极低（同一上游、复用连接、上游是立即拒绝的），
+	// 所以值得多试几把；若沿用 3 次的渠道预算，绝大多数请求会白跑一趟。
+	channelAttempts := 0
+retryLoop:
+	for keyAttempts := 1; keyAttempts <= maxKeyLevelAttempts; keyAttempts++ {
 		ch := pickCandidate(candidates, excludedChannels)
 		if ch == nil {
 			// 候选渠道已全部放弃，退出循环统一报错
@@ -181,6 +194,11 @@ func (r *Relay) forwardWithFallback(w http.ResponseWriter, req *http.Request, mo
 			continue
 		case forwardRetryChannel:
 			excludedChannels[ch.ID] = struct{}{}
+			channelAttempts++
+			if channelAttempts >= r.maxAttempts {
+				// 渠道预算耗尽：上游整体故障时不该无限试下去
+				break retryLoop
+			}
 			continue
 		}
 	}
@@ -270,6 +288,115 @@ func (r *Relay) resolveChatKey(ctx context.Context, ch *model.Channel, used map[
 // 又不会因为池里存在大量坏凭据而让单个请求长时间打转
 // （每个坏凭据都要等一次刷新超时，代价不低）。
 const maxCredentialAttempts = 3
+
+// maxKeyLevelAttempts 是单次请求内最多尝试的凭据轮数（密钥级重试预算）。
+//
+// 取值 20 的权衡：
+//   - 多账号密钥池里"同一个模型在不同账号授权不同"是常态
+//     （NVIDIA 免费额度池尤其明显：几十个账号各自只有部分模型权限），
+//     只试 3 把很可能全部落在没有该模型授权的小号上，用户会看到无意义的失败；
+//   - 上游对"无此模型/无权限"是【立即】拒绝（毫秒级、不消耗算力），
+//     所以多试几把的代价极低；而只要池里有一把可用，用户就能拿到结果。
+//
+// 它与 maxAttempts（渠道级预算）相互独立：渠道级失败要重新建连、代价高，
+// 仍严格限制在 maxAttempts；本预算只服务"换一把密钥"这种廉价重试。
+const maxKeyLevelAttempts = 20
+
+// keyLevelPeekBytes 是判定"凭据被拒"时窥探响应体的字节数。
+//
+// 取 4KiB：各类上游的错误说明都很短，足够覆盖；同时避免为判断读入大响应。
+const keyLevelPeekBytes = 4 << 10
+
+// keyLevelRejectionMarkers 是"上游明确指出这把凭据/这个账号不可用"的文本特征。
+//
+// 为什么需要文本判据：有些上游用 400/404 表达"该账号没有这个模型"
+// （NVIDIA NIM 返回 404 + application/problem+json，内容形如
+// "Function '...': Not found for account '...'"）。
+// 只看状态码会把这类"换把密钥就能成功"的情形误判为"请求本身有错"。
+var keyLevelRejectionMarkers = []string{
+	"not found for account",
+	"no permission",
+	"permission denied",
+	"does not have access",
+	"you do not have access",
+	"not authorized",
+	"unauthorized",
+	"invalid api key",
+	"api key is invalid",
+	"incorrect api key",
+	"account is not authorized",
+	"quota",
+	"rate limit",
+	"exceeded",
+}
+
+// bodyWithPrefix 把"已读走的前缀"与"剩余部分"重新组合为 ReadCloser。
+//
+// 用途：判断错误类型时需要读一小段响应体，读完之后必须把响应体还原，
+// 否则后续"把上游错误透传给客户端"的路径会读到残缺内容。
+type bodyWithPrefix struct {
+	io.Reader
+	closer io.Closer
+}
+
+// Close 关闭底层响应体。
+func (b bodyWithPrefix) Close() error { return b.closer.Close() }
+
+// peekBody 读取响应体开头的一段并还原它，返回读到的内容。
+func peekBody(resp *http.Response, limit int) ([]byte, error) {
+	if resp == nil || resp.Body == nil {
+		return nil, nil
+	}
+
+	buf := make([]byte, limit)
+	n, err := io.ReadFull(resp.Body, buf)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	peek := buf[:n]
+
+	// 还原：先用已读到的前缀，再接上尚未读完的部分
+	resp.Body = bodyWithPrefix{
+		Reader: io.MultiReader(bytes.NewReader(peek), resp.Body),
+		closer: resp.Body,
+	}
+	return peek, nil
+}
+
+// classifyKeyLevelFailure 判断这次上游响应是否属于"这把凭据自身的问题"。
+//
+// 判据分两类（顺序不能反）：
+//  1. 状态码直接表明凭据问题：401 / 403 / 402 / 429；
+//  2. 状态码是 400 / 404，但响应体文本表明"该账号无权访问/没有这个模型"。
+//
+// 返回值第二项是记录到密钥失败原因里的说明（已脱敏，不含密钥）。
+func (r *Relay) classifyKeyLevelFailure(resp *http.Response) (bool, string) {
+	if resp == nil {
+		return false, ""
+	}
+	if isKeyLevelFailure(resp.StatusCode) {
+		return true, fmt.Sprintf("上游返回 HTTP %d", resp.StatusCode)
+	}
+	if resp.StatusCode != http.StatusBadRequest && resp.StatusCode != http.StatusNotFound {
+		return false, ""
+	}
+
+	peek, err := peekBody(resp, keyLevelPeekBytes)
+	if err != nil || len(peek) == 0 {
+		// 读不到内容就无法判定：按"请求本身的问题"处理，
+		// 宁可少重试，也不要因为一次读取失败而做无谓的密钥轮换。
+		return false, ""
+	}
+
+	lowered := strings.ToLower(string(peek))
+	for _, marker := range keyLevelRejectionMarkers {
+		if strings.Contains(lowered, marker) {
+			return true, fmt.Sprintf("上游返回 HTTP %d，并指出该凭据无权访问（命中 %q）",
+				resp.StatusCode, marker)
+		}
+	}
+	return false, ""
+}
 
 // truncateReason 截断失败原因，避免超长错误信息撑大数据库字段。
 func truncateReason(reason string) string {
@@ -374,9 +501,9 @@ func (r *Relay) forwardChat(w http.ResponseWriter, req *http.Request, target for
 	defer func() { _ = resp.Body.Close() }()
 
 	// ── 失败分流（关键：决定"换密钥"还是"换渠道"）──────────────
-	if isKeyLevelFailure(resp.StatusCode) && target.keyID != 0 {
-		// 该密钥不可用（无效/受限/被限流）：记一次失败，达阈值会被自动摘除
-		r.markKeyFailure(req.Context(), target.keyID, fmt.Sprintf("上游返回 HTTP %d", resp.StatusCode))
+	if violation, reason := r.classifyKeyLevelFailure(resp); violation && target.keyID != 0 {
+		// 该密钥不可用（无效/受限/被限流/该账号无此模型）：记一次失败，达阈值会被自动摘除
+		r.markKeyFailure(req.Context(), target.keyID, truncateReason(reason))
 
 		if target.hasSpareKey {
 			// 同渠道还有别的密钥：丢弃本次响应，换一把密钥重试
