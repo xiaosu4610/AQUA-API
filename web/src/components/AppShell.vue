@@ -95,7 +95,7 @@ async function handleSignOut(): Promise<void> {
 
     <!-- 侧边栏 -->
     <aside
-      class="fixed inset-y-0 left-0 z-40 flex w-60 flex-col border-r border-ink-800 bg-ink-900/80 backdrop-blur
+      class="fixed inset-y-0 left-0 z-40 flex w-60 flex-col border-r border-ink-800 bg-ink-900/95
         transition-transform duration-200 lg:translate-x-0"
       :class="sidebarOpen ? 'translate-x-0' : '-translate-x-full'"
     >
@@ -156,7 +156,7 @@ async function handleSignOut(): Promise<void> {
     <!-- 主内容区 -->
     <div class="lg:pl-60">
       <header
-        class="sticky top-0 z-20 flex items-center gap-3 border-b border-ink-800 bg-white/70 px-4 py-3 backdrop-blur lg:px-8"
+        class="sticky top-0 z-20 flex items-center gap-3 border-b border-ink-800 bg-white/90 px-4 py-3 lg:px-8"
       >
         <button
           type="button"

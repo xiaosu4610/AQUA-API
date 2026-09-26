@@ -140,7 +140,7 @@ const consoleTarget = computed(() => (auth.isAdmin ? '/admin' : '/console'))
 <template>
   <div class="min-h-screen bg-ink-950">
     <!-- ── 顶部导航 ───────────────────────────────────────── -->
-    <header class="sticky top-0 z-30 border-b border-ink-800/80 bg-white/70 backdrop-blur">
+    <header class="sticky top-0 z-30 border-b border-ink-800/80 bg-white/90">
       <div class="mx-auto flex max-w-6xl items-center gap-4 px-5 py-3.5 lg:px-8">
         <RouterLink to="/" class="flex items-center gap-2.5">
           <img src="/favicon.ico" alt="" class="h-8 w-8 rounded-lg" />

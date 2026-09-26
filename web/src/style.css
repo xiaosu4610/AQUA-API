@@ -7,9 +7,18 @@
  *   各 .vue 只使用语义类名（.btn .card .data-table），
  *   保证 11 个页面在表格、表单这两个核心交互上完全一致。
  *
- * 主题取向：透明亮色。
- *   页面底色是极浅冷调，卡片/顶栏使用「白色半透明 + 背景模糊」形成通透的
- *   玻璃质感，而不是纯色白底块；层次依靠极浅的边框与轻柔的投影区分。
+ * 主题取向：通透亮色（不含毛玻璃）。
+ *   页面底色是极浅冷调，卡片/顶栏使用「白色高不透明度 + 极浅边框 + 轻投影」
+ *   形成通透感，层次依靠边框与投影区分。
+ *
+ * 关于 backdrop-filter（改样式前必读）：
+ *   本文件刻意【不使用】backdrop-filter。它要求合成器为每个元素实时采样并
+ *   模糊其背后的内容，滚动时逐帧重绘；一张列表页会有几十个卡片同时带这个属性，
+ *   叠加后就是肉眼可见的滚动卡顿（真实用户反馈过）。
+ *   需要"半透明观感"时，用提高白底不透明度（/85、/90）来实现，
+ *   视觉上几乎无差别，但完全没有回读背景的开销。
+ *   例外：弹窗/抽屉的遮罩仍保留极轻微的模糊（backdrop-blur-[2px]）——
+ *   它只在浮层打开时出现、只有一层、且此时背景不滚动。
  *
  * 关于 ink 色阶（改色前必读）：
  *   约定 ink-950 最接近页面底色、ink-50 与底色对比最强
@@ -85,10 +94,12 @@
 
 @layer components {
   /* ── 容器 ─────────────────────────────────────────────── */
-  /* 卡片：白色半透明 + 背景模糊。半透明让底层页面的极浅冷调透出来，
-     形成"透明亮色"的通透感，而不是一块呆板的白板。 */
+  /* 卡片：白色半透明 + 极浅投影。
+     注意这里【不用 backdrop-filter】：它要求合成器为每个元素实时采样其背后的
+     内容，滚动时逐帧重绘。一张列表页会有几十个卡片，叠加起来就是肉眼可见的卡顿。
+     改用略高不透明度的白底（/85）——视觉上几乎看不出差别，但完全避免了回读背景。 */
   .card {
-    @apply rounded-xl border border-ink-800/70 bg-white/70 shadow-panel backdrop-blur-xl;
+    @apply rounded-xl border border-ink-800/70 bg-white/85 shadow-panel;
   }
 
   .card-pad {
@@ -192,7 +203,7 @@
        1) 触屏惯性滚动，否则手机上滑动生硬；
        2) 触屏设备上操作按钮放大到 36px，28px 在手指下太难点中。 */
   .table-wrap {
-    @apply overflow-x-auto rounded-xl border border-ink-800/70 bg-white/70 backdrop-blur-xl;
+    @apply overflow-x-auto rounded-xl border border-ink-800/70 bg-white/85;
     -webkit-overflow-scrolling: touch;
   }
 
@@ -301,7 +312,7 @@
   }
 
   .filter-bar {
-    @apply flex flex-wrap items-end gap-3 rounded-xl border border-ink-800/70 bg-white/70 p-3.5 backdrop-blur-xl;
+    @apply flex flex-wrap items-end gap-3 rounded-xl border border-ink-800/70 bg-white/85 p-3.5;
   }
 
   .toolbar {
@@ -376,10 +387,16 @@
 
   /* ── 模型卡片 ───────────────────────────────────────────
      卡片整块可点击（打开详情弹窗），所以必须有明确的位置反馈
-     （轻微上浮 + 阴影），否则用户看不出这块是可交互的。 */
+     （轻微上浮 + 阴影），否则用户看不出这块是可交互的。
+
+     两个性能取舍（一张广场页有几十张卡，任何逐帧成本都会被放大几十倍）：
+       1) 不用 backdrop-filter —— 见 .card 的说明；
+       2) 动画只列出真正会变的三项（位移/描边/阴影），
+          而不是 transition-all：后者会让浏览器为每个属性建立过渡跟踪，
+          在列表场景下是纯浪费。 */
   .model-card {
-    @apply relative flex h-full flex-col gap-3 rounded-xl border border-ink-800/70 bg-white/70 p-4
-      text-left backdrop-blur-xl transition-all duration-150
+    @apply relative flex h-full flex-col gap-3 rounded-xl border border-ink-800/70 bg-white/85 p-4
+      text-left transition-[transform,border-color,box-shadow] duration-150 ease-out
       hover:-translate-y-0.5 hover:border-brand-500/40 hover:shadow-pop;
   }
 

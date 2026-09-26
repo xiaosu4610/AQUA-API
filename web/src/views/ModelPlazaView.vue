@@ -39,7 +39,7 @@ onMounted(() => {
 <template>
   <div class="app-ambient min-h-screen">
     <!-- ── 页头 ─────────────────────────────────────────── -->
-    <header class="sticky top-0 z-20 border-b border-ink-800/70 bg-white/70 backdrop-blur-xl">
+    <header class="sticky top-0 z-20 border-b border-ink-800/70 bg-white/90">
       <div class="mx-auto flex max-w-[1400px] flex-wrap items-center gap-3 px-5 py-3 lg:px-8">
         <RouterLink to="/" class="flex items-center gap-2.5">
           <img src="/favicon.ico" alt="" class="h-8 w-8 rounded-lg" />
