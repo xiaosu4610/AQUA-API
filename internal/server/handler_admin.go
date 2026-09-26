@@ -930,6 +930,8 @@ func probeChannel(ctx context.Context, channel *model.Channel) channelTestRespon
 // ---------------------------------------------------------------------------
 
 // adminTokenCreateRequest 是管理员创建令牌的请求体。
+//
+// 该结构体同时被用户门户复用（门户会忽略 user_id 并强制归属当前用户）。
 type adminTokenCreateRequest struct {
 	UserID         uint64   `json:"user_id"`
 	Name           string   `json:"name"`
@@ -937,6 +939,9 @@ type adminTokenCreateRequest struct {
 	Models         []string `json:"models"`
 	UnlimitedQuota bool     `json:"unlimited_quota"`
 	RemainQuota    int64    `json:"remain_quota"`
+	// GroupName 是令牌所属分组标识；留空表示使用网关默认分组。
+	// 非空时必须指向一个已存在的分组（handler 会校验）。
+	GroupName string `json:"group_name"`
 }
 
 // handleAdminListTokens 返回全部令牌。
@@ -954,6 +959,13 @@ func (s *Server) handleAdminListTokens(c *gin.Context) {
 			status := model.TokenStatus(parsed)
 			query.Status = &status
 		}
+	}
+	// 按分组筛选令牌（后台"看看某分组下有多少把密钥"的场景）。
+	// 需注意：这里按落库原值精确匹配，传 default 只筛出显式设为 default 的令牌，
+	// 不含"未设置分组、运行期回退默认"的令牌。
+	if groupRaw := c.Query("group"); groupRaw != "" {
+		group := groupRaw
+		query.GroupName = &group
 	}
 
 	ctx := c.Request.Context()
@@ -998,7 +1010,7 @@ func (s *Server) handleAdminCreateToken(c *gin.Context) {
 		return
 	}
 
-	s.createTokenAndRespond(c, req.UserID, req.Name, req.ExpiresInDays, req.Models, req.UnlimitedQuota, req.RemainQuota)
+	s.createTokenAndRespond(c, req.UserID, req.Name, req.ExpiresInDays, req.Models, req.UnlimitedQuota, req.RemainQuota, req.GroupName)
 }
 
 // handleAdminUpdateToken 更新任意令牌。

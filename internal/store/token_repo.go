@@ -39,7 +39,7 @@ const (
 )
 
 // tokenColumns 集中定义查询列，顺序必须与 scanToken 的扫描顺序严格一致。
-const tokenColumns = `id, owner_id, name, key_hash, key_enc, status, expires_at, remain_quota, unlimited_quota, used_quota, models, created_at, updated_at, last_used_at`
+const tokenColumns = `id, owner_id, name, key_hash, key_enc, status, expires_at, remain_quota, unlimited_quota, used_quota, models, created_at, updated_at, last_used_at, group_name`
 
 // tokenRepository 是 model.TokenRepository 的 SQL 实现，并发安全。
 type tokenRepository struct {
@@ -73,11 +73,11 @@ func (r *tokenRepository) Create(ctx context.Context, t *model.Token) error {
 	res, err := r.db.ExecContext(ctx, `
 		INSERT INTO tokens
 			(owner_id, name, key_hash, key_enc, status, expires_at, remain_quota, unlimited_quota,
-			 used_quota, models, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 used_quota, models, created_at, updated_at, group_name)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.OwnerID, t.Name, keyHash, keyEnc, int(t.Status), expiresAtToUnix(t.ExpiresAt),
 		t.RemainQuota, boolToInt(t.UnlimitedQuota), t.UsedQuota, encodeModels(t.Models),
-		t.CreatedAt.Unix(), t.UpdatedAt.Unix(),
+		t.CreatedAt.Unix(), t.UpdatedAt.Unix(), t.GroupName,
 	)
 	if err != nil {
 		// 唯一索引冲突通常意味着令牌 KEY 重复（随机生成几乎不可能，多为手工指定）
@@ -191,11 +191,12 @@ func (r *tokenRepository) Update(ctx context.Context, t *model.Token) error {
 	res, err := r.db.ExecContext(ctx, `
 		UPDATE tokens SET
 			owner_id = ?, name = ?, key_hash = ?, key_enc = ?, status = ?, expires_at = ?,
-			remain_quota = ?, unlimited_quota = ?, used_quota = ?, models = ?, updated_at = ?
+			remain_quota = ?, unlimited_quota = ?, used_quota = ?, models = ?, updated_at = ?,
+			group_name = ?
 		WHERE id = ?`,
 		t.OwnerID, t.Name, keyHash, keyEnc, int(t.Status), expiresAtToUnix(t.ExpiresAt),
 		t.RemainQuota, boolToInt(t.UnlimitedQuota), t.UsedQuota, encodeModels(t.Models),
-		t.UpdatedAt.Unix(), t.ID,
+		t.UpdatedAt.Unix(), t.GroupName, t.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("store: 更新令牌 %d 失败: %w", t.ID, err)
@@ -243,6 +244,10 @@ func buildTokenWhere(q model.TokenQuery) (string, []any) {
 	if q.Status != nil {
 		conditions = append(conditions, "status = ?")
 		args = append(args, int(*q.Status))
+	}
+	if q.GroupName != nil {
+		conditions = append(conditions, "group_name = ?")
+		args = append(args, *q.GroupName)
 	}
 	return strings.Join(conditions, " AND "), args
 }
@@ -353,11 +358,12 @@ func (r *tokenRepository) scanToken(sc rowScanner) (*model.Token, error) {
 		createdAt      int64
 		updatedAt      int64
 		lastUsedAt     int64
+		groupName      string
 	)
 
 	if err := sc.Scan(&id, &ownerID, &name, &keyHash, &keyEnc, &status, &expiresAt,
 		&remainQuota, &unlimitedQuota, &usedQuota, &modelsCSV, &createdAt, &updatedAt,
-		&lastUsedAt); err != nil {
+		&lastUsedAt, &groupName); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, err
 		}
@@ -383,6 +389,7 @@ func (r *tokenRepository) scanToken(sc rowScanner) (*model.Token, error) {
 		CreatedAt:      time.Unix(createdAt, 0),
 		UpdatedAt:      time.Unix(updatedAt, 0),
 		LastUsedAt:     unixToExpiresAt(lastUsedAt), // 复用"0 表示零值时间"的转换
+		GroupName:      groupName,
 	}, nil
 }
 

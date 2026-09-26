@@ -204,6 +204,8 @@ func TestTokenRepository_Create_RejectsInvalid(t *testing.T) {
 		{name: "KEY 缺前缀", mutate: func(tk *model.Token) { tk.Key = "0123456789" }},
 		{name: "状态非法", mutate: func(tk *model.Token) { tk.Status = 99 }},
 		{name: "剩余额度为负", mutate: func(tk *model.Token) { tk.RemainQuota = -5 }},
+		{name: "分组名含大写", mutate: func(tk *model.Token) { tk.GroupName = "VIP" }},
+		{name: "分组名含空格", mutate: func(tk *model.Token) { tk.GroupName = "vip gold" }},
 	}
 
 	for _, tc := range cases {
@@ -411,4 +413,115 @@ func TestTokenRepository_ExpiresAtRoundTrip(t *testing.T) {
 			t.Errorf("过期时间 = %v，期望 %v", got.ExpiresAt, expireAt)
 		}
 	})
+}
+
+// TestTokenRepository_GroupName_RoundTrip 验证所属分组的写入与读回，以及空值默认。
+//
+// 关键语义：未设置分组的（历史）令牌必须落库为空串，并在此后回退到默认分组，
+// 从而保证"上线分组能力"不会改变任何既有令牌的行为。
+func TestTokenRepository_GroupName_RoundTrip(t *testing.T) {
+	repo, _ := newTestTokenRepo(t)
+	ctx := context.Background()
+
+	// 1) 显式设置分组：原样写回
+	withGroup := newValidToken(t)
+	withGroup.GroupName = "vip"
+	if err := repo.Create(ctx, withGroup); err != nil {
+		t.Fatalf("Create 失败: %v", err)
+	}
+	got, err := repo.GetByID(ctx, withGroup.ID)
+	if err != nil {
+		t.Fatalf("GetByID 失败: %v", err)
+	}
+	if got.GroupName != "vip" {
+		t.Errorf("GroupName = %q，期望 %q", got.GroupName, "vip")
+	}
+	if effective := got.EffectiveGroupName(model.DefaultGroupName); effective != "vip" {
+		t.Errorf("EffectiveGroupName = %q，期望 %q", effective, "vip")
+	}
+
+	// 2) 不设置分组：落库空串，读回仍为空，生效分组回退默认
+	noGroup := newValidToken(t)
+	if err := repo.Create(ctx, noGroup); err != nil {
+		t.Fatalf("Create 失败: %v", err)
+	}
+	gotEmpty, err := repo.GetByID(ctx, noGroup.ID)
+	if err != nil {
+		t.Fatalf("GetByID 失败: %v", err)
+	}
+	if gotEmpty.GroupName != "" {
+		t.Errorf("未设置分组时 GroupName = %q，期望空串", gotEmpty.GroupName)
+	}
+	if effective := gotEmpty.EffectiveGroupName(model.DefaultGroupName); effective != model.DefaultGroupName {
+		t.Errorf("EffectiveGroupName 回退 = %q，期望 %q", effective, model.DefaultGroupName)
+	}
+}
+
+// TestTokenRepository_Update_GroupName 验证更新能改写所属分组。
+func TestTokenRepository_Update_GroupName(t *testing.T) {
+	repo, _ := newTestTokenRepo(t)
+	ctx := context.Background()
+
+	tk := newValidToken(t)
+	tk.GroupName = "vip"
+	if err := repo.Create(ctx, tk); err != nil {
+		t.Fatalf("Create 失败: %v", err)
+	}
+
+	tk.GroupName = "svip"
+	if err := repo.Update(ctx, tk); err != nil {
+		t.Fatalf("Update 失败: %v", err)
+	}
+
+	got, err := repo.GetByID(ctx, tk.ID)
+	if err != nil {
+		t.Fatalf("GetByID 失败: %v", err)
+	}
+	if got.GroupName != "svip" {
+		t.Errorf("GroupName = %q，期望 %q", got.GroupName, "svip")
+	}
+}
+
+// TestTokenRepository_List_ByGroup 验证按分组筛选令牌。
+func TestTokenRepository_List_ByGroup(t *testing.T) {
+	repo, _ := newTestTokenRepo(t)
+	ctx := context.Background()
+
+	mk := func(name, group string) {
+		tk := newValidToken(t)
+		tk.Name = name
+		tk.GroupName = group
+		if err := repo.Create(ctx, tk); err != nil {
+			t.Fatalf("Create(%s) 失败: %v", name, err)
+		}
+	}
+	mk("vip-1", "vip")
+	mk("vip-2", "vip")
+	mk("未分组", "")
+	mk("其它分组", "other")
+
+	// 按分组精确匹配
+	vip := "vip"
+	list, err := repo.List(ctx, model.TokenQuery{GroupName: &vip})
+	if err != nil {
+		t.Fatalf("List 失败: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("vip 分组令牌数 = %d，期望 2", len(list))
+	}
+	for _, tk := range list {
+		if tk.GroupName != "vip" {
+			t.Errorf("筛选结果含非 vip 分组令牌: %q", tk.GroupName)
+		}
+	}
+
+	// 空串筛选只返回"未设置分组"的令牌（不做默认分组展开）
+	empty := ""
+	list, err = repo.List(ctx, model.TokenQuery{GroupName: &empty})
+	if err != nil {
+		t.Fatalf("List 失败: %v", err)
+	}
+	if len(list) != 1 || list[0].Name != "未分组" {
+		t.Errorf("空串筛选结果异常: %d 条", len(list))
+	}
 }

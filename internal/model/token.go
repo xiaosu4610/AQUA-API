@@ -110,6 +110,13 @@ type Token struct {
 	// Models 是允许使用的模型白名单；为空表示不限制。
 	Models []string
 
+	// GroupName 是令牌的所属分组标识（小写）。
+	//
+	// 语义：为空表示"使用网关默认分组"（保持历史令牌行为不变）；
+	// 非空时，该令牌的请求只在"此分组的渠道"里路由，并只按"此分组的价格与倍率"计费。
+	// 转发层请统一调用 EffectiveGroupName 取实际分组，不要自行判空。
+	GroupName string
+
 	CreatedAt time.Time
 	UpdatedAt time.Time
 
@@ -148,6 +155,11 @@ func (t *Token) Validate() error {
 		return fmt.Errorf("令牌状态非法: %d", int(t.Status))
 	}
 
+	// 分组校验：空表示使用默认分组；非空时必须是合法的小写分组标识
+	if err := t.ValidateGroup(); err != nil {
+		return err
+	}
+
 	// 额度校验：不限额度时忽略剩余额度；否则剩余额度不能为负
 	if !t.UnlimitedQuota && t.RemainQuota < 0 {
 		return fmt.Errorf("令牌剩余额度不能为负数: %d", t.RemainQuota)
@@ -157,6 +169,55 @@ func (t *Token) Validate() error {
 	}
 
 	return nil
+}
+
+// ValidateGroup 校验令牌所属分组标识是否合法。
+//
+// 规则与 ModelGroup.Validate 的口径一致（分组名会被渠道与价格表按字符串引用，
+// 两处必须用同一套规则，否则会出现"能建分组却建不了指向它的令牌"）。
+func (t *Token) ValidateGroup() error {
+	return ValidateGroupName(t.GroupName)
+}
+
+// ValidateGroupName 校验分组标识的合法性（供令牌与其它领域对象复用）。
+//
+// 口径（与 ModelGroup.Validate 保持一致）：
+//   - 空串合法：表示"使用网关默认分组"，由 EffectiveGroupName 负责回退；
+//   - 必须全小写：否则 "VIP" 与 "vip" 会被当成两个分组，排查成本极高；
+//   - 不含空格、逗号、斜杠：这些字符会让"分组"在配置与日志里被拆开；
+//   - 长度不超过 64 个字符。
+func ValidateGroupName(name string) error {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return nil
+	}
+	if trimmed != strings.ToLower(trimmed) {
+		return fmt.Errorf("分组标识只能使用小写字母（当前为 %q）", trimmed)
+	}
+	if strings.ContainsAny(trimmed, " \t\n/\\,，") {
+		return fmt.Errorf("分组标识不能包含空格、逗号或斜杠（当前为 %q）", trimmed)
+	}
+	if len(trimmed) > 64 {
+		return fmt.Errorf("分组标识最多 64 个字符，当前 %d", len(trimmed))
+	}
+	return nil
+}
+
+// EffectiveGroupName 返回令牌实际生效的分组名。
+//
+// 语义（转发层按此取值，无需自行判空）：
+//   - GroupName 非空：返回它——该令牌只在"此分组的渠道"里路由，
+//     并只按"此分组的价格与倍率"计费；
+//   - GroupName 为空：返回 fallback（调用方通常传网关的默认分组），
+//     使未设置分组的历史令牌保持原有行为。
+//
+// 参数 fallback 而非直接返回常量，是为了让调用方决定"默认分组"的来源
+// （可能来自系统设置），避免领域层反向依赖配置。
+func (t *Token) EffectiveGroupName(fallback string) string {
+	if strings.TrimSpace(t.GroupName) != "" {
+		return t.GroupName
+	}
+	return fallback
 }
 
 // IsExpired 判断令牌在给定时刻是否已过期（永不过期返回 false）。
@@ -250,8 +311,12 @@ func (t *Token) MaskedKey() string {
 type TokenQuery struct {
 	OwnerID *uint64      // 按归属人过滤；nil 表示不过滤
 	Status  *TokenStatus // 按状态过滤；nil 表示不过滤
-	Limit   int          // 返回条数上限；<=0 使用默认值
-	Offset  int          // 偏移量，用于分页
+	// GroupName 按所属分组过滤；nil 表示不过滤。
+	// 注意：这里按【落库的原始值】精确匹配，空串只筛出"未设置分组"的令牌，
+	// 不会把空串自动展开为默认分组——筛选语义应保持字面直观。
+	GroupName *string
+	Limit     int // 返回条数上限；<=0 使用默认值
+	Offset    int // 偏移量，用于分页
 }
 
 // TokenRepository 定义令牌的持久化操作。

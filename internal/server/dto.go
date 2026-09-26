@@ -288,9 +288,12 @@ type tokenDTO struct {
 	UnlimitedQuota bool     `json:"unlimited_quota"`
 	UsedQuota      int64    `json:"used_quota"`
 	Models         []string `json:"models"`
-	CreatedAt      int64    `json:"created_at"`
-	UpdatedAt      int64    `json:"updated_at"`
-	LastUsedAt     int64    `json:"last_used_at"`
+	// GroupName 是令牌所属分组标识；空串表示"使用网关默认分组"。
+	// 前端据此展示"这把密钥走哪个分组"，并提供按分组筛选。
+	GroupName  string `json:"group_name"`
+	CreatedAt  int64  `json:"created_at"`
+	UpdatedAt  int64  `json:"updated_at"`
+	LastUsedAt int64  `json:"last_used_at"`
 
 	// 以下字段用于管理端展示归属信息（用户门户中为空，前端会自动忽略）。
 	UserID   uint64 `json:"user_id"`
@@ -326,6 +329,7 @@ func toTokenDTO(t *model.Token, status model.TokenStatus) tokenDTO {
 		UnlimitedQuota: t.UnlimitedQuota,
 		UsedQuota:      t.UsedQuota,
 		Models:         models,
+		GroupName:      t.GroupName,
 		CreatedAt:      unixOrZero(t.CreatedAt),
 		UpdatedAt:      unixOrZero(t.UpdatedAt),
 		LastUsedAt:     unixOrZero(t.LastUsedAt),

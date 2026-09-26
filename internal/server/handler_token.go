@@ -46,6 +46,10 @@ type tokenUpdateRequest struct {
 	RemainQuota    *int64    `json:"remain_quota"`
 	ExpiresInDays  *int      `json:"expires_in_days"`
 	Models         *[]string `json:"models"`
+	// GroupName 是令牌所属分组标识。
+	// 语义与渠道的 key_strategy 一致：留空（字段缺失或空串）表示"不修改"，
+	// 避免前端只提交部分字段（如仅启停）时把已配置的分组意外清空。
+	GroupName *string `json:"group_name"`
 }
 
 // handleMyListTokens 返回当前用户的令牌列表。
@@ -95,7 +99,7 @@ func (s *Server) handleMyCreateToken(c *gin.Context) {
 
 	// 安全要点：归属强制为当前用户，忽略请求体中的 user_id。
 	// 否则普通用户可通过伪造 user_id 把令牌挂到别人名下（或反之）。
-	s.createTokenAndRespond(c, user.ID, req.Name, req.ExpiresInDays, req.Models, req.UnlimitedQuota, req.RemainQuota)
+	s.createTokenAndRespond(c, user.ID, req.Name, req.ExpiresInDays, req.Models, req.UnlimitedQuota, req.RemainQuota, req.GroupName)
 }
 
 // handleMyUpdateToken 更新当前用户的令牌。
@@ -118,11 +122,19 @@ func (s *Server) handleMyDeleteToken(c *gin.Context) {
 
 // createTokenAndRespond 创建令牌并返回（含一次性明文）。
 //
-// 参数 ownerID 为令牌归属；expiresInDays 为 0 表示永不过期。
-func (s *Server) createTokenAndRespond(c *gin.Context, ownerID uint64, name string, expiresInDays int, models []string, unlimitedQuota bool, remainQuota int64) {
+// 参数 ownerID 为令牌归属；expiresInDays 为 0 表示永不过期；
+// groupName 为空表示使用网关默认分组，非空时必须指向一个已存在的分组。
+func (s *Server) createTokenAndRespond(c *gin.Context, ownerID uint64, name string, expiresInDays int, models []string, unlimitedQuota bool, remainQuota int64, groupName string) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		oai.WriteError(c.Writer, http.StatusBadRequest, "令牌名称不能为空", oai.TypeInvalidRequest, "invalid_name")
+		return
+	}
+
+	// 分组先校验再落库：若令牌指向一个不存在的分组，调用时会出现"无渠道可用"
+	// 或全量 404，且从令牌列表上看不出原因，属于极难定位的运营故障。
+	group, ok := s.resolveTokenGroupName(c, groupName)
+	if !ok {
 		return
 	}
 
@@ -139,6 +151,7 @@ func (s *Server) createTokenAndRespond(c *gin.Context, ownerID uint64, name stri
 		Status:         model.TokenStatusEnabled,
 		UnlimitedQuota: unlimitedQuota,
 		Models:         models,
+		GroupName:      group,
 	}
 	if expiresInDays > 0 {
 		token.ExpiresAt = time.Now().AddDate(0, 0, expiresInDays)
@@ -206,6 +219,17 @@ func (s *Server) updateToken(c *gin.Context, ownerID uint64) {
 	if req.Models != nil {
 		token.Models = *req.Models
 	}
+	// 分组：留空表示"不修改"（与渠道的 key_strategy 保护方式一致），
+	// 非空时校验"格式合法 + 分组存在"后再覆盖，避免令牌指向不存在的分组。
+	if req.GroupName != nil {
+		if group, ok := s.resolveTokenGroupName(c, *req.GroupName); ok {
+			if group != "" {
+				token.GroupName = group
+			}
+		} else {
+			return
+		}
+	}
 
 	if err := s.deps.Tokens.Update(ctx, token); err != nil {
 		s.respondInternalError(c, "更新令牌失败")
@@ -258,6 +282,39 @@ func (s *Server) loadOwnedToken(c *gin.Context, id, ownerID uint64) (*model.Toke
 		return nil, false
 	}
 	return token, true
+}
+
+// resolveTokenGroupName 校验并归一化令牌的分组标识，失败时已写出响应。
+//
+// 返回 (归一化后的分组名, 是否通过)：
+//   - 入参为空 → ("", true)：表示"使用网关默认分组"，交由转发层回退；
+//   - 格式非法（大写、含空格/逗号/斜杠、超长）→ 400 并原样回传领域错误；
+//   - 分组不存在 → 400 提示"分组不存在"（避免令牌指向空分组导致调用全量失败）。
+//
+// 为什么存在性校验放在 server 层而不是 model 层：领域模型不应依赖仓储，
+// 由接口层组合"格式校验（model）+ 存在性校验（仓储）"才是正确的分层。
+func (s *Server) resolveTokenGroupName(c *gin.Context, raw string) (string, bool) {
+	name := strings.TrimSpace(raw)
+	if name == "" {
+		return "", true
+	}
+	if err := model.ValidateGroupName(name); err != nil {
+		oai.WriteError(c.Writer, http.StatusBadRequest, err.Error(), oai.TypeInvalidRequest, "invalid_group_name")
+		return "", false
+	}
+	if s.deps.Groups == nil {
+		oai.WriteError(c.Writer, http.StatusServiceUnavailable, "分组模块未启用", oai.TypeServer, oai.CodeInternal)
+		return "", false
+	}
+	if _, err := s.deps.Groups.GetByName(c.Request.Context(), name); err != nil {
+		if errors.Is(err, model.ErrModelGroupNotFound) {
+			oai.WriteError(c.Writer, http.StatusBadRequest, "分组不存在", oai.TypeInvalidRequest, "group_not_found")
+			return "", false
+		}
+		s.respondInternalError(c, "查询分组失败")
+		return "", false
+	}
+	return name, true
 }
 
 // requireCurrentUser 取出当前登录用户；未登录时已写出 401 响应，返回 false。
