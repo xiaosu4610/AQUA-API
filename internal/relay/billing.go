@@ -58,6 +58,13 @@ const defaultBillingGroup = "default"
 // "除以 100"这件事有一个可检索的名字，而不是散落的魔法数字。
 const ratioScale int64 = 100
 
+// estimateBytesPerToken 是由请求体字节数估算 prompt token 数的换算系数。
+//
+// 取 3 的理由（保守上界）：UTF-8 下中文约 3 字节/token、英文约 4 字节/token，
+// 用 3 能在中文场景贴近真实值、在英文场景略微高估。预留宁可略高、不可过小——
+// 过小会让额度墙失去意义，过大只是暂时多占用一点额度（结算时会退还差额）。
+const estimateBytesPerToken = 3
+
 // Billing 负责按用量计费，并发安全。
 type Billing struct {
 	prices model.ModelPriceRepository
@@ -66,6 +73,12 @@ type Billing struct {
 	tokens model.TokenRepository
 	users  model.UserRepository
 	group  string
+
+	// quota 是额度预留台账（可选）。
+	//
+	// 为 nil 时退化为"响应后扣费"（旧行为）：便于单元测试与"仅统计不限制"的部署形态。
+	// 非 nil 时启用"请求前预扣 + 响应后结算"。
+	quota model.QuotaRepository
 
 	// 价格与倍率缓存：规则数量少（几十条）且读多写少，适合整体缓存。
 	//
@@ -96,6 +109,17 @@ func NewBilling(prices model.ModelPriceRepository, groups model.ModelGroupReposi
 		group:  group,
 		ratio:  ratioScale,
 	}
+}
+
+// WithQuotaRepository 注入额度预留台账，启用"请求前预扣 + 响应后结算"。
+//
+// 返回 b 本身以便链式装配（main 中一次性构造）。
+// 不注入（或注入 nil）时保持旧行为：只在响应之后按实际用量扣费。
+func (b *Billing) WithQuotaRepository(quota model.QuotaRepository) *Billing {
+	if b != nil {
+		b.quota = quota
+	}
+	return b
 }
 
 // Invalidate 清空价格与倍率缓存。
@@ -309,4 +333,95 @@ func (b *Billing) Charge(ctx context.Context, userID, tokenID uint64, modelName 
 
 	b.applyDelta(ctx, userID, tokenID, quota, "扣减")
 	return quota
+}
+
+// ---------------------------------------------------------------------------
+// 额度预扣 / 结算 / 退还
+// ---------------------------------------------------------------------------
+//
+// 为什么把这三件事放在计费组件上（而不是让中间件直接操作仓储）：
+//   - "该估多少、该怎么收"属于计费语义，只有计费组件知道价格与倍率；
+//   - 中间件只需表达"我要预留多少、什么时候结算"，无需理解计价规则。
+//
+// 三个方法都对 b == nil / 未注入台账 保持零值安全，便于测试与降级部署。
+
+// EstimateReserve 估算一次调用应预留的额度。
+//
+// 返回 priced=false 表示该模型【未命中任何计价规则】（调用不计费），
+// 此时鉴权层必须跳过预留——否则免费模型会被额度墙挡住（这正是线上事故的根因）。
+//
+// 估算口径（重要：估算只影响"预留"，最终一律以结算为准）：
+//
+//	按请求体字节数保守估算 prompt token（见 estimateBytesPerToken），
+//	并假设输出与输入同量级；对"按次定价"的模型退化为按一次计。
+//
+// 因此它可能高于真实用量（结算时会把差额退还），也可能低于真实用量
+// （结算时补扣），但绝不会把有价格的调用算成免费。
+func (b *Billing) EstimateReserve(ctx context.Context, modelName string, promptBytes int) (int64, bool) {
+	if b == nil {
+		return 0, false
+	}
+
+	price := b.priceFor(ctx, modelName)
+	if price == nil {
+		return 0, false
+	}
+
+	promptTokens := estimatePromptTokens(promptBytes)
+	base := price.ComputeQuota(promptTokens, promptTokens)
+	if base <= 0 {
+		// 未配 token 单价但配了按次单价的模型：退化为按一次预留。
+		base = price.ComputePerCallQuota(1)
+	}
+	amount := applyRatio(base, b.ratioFor())
+	if amount <= 0 {
+		// 命中计价规则但算得极小（如极低单价）：至少预留 1，让额度墙真正生效。
+		amount = 1
+	}
+	return amount, true
+}
+
+// Reserve 预扣额度（幂等）。
+//
+// 未注入台账时返回 (nil, nil)：表示"不做预留"，调用方应退化为响应后扣费。
+func (b *Billing) Reserve(ctx context.Context, req model.ReserveRequest) (*model.QuotaReservation, error) {
+	if b == nil || b.quota == nil {
+		return nil, nil
+	}
+	return b.quota.Reserve(ctx, req)
+}
+
+// Settle 结算第 requestID 号预留（幂等）：按实际用量多退少补。
+//
+// actualQuota 为 model.QuotaUnknown 时按预留量收取。
+// 返回的预留记录中 Settled 是真实入账额度，调用方据此识别"补扣受限"的缺口。
+func (b *Billing) Settle(ctx context.Context, requestID string, actualQuota int64) (*model.QuotaReservation, error) {
+	if b == nil || b.quota == nil {
+		return nil, nil
+	}
+	return b.quota.Settle(ctx, requestID, actualQuota)
+}
+
+// Release 全额退还第 requestID 号预留（幂等，请求失败时调用）。
+func (b *Billing) Release(ctx context.Context, requestID string) error {
+	if b == nil || b.quota == nil {
+		return nil
+	}
+	return b.quota.Release(ctx, requestID)
+}
+
+// PendingReserved 返回某用户在途预留的合计额度（用于计算可用额度）。
+func (b *Billing) PendingReserved(ctx context.Context, userID uint64) (int64, error) {
+	if b == nil || b.quota == nil {
+		return 0, nil
+	}
+	return b.quota.PendingAmount(ctx, userID)
+}
+
+// estimatePromptTokens 由请求体字节数估算 prompt token 数（保守上界）。
+func estimatePromptTokens(promptBytes int) int64 {
+	if promptBytes <= 0 {
+		return 0
+	}
+	return int64((promptBytes + estimateBytesPerToken - 1) / estimateBytesPerToken)
 }

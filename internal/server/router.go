@@ -186,7 +186,9 @@ func (s *Server) registerRoutes() {
 	// 这样 relay 包只依赖 net/http，不必依赖 gin —— 核心域与 Web 框架保持解耦，
 	// 既便于单元测试（可直接用 httptest），也便于将来替换框架。
 	v1 := r.Group("/v1")
-	v1.Use(middleware.TokenAuth(s.deps.Tokens, s.deps.Users))
+	// 第三个参数（计费组件）用于"请求前额度预扣"：额度不足直接 429，
+	// 避免并发请求全部通过检查后再各自扣费导致超支。
+	v1.Use(middleware.TokenAuth(s.deps.Tokens, s.deps.Users, s.deps.Billing))
 	// OpenAI 兼容的模型清单：客户端（SDK / IDE 插件 / Web UI）启动时普遍会先调它，
 	// 缺了会显示"未获取到模型列表"，使用者容易误判为网关故障。
 	v1.GET("/models", s.handleListModels)
@@ -211,6 +213,6 @@ func (s *Server) registerRoutes() {
 	// （/v1beta/models/{model}:generateContent 与 :streamGenerateContent），
 	// 因此用通配段承接，由适配器自行解析路径。
 	gemini := r.Group("/v1beta")
-	gemini.Use(middleware.TokenAuth(s.deps.Tokens, s.deps.Users))
+	gemini.Use(middleware.TokenAuth(s.deps.Tokens, s.deps.Users, s.deps.Billing))
 	gemini.POST("/models/*action", gin.WrapF(s.deps.Relay.ServeGeminiGenerate))
 }

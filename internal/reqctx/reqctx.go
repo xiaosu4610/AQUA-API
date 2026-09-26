@@ -28,6 +28,14 @@ import "context"
 type Identity struct {
 	UserID  uint64 // 调用者用户 ID（0 表示未认证或系统调用）
 	TokenID uint64 // 使用的访问令牌 ID（0 表示未使用令牌）
+
+	// RequestID 是本次调用的幂等键，由鉴权中间件在【做了额度预留】时生成。
+	//
+	// 为什么放在这里：额度预留在 HTTP 层（鉴权中间件）发生，而结算发生在转发引擎
+	// （internal/relay）里，两者只能通过 request context 传递这个键。
+	// 为空表示本次调用【未做预留】（未定价模型 / 信任额度旁路 / 未启用），
+	// 转发结束后据此跳过结算，避免无谓地查库。
+	RequestID string // 幂等键（空 = 未预留）
 }
 
 // ctxKey 是本包专属的 context 键类型。

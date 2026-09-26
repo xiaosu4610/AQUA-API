@@ -12,20 +12,27 @@
 //	  ├─ extractAPIKey        从请求头提取令牌明文
 //	  ├─ tokens.GetByKey      按摘要索引查库（O(1)，不解密全表）
 //	  ├─ EffectiveStatus      结合时间与额度判定令牌自身状态
-//	  ├─ users.GetByID        账号级校验：是否禁用、额度是否耗尽
+//	  ├─ users.GetByID        账号级校验：是否禁用、可用额度是否耗尽
 //	  ├─ 模型白名单校验        仅当白名单非空时才读请求体（省开销）
-//	  └─ SetToken → c.Next()  放行并把令牌写入上下文
+//	  ├─ 额度预留             计费模型且额度紧张时预扣额度（额度不足 → 429）
+//	  └─ SetToken → c.Next()  放行并把令牌与幂等键写入上下文
 //
 // 扩展（Extend）：
 //
 //	新增校验维度（IP 白名单、RPM 限制）时：在"模型白名单校验"之后插入新的步骤，
 //	  并保持"先廉价判定、后昂贵判定"的顺序（如先查内存/缓存，再读请求体）。
 //	新增鉴权方式（如 JWT）：新建同级文件，复用 SetToken 的上下文约定。
+//	新增预留的例外情形：改 tryReserveQuota，务必保持"不计费模型跳过预留"
+//	  这一条（否则免费模型会被额度墙挡住）。
 package middleware
 
 import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -40,14 +47,53 @@ import (
 // bearerPrefix 是 Authorization 头中令牌的标准前缀。
 const bearerPrefix = "Bearer "
 
+// trustQuotaBypassThreshold 是「信任额度旁路」的阈值（内部额度单位）。
+//
+// 当账号【可用额度】不低于该阈值时跳过预留（不写预留台账、不预扣额度），
+// 只做响应后的常规扣费。取舍如下：
+//   - 减少写库：额度充足的账号通常占多数，为其每次调用都写一条预留记录
+//     会显著放大数据库写压力；
+//   - 风险可控：可用额度远大于单次调用成本时，最坏情况的"超支"也不会造成
+//     实质资损（这类账号本就额度充足）；
+//   - 额度紧张的账号（低于阈值）仍走严格预扣，并发超支漏洞依旧被堵住。
+//
+// 取值 1_000_000 与"每 1M token 对应的额度"同量级，即"大致够一次百万 token 级调用"。
+const trustQuotaBypassThreshold int64 = 1_000_000
+
+// reservationTTL 是预留的在途有效期。
+//
+// 必须大于上游首字节超时（relay.UpstreamTimeout = 300 秒）并留足余量，
+// 否则一个"慢但正常"的请求会在结算前就被当成陈旧预留回收。
+const reservationTTL = 15 * time.Minute
+
+// QuotaReserver 是鉴权层做「额度预留」所需的最小能力集，由计费组件（relay.Billing）实现。
+//
+// 在消费方定义接口（而非依赖具体实现），是为了让本包不依赖 internal/relay，
+// 保持"鉴权只关心能否预留，不关心价格怎么算"的分层。
+type QuotaReserver interface {
+	// EstimateReserve 估算一次调用的预留额度；priced=false 表示该模型不计费（应跳过预留）。
+	EstimateReserve(ctx context.Context, modelName string, promptBytes int) (amount int64, priced bool)
+	// Reserve 预扣额度；可用额度不足时返回 model.ErrQuotaInsufficient。
+	Reserve(ctx context.Context, req model.ReserveRequest) (*model.QuotaReservation, error)
+	// PendingReserved 返回某用户在途预留的合计额度（用于计算可用额度）。
+	PendingReserved(ctx context.Context, userID uint64) (int64, error)
+}
+
 // TokenAuth 返回校验下游令牌的 gin 中间件。
 //
 // 参数：
 //   - tokens 为令牌仓储；
-//   - users 为用户仓储（用于账号级额度校验），可为 nil（此时跳过该层校验）。
+//   - users 为用户仓储（用于账号级额度校验），可为 nil（此时跳过该层校验）；
+//   - reservers 为可选的额度预留器（通常传入计费组件）。不传时不做预留，
+//     保持"只在响应后扣费"的旧行为——便于测试与"仅统计不限制"的部署形态。
 //
-// 两者都由 main 装配后注入，便于替换实现与单元测试。
-func TokenAuth(tokens model.TokenRepository, users model.UserRepository) gin.HandlerFunc {
+// 三者都由 main 装配后注入，便于替换实现与单元测试。
+func TokenAuth(tokens model.TokenRepository, users model.UserRepository, reservers ...QuotaReserver) gin.HandlerFunc {
+	var reserver QuotaReserver
+	if len(reservers) > 0 {
+		reserver = reservers[0]
+	}
+
 	return func(c *gin.Context) {
 		// ── 步骤 1：提取令牌 ────────────────────────────────────
 		rawKey := extractAPIKey(c.Request)
@@ -103,15 +149,21 @@ func TokenAuth(tokens model.TokenRepository, users model.UserRepository) gin.Han
 		// 用户额度才是账号级上限。若只校验令牌额度，用户可以随手新建
 		// 若干个令牌来绕过总量限制——限额就形同虚设。
 		//
-		// 额度语义：QuotaUnlimited(-1) 表示不限；其余情况下剩余 = 总额度 - 已用。
+		// 可用额度 = 总额度 − 已用 − 在途预留（而不是只看"总额度 − 已用"）。
+		// 必须减去在途预留：并发的多个请求会读到同一个 used_quota，
+		// 若只看"总额度 − 已用"就会全部通过、各自扣费，最终"已用"超过"总额度"。
 		//
 		// 两个容易写错的地方（都曾真实踩过）：
 		//  1) 必须显式排除「不限额度」：它的 RemainingQuota() 返回 -1，
 		//     若直接拿去比较大小，会把所有不限额度的账号全部拦死；
 		//  2) 判定要用 <= 0 而不是 == 0：已用超过总额度时剩余为负数，
 		//     只判 0 会把"已经超额"的账号放行。
+		var (
+			owner   *model.User
+			pending int64
+		)
 		if users != nil && token.OwnerID > 0 {
-			owner, err := users.GetByID(c.Request.Context(), token.OwnerID)
+			owner, err = users.GetByID(c.Request.Context(), token.OwnerID)
 			if err != nil {
 				if errors.Is(err, model.ErrUserNotFound) {
 					// 令牌归属的用户已被删除：令牌本身应视为失效
@@ -129,34 +181,82 @@ func TokenAuth(tokens model.TokenRepository, users model.UserRepository) gin.Han
 					"账号已被禁用", oai.TypePermission, oai.CodeTokenDisabled)
 				return
 			}
-			if owner.Quota != model.QuotaUnlimited && owner.RemainingQuota() <= 0 {
+
+			// 统计在途预留：仅在"有限额度 + 启用了预留"时才需要查库。
+			if reserver != nil && owner.Quota != model.QuotaUnlimited {
+				if p, perr := reserver.PendingReserved(c.Request.Context(), owner.ID); perr == nil {
+					pending = p
+				} else {
+					// 查询失败不阻断：降级为"只看已用额度"判定，并留下日志。
+					slog.Warn("查询在途预留失败，本次按已用额度判定",
+						"error", perr, "user_id", owner.ID)
+				}
+			}
+
+			if owner.Quota != model.QuotaUnlimited && owner.AvailableQuota(pending) <= 0 {
 				// 报错里带上具体数值：使用者转述给站长时，"额度 0 / 已用 0"
 				// 一眼就能定位到是"默认额度没配"，而不是"上游限流"。
 				abortWithError(c, http.StatusTooManyRequests,
-					fmt.Sprintf("账号额度已用尽（额度 %d，已用 %d），请联系管理员调整额度",
-						owner.Quota, owner.UsedQuota),
+					fmt.Sprintf("账号额度已用尽（额度 %d，已用 %d，在途预留 %d），请联系管理员调整额度",
+						owner.Quota, owner.UsedQuota, pending),
 					oai.TypeRateLimit, oai.CodeInsufficientQuota)
 				return
 			}
 		}
 
-		// ── 步骤 5：模型白名单校验 ──────────────────────────────
-		// 性能考量：仅当令牌配置了白名单时才读取请求体。
-		// 未配置白名单（不限模型）是最常见的情况，此时零额外开销。
+		// ── 步骤 5：模型白名单校验 + 额度预留 ───────────────────
+		//
+		// 两件事都需要模型名，因此这里按需读取请求体并复用同一次解析：
+		//   - 白名单非空时【必须】拿到模型名，拿不到就按错误响应返回；
+		//   - 白名单为空时，只有"需要预留"的请求才读取请求体，
+		//     且拿不到模型名时【跳过预留】而不报错（畸形请求交由转发阶段拒绝）。
+		//
+		// 性能考量：未配置白名单、也无需预留时（绝大多数请求）零额外开销。
+		reserveNeeded := reserver != nil && owner != nil && owner.Quota != model.QuotaUnlimited
+
+		var (
+			modelName   string
+			promptBytes int
+		)
 		if len(token.Models) > 0 {
-			if !checkModelAllowed(c, token) {
+			name, size, err := peekModelFromBody(c)
+			if err != nil {
+				writeModelBodyError(c, err)
 				return
 			}
+			modelName, promptBytes = name, size
+			if !token.AllowsModel(modelName) {
+				abortWithError(c, http.StatusForbidden,
+					"该令牌无权访问指定模型", oai.TypePermission, oai.CodeModelNotAllowed)
+				return
+			}
+		} else if reserveNeeded {
+			if name, size, err := peekModelFromBody(c); err == nil {
+				modelName, promptBytes = name, size
+			}
+			// 解析失败（请求体非法/缺 model/超限）：跳过预留，交给转发阶段处理。
+		}
+
+		requestID := ""
+		if reserveNeeded && modelName != "" {
+			id, ok := tryReserveQuota(c, reserver, token, owner, modelName, promptBytes, pending)
+			if !ok {
+				// 额度不足：tryReserveQuota 已写出 429
+				return
+			}
+			requestID = id
 		}
 
 		// ── 步骤 6：放行 ────────────────────────────────────────
 		SetToken(c, token)
 
-		// 把调用者身份写入请求 context，供转发引擎在结束时落调用日志。
+		// 把调用者身份写入请求 context，供转发引擎在结束时落调用日志 / 结算预留。
 		// 用标准库 context 而非 gin 上下文，是为了让 relay 不必依赖 Web 框架。
+		// RequestID 仅在实际做了预留时非空，转发结束后据此结算或退还。
 		identityCtx := reqctx.WithIdentity(c.Request.Context(), reqctx.Identity{
-			UserID:  token.OwnerID,
-			TokenID: token.ID,
+			UserID:    token.OwnerID,
+			TokenID:   token.ID,
+			RequestID: requestID,
 		})
 		c.Request = c.Request.WithContext(identityCtx)
 
@@ -164,43 +264,98 @@ func TokenAuth(tokens model.TokenRepository, users model.UserRepository) gin.Han
 	}
 }
 
-// checkModelAllowed 读取请求体并校验模型是否在令牌白名单内。
+// tryReserveQuota 尝试为本次调用预扣额度。
 //
-// 返回值 false 表示已写出错误响应并中止请求。
+// 返回的第二个值为 false 表示已写出错误响应（额度不足），调用方应立即返回。
+// 返回空 requestID 且 true 表示"本次不预留"（不计费模型 / 信任额度旁路 / 台账降级）。
+func tryReserveQuota(c *gin.Context, reserver QuotaReserver, token *model.Token,
+	owner *model.User, modelName string, promptBytes int, pending int64) (string, bool) {
+	ctx := c.Request.Context()
+
+	amount, priced := reserver.EstimateReserve(ctx, modelName, promptBytes)
+	if !priced || amount <= 0 {
+		// 【例外一】该模型未命中任何计价规则：调用不计费，跳过预留。
+		// 否则免费模型会被额度墙挡住——这正是此前线上事故的根因。
+		return "", true
+	}
+
+	// 【例外二】信任额度旁路：可用额度充足时跳过预留，减少一次写库。
+	if owner.AvailableQuota(pending) >= trustQuotaBypassThreshold {
+		return "", true
+	}
+
+	requestID := newRequestID()
+	if _, err := reserver.Reserve(ctx, model.ReserveRequest{
+		RequestID: requestID,
+		UserID:    owner.ID,
+		TokenID:   token.ID,
+		Amount:    amount,
+		TTL:       reservationTTL,
+	}); err != nil {
+		if errors.Is(err, model.ErrQuotaInsufficient) {
+			available := owner.AvailableQuota(pending)
+			if available < 0 {
+				available = 0
+			}
+			abortWithError(c, http.StatusTooManyRequests,
+				fmt.Sprintf("账号额度不足（剩余 %d，本次预计需要 %d），请联系管理员充值或调整额度",
+					available, amount),
+				oai.TypeRateLimit, oai.CodeInsufficientQuota)
+			return "", false
+		}
+		// 台账故障：不因一次记账故障阻断全部调用，降级为"本次不预留"并记错误级别日志。
+		slog.Error("额度预留失败，本次未预留（存在超支风险）",
+			"error", err, "user_id", owner.ID, "token_id", token.ID, "model", modelName)
+		return "", true
+	}
+	return requestID, true
+}
+
+// peekModelFromBody 读取请求体并取出 model 名与请求体长度。
 //
-// 说明：oai.ReadBody 会还原请求体，因此鉴权之后转发引擎仍能读到完整内容——
+// 返回值 err 非 nil 时表示无法确定模型名（请求体超限 / 非法 JSON / 缺 model）；
+// 是否把它变成错误响应由调用方决定（白名单校验必须报错，额度预留可跳过）。
+//
+// oai.ReadBody 会还原请求体，因此鉴权之后转发阶段仍能读到完整内容——
 // 这是本中间件与转发能共存的关键。
-func checkModelAllowed(c *gin.Context, token *model.Token) bool {
+func peekModelFromBody(c *gin.Context) (string, int, error) {
 	body, err := oai.ReadBody(c.Request)
 	if err != nil {
-		if errors.Is(err, oai.ErrRequestTooLarge) {
-			abortWithError(c, http.StatusRequestEntityTooLarge,
-				"请求体超过上限", oai.TypeInvalidRequest, oai.CodeRequestTooLarge)
-			return false
-		}
-		abortWithError(c, http.StatusBadRequest,
-			"读取请求体失败", oai.TypeInvalidRequest, oai.CodeInvalidJSON)
-		return false
+		return "", 0, err
 	}
-
 	modelName, err := oai.PeekModel(body)
 	if err != nil {
-		if errors.Is(err, oai.ErrMissingModel) {
-			abortWithError(c, http.StatusBadRequest,
-				"缺少 model 字段", oai.TypeInvalidRequest, oai.CodeMissingModel)
-			return false
-		}
+		return "", 0, err
+	}
+	return modelName, len(body), nil
+}
+
+// writeModelBodyError 把"读取 / 解析请求体"的错误映射为 HTTP 响应。
+func writeModelBodyError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, oai.ErrRequestTooLarge):
+		abortWithError(c, http.StatusRequestEntityTooLarge,
+			"请求体超过上限", oai.TypeInvalidRequest, oai.CodeRequestTooLarge)
+	case errors.Is(err, oai.ErrMissingModel):
+		abortWithError(c, http.StatusBadRequest,
+			"缺少 model 字段", oai.TypeInvalidRequest, oai.CodeMissingModel)
+	default:
 		abortWithError(c, http.StatusBadRequest,
 			"请求体不是合法的 JSON", oai.TypeInvalidRequest, oai.CodeInvalidJSON)
-		return false
 	}
+}
 
-	if !token.AllowsModel(modelName) {
-		abortWithError(c, http.StatusForbidden,
-			"该令牌无权访问指定模型", oai.TypePermission, oai.CodeModelNotAllowed)
-		return false
+// newRequestID 生成一次调用的幂等键（用于额度预留的去重）。
+//
+// 使用 crypto/rand：虽然它只是幂等键、不是凭据，但可预测的键会带来
+// "不同请求撞到同一键 → 误判为重复预留"的风险，因此仍用密码学随机源。
+func newRequestID() string {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		// 极端情况（随机源不可用）：退化为时间戳，仍能保证基本唯一性。
+		return fmt.Sprintf("req-%d", time.Now().UnixNano())
 	}
-	return true
+	return "req-" + hex.EncodeToString(buf)
 }
 
 // extractAPIKey 从请求头中提取令牌明文。

@@ -155,6 +155,22 @@ func (u *User) RemainingQuota() int64 {
 	return u.Quota - u.UsedQuota
 }
 
+// AvailableQuota 返回「可用额度」= 总额度 − 已用 − 在途预留。
+//
+// 为什么要减去在途预留（这是堵住并发超支漏洞的关键）：
+//
+//	并发的多个请求在鉴权时都会读到同一个 used_quota，若只看「总额度 − 已用」，
+//	它们会全部通过检查、各自扣费，最终「已用」可以超过「总额度」（用户倒欠）。
+//	把"已预扣但尚未结算"的在途预留计入后，并发请求会相互挤压同一份额度。
+//
+// 不限额度时返回 QuotaUnlimited（-1），调用方须先判断该哨兵值。
+func (u *User) AvailableQuota(pendingReserved int64) int64 {
+	if u.Quota == QuotaUnlimited {
+		return QuotaUnlimited
+	}
+	return u.Quota - u.UsedQuota - pendingReserved
+}
+
 // Validate 校验用户字段合法性。
 //
 // 说明：不校验 PasswordHash 的格式——它由 crypto.HashPassword 生成，

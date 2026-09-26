@@ -32,6 +32,7 @@ import (
 	"gitee.com/xiaosu4610/aqua-api/internal/crypto"
 	"gitee.com/xiaosu4610/aqua-api/internal/model"
 	"gitee.com/xiaosu4610/aqua-api/internal/oai"
+	"gitee.com/xiaosu4610/aqua-api/internal/reqctx"
 	"gitee.com/xiaosu4610/aqua-api/internal/store"
 )
 
@@ -535,5 +536,192 @@ func TestTokenFromContext_WithoutAuth(t *testing.T) {
 
 	if token, ok := TokenFromContext(c); ok || token != nil {
 		t.Error("未注入令牌时应返回 (nil, false)")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 额度预扣接入
+// ---------------------------------------------------------------------------
+
+// fakeQuotaReserver 是内存版额度预留器，用于验证鉴权层的预留决策。
+type fakeQuotaReserver struct {
+	estimateAmount int64 // EstimateReserve 返回的预留额
+	priced         bool  // 该模型是否命中计价规则
+	reserveErr     error // Reserve 返回的错误
+	pending        int64 // 在途预留合计
+
+	reserveCalls  int
+	lastRequestID string
+}
+
+func (f *fakeQuotaReserver) EstimateReserve(context.Context, string, int) (int64, bool) {
+	return f.estimateAmount, f.priced
+}
+
+func (f *fakeQuotaReserver) Reserve(_ context.Context, req model.ReserveRequest) (*model.QuotaReservation, error) {
+	f.reserveCalls++
+	if f.reserveErr != nil {
+		return nil, f.reserveErr
+	}
+	f.lastRequestID = req.RequestID
+	return &model.QuotaReservation{
+		RequestID: req.RequestID,
+		UserID:    req.UserID,
+		TokenID:   req.TokenID,
+		Reserved:  req.Amount,
+	}, nil
+}
+
+func (f *fakeQuotaReserver) PendingReserved(context.Context, uint64) (int64, error) {
+	return f.pending, nil
+}
+
+// newLimitedOwnerAndToken 创建一个有限额度用户与其名下的令牌，返回令牌明文。
+func newLimitedOwnerAndToken(t *testing.T, tokens model.TokenRepository, users model.UserRepository,
+	username string, quota, remainQuota int64) string {
+	t.Helper()
+	ctx := context.Background()
+
+	owner := &model.User{
+		Username:     username,
+		PasswordHash: "test-hash-placeholder",
+		Role:         model.UserRoleUser,
+		Status:       model.UserStatusEnabled,
+		Quota:        quota,
+	}
+	if err := users.Create(ctx, owner); err != nil {
+		t.Fatalf("创建用户失败: %v", err)
+	}
+
+	key, err := model.GenerateTokenKey()
+	if err != nil {
+		t.Fatalf("生成令牌失败: %v", err)
+	}
+	token := &model.Token{
+		OwnerID:     owner.ID,
+		Name:        "reserve-probe",
+		Key:         key,
+		Status:      model.TokenStatusEnabled,
+		RemainQuota: remainQuota,
+	}
+	if err := tokens.Create(ctx, token); err != nil {
+		t.Fatalf("创建令牌失败: %v", err)
+	}
+	return key
+}
+
+// newQuotaAuthEngine 构造挂载了「令牌鉴权 + 额度预留器」的测试引擎。
+func newQuotaAuthEngine(t *testing.T, tokens model.TokenRepository, users model.UserRepository,
+	reserver QuotaReserver, handler gin.HandlerFunc) *gin.Engine {
+	t.Helper()
+
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	engine.Use(TokenAuth(tokens, users, reserver))
+	engine.POST("/v1/chat/completions", handler)
+	return engine
+}
+
+// okHandler 是返回 200 的探针处理器。
+func okHandler(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) }
+
+// TestTokenAuth_不计费模型跳过预留 验证未命中价格规则的模型不写预留、不扣额度。
+//
+// 这是"免费模型被额度墙挡住"这一线上事故的回归用例。
+func TestTokenAuth_不计费模型跳过预留(t *testing.T) {
+	tokens, users := newTokenAndUserRepos(t)
+	// 账号额度紧张（100，低于信任阈值），确保"是否会预留"只取决于模型是否计费。
+	key := newLimitedOwnerAndToken(t, tokens, users, "free-model-owner", 100, 1000)
+
+	reserver := &fakeQuotaReserver{priced: false}
+	engine := newQuotaAuthEngine(t, tokens, users, reserver, okHandler)
+
+	rec := doAuthRequest(t, engine, map[string]string{"Authorization": "Bearer " + key},
+		`{"model":"free-model","messages":[]}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("不计费模型应放行（200），实际 %d（响应体：%s）", rec.Code, rec.Body.String())
+	}
+	if reserver.reserveCalls != 0 {
+		t.Fatalf("不计费模型不应写预留，实际调用 %d 次", reserver.reserveCalls)
+	}
+}
+
+// TestTokenAuth_额度不足_返回429并带具体数字 验证预留失败时的状态码与文案。
+func TestTokenAuth_额度不足_返回429并带具体数字(t *testing.T) {
+	tokens, users := newTokenAndUserRepos(t)
+	key := newLimitedOwnerAndToken(t, tokens, users, "insufficient-owner", 100, 1000)
+
+	reserver := &fakeQuotaReserver{priced: true, estimateAmount: 500, reserveErr: model.ErrQuotaInsufficient}
+	engine := newQuotaAuthEngine(t, tokens, users, reserver, okHandler)
+
+	rec := doAuthRequest(t, engine, map[string]string{"Authorization": "Bearer " + key},
+		`{"model":"priced-model","messages":[]}`)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("额度不足应返回 429，实际 %d（响应体：%s）", rec.Code, rec.Body.String())
+	}
+	body := decodeError(t, rec)
+	if body.Error.Code != oai.CodeInsufficientQuota {
+		t.Errorf("错误码 = %q，期望 %q", body.Error.Code, oai.CodeInsufficientQuota)
+	}
+	// 文案必须带具体数字，便于使用者自助定位
+	if !strings.Contains(body.Error.Message, "100") || !strings.Contains(body.Error.Message, "500") {
+		t.Errorf("错误文案应包含剩余/需要额度数字，实际 %q", body.Error.Message)
+	}
+}
+
+// TestTokenAuth_预留成功_注入幂等键 验证预留成功后 requestID 被写入请求上下文。
+func TestTokenAuth_预留成功_注入幂等键(t *testing.T) {
+	tokens, users := newTokenAndUserRepos(t)
+	key := newLimitedOwnerAndToken(t, tokens, users, "reserve-ok-owner", 100, 1000)
+
+	reserver := &fakeQuotaReserver{priced: true, estimateAmount: 10}
+	engine := newQuotaAuthEngine(t, tokens, users, reserver, func(c *gin.Context) {
+		identity, _ := reqctx.IdentityFrom(c.Request.Context())
+		c.JSON(http.StatusOK, gin.H{"requestId": identity.RequestID})
+	})
+
+	rec := doAuthRequest(t, engine, map[string]string{"Authorization": "Bearer " + key},
+		`{"model":"priced-model","messages":[]}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d，期望 200（响应体：%s）", rec.Code, rec.Body.String())
+	}
+	if reserver.reserveCalls != 1 {
+		t.Fatalf("应预留一次，实际 %d 次", reserver.reserveCalls)
+	}
+
+	var resp struct {
+		RequestID string `json:"requestId"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("响应体解析失败: %v", err)
+	}
+	if resp.RequestID == "" {
+		t.Fatal("预留成功后应把 requestID 写入上下文（转发结束据此结算/退还）")
+	}
+	if resp.RequestID != reserver.lastRequestID {
+		t.Errorf("上下文 requestID = %q，与预留时使用的不一致（%q）", resp.RequestID, reserver.lastRequestID)
+	}
+}
+
+// TestTokenAuth_信任额度旁路_跳过预留 验证额度充足时跳过预留以减少写库。
+func TestTokenAuth_信任额度旁路_跳过预留(t *testing.T) {
+	tokens, users := newTokenAndUserRepos(t)
+	// 额度高于信任阈值：应走旁路，不写预留。
+	key := newLimitedOwnerAndToken(t, tokens, users, "trusted-owner", trustQuotaBypassThreshold+1, 1000)
+
+	reserver := &fakeQuotaReserver{priced: true, estimateAmount: 500}
+	engine := newQuotaAuthEngine(t, tokens, users, reserver, okHandler)
+
+	rec := doAuthRequest(t, engine, map[string]string{"Authorization": "Bearer " + key},
+		`{"model":"priced-model","messages":[]}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d，期望 200", rec.Code)
+	}
+	if reserver.reserveCalls != 0 {
+		t.Fatalf("信任额度旁路不应写预留，实际 %d 次", reserver.reserveCalls)
 	}
 }

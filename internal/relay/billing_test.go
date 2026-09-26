@@ -9,9 +9,12 @@ package relay
 
 import (
 	"context"
+	"sync"
 	"testing"
+	"time"
 
 	"gitee.com/xiaosu4610/aqua-api/internal/model"
+	"gitee.com/xiaosu4610/aqua-api/internal/reqctx"
 )
 
 // fakePriceRepo 是内存版计价规则仓储。
@@ -201,5 +204,267 @@ func TestBilling_无分组仓储时倍率恒为一倍(t *testing.T) {
 
 	if got := billing.QuoteOnce(ctx, "test-model", 1); got != 100 {
 		t.Fatalf("无分组仓储时应扣 100，实际 %d", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 额度预扣 / 结算 / 退还
+// ---------------------------------------------------------------------------
+
+// fakeQuotaRepo 是内存版额度预留台账，用于验证计费组件是否正确委托。
+type fakeQuotaRepo struct {
+	mu           sync.Mutex
+	nextID       uint64
+	byRequestID  map[string]*model.QuotaReservation
+	reserveCalls int
+	settleCalls  int
+	releaseCalls int
+}
+
+func newFakeQuotaRepo() *fakeQuotaRepo {
+	return &fakeQuotaRepo{byRequestID: map[string]*model.QuotaReservation{}}
+}
+
+func (f *fakeQuotaRepo) Reserve(_ context.Context, req model.ReserveRequest) (*model.QuotaReservation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reserveCalls++
+	if existing, ok := f.byRequestID[req.RequestID]; ok {
+		return existing, nil
+	}
+	f.nextID++
+	item := &model.QuotaReservation{
+		ID: f.nextID, RequestID: req.RequestID, UserID: req.UserID, TokenID: req.TokenID,
+		Reserved: req.Amount, Status: model.ReservationInFlight,
+	}
+	f.byRequestID[req.RequestID] = item
+	return item, nil
+}
+
+func (f *fakeQuotaRepo) Settle(_ context.Context, requestID string, actualQuota int64) (*model.QuotaReservation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.settleCalls++
+	item, ok := f.byRequestID[requestID]
+	if !ok {
+		return nil, model.ErrReservationNotFound
+	}
+	if item.Status != model.ReservationInFlight {
+		return item, nil
+	}
+	item.Status = model.ReservationSettled
+	if actualQuota < 0 {
+		item.Settled = item.Reserved
+	} else {
+		item.Settled = actualQuota
+	}
+	return item, nil
+}
+
+func (f *fakeQuotaRepo) Release(_ context.Context, requestID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.releaseCalls++
+	if item, ok := f.byRequestID[requestID]; ok && item.Status == model.ReservationInFlight {
+		item.Status = model.ReservationReleased
+	}
+	return nil
+}
+
+func (f *fakeQuotaRepo) GetByRequestID(_ context.Context, requestID string) (*model.QuotaReservation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	item, ok := f.byRequestID[requestID]
+	if !ok {
+		return nil, model.ErrReservationNotFound
+	}
+	return item, nil
+}
+
+func (f *fakeQuotaRepo) PendingAmount(_ context.Context, userID uint64) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var total int64
+	for _, item := range f.byRequestID {
+		if item.UserID == userID && item.Status == model.ReservationInFlight {
+			total += item.Reserved
+		}
+	}
+	return total, nil
+}
+
+func (f *fakeQuotaRepo) CleanupExpired(context.Context, time.Time) (int, error) { return 0, nil }
+
+// TestBilling_EstimateReserve_未定价模型不预留 验证不计费模型返回 priced=false。
+//
+// 这是"不计费模型跳过预留"的计费侧依据：估算口以价格规则为前提，
+// 未命中价格时绝不产生预留，避免免费模型被额度墙挡住。
+func TestBilling_EstimateReserve_未定价模型不预留(t *testing.T) {
+	billing := newTestBilling(100, 1_000_000, 2_000_000, 0)
+
+	if amount, priced := billing.EstimateReserve(context.Background(), "未定价模型", 300); priced || amount != 0 {
+		t.Fatalf("未定价模型应返回 (0, false)，实际 (%d, %v)", amount, priced)
+	}
+}
+
+// TestBilling_EstimateReserve_定价模型预留为正 验证估算按价格与倍率给出正数预留。
+func TestBilling_EstimateReserve_定价模型预留为正(t *testing.T) {
+	// 输入 1 额度/1M token、输出 2 额度/1M token、倍率 1.0。
+	billing := newTestBilling(100, 1_000_000, 2_000_000, 0)
+
+	// 请求体 300 字节 → 估算 100 token；假设输入输出同量级：
+	// (100×1_000_000 + 100×2_000_000) / 1_000_000 = 300。
+	amount, priced := billing.EstimateReserve(context.Background(), "test-model", 300)
+	if !priced {
+		t.Fatal("已定价模型应返回 priced=true")
+	}
+	if amount != 300 {
+		t.Fatalf("估算预留 = %d，期望 300", amount)
+	}
+}
+
+// TestBilling_预留结算释放_委托台账 验证三个方法正确委托给台账。
+func TestBilling_预留结算释放_委托台账(t *testing.T) {
+	ctx := context.Background()
+	billing := newTestBilling(100, 1_000_000, 2_000_000, 0)
+	fake := newFakeQuotaRepo()
+	if billing.WithQuotaRepository(fake) != billing {
+		t.Fatal("WithQuotaRepository 应返回自身以支持链式装配")
+	}
+
+	res, err := billing.Reserve(ctx, model.ReserveRequest{
+		RequestID: "r1", UserID: 1, TokenID: 2, Amount: 10,
+	})
+	if err != nil {
+		t.Fatalf("Reserve 失败: %v", err)
+	}
+	if res == nil || res.Reserved != 10 || fake.reserveCalls != 1 {
+		t.Fatalf("Reserve 未正确委托：res=%+v calls=%d", res, fake.reserveCalls)
+	}
+
+	settled, err := billing.Settle(ctx, "r1", 4)
+	if err != nil {
+		t.Fatalf("Settle 失败: %v", err)
+	}
+	if settled == nil || settled.Settled != 4 || fake.settleCalls != 1 {
+		t.Fatalf("Settle 未正确委托：settled=%+v calls=%d", settled, fake.settleCalls)
+	}
+
+	// 另一条预留用于验证释放。
+	if _, err := billing.Reserve(ctx, model.ReserveRequest{RequestID: "r2", UserID: 1, Amount: 7}); err != nil {
+		t.Fatalf("Reserve(r2) 失败: %v", err)
+	}
+	if err := billing.Release(ctx, "r2"); err != nil {
+		t.Fatalf("Release 失败: %v", err)
+	}
+	if fake.releaseCalls != 1 {
+		t.Fatalf("Release 未正确委托：calls=%d", fake.releaseCalls)
+	}
+}
+
+// TestBilling_PendingReserved_委托台账 验证在途预留统计被正确委托。
+func TestBilling_PendingReserved_委托台账(t *testing.T) {
+	ctx := context.Background()
+	billing := newTestBilling(100, 1_000_000, 2_000_000, 0).WithQuotaRepository(newFakeQuotaRepo())
+
+	if _, err := billing.Reserve(ctx, model.ReserveRequest{RequestID: "p1", UserID: 9, Amount: 10}); err != nil {
+		t.Fatalf("Reserve 失败: %v", err)
+	}
+	if _, err := billing.Reserve(ctx, model.ReserveRequest{RequestID: "p2", UserID: 9, Amount: 20}); err != nil {
+		t.Fatalf("Reserve 失败: %v", err)
+	}
+
+	pending, err := billing.PendingReserved(ctx, 9)
+	if err != nil {
+		t.Fatalf("PendingReserved 失败: %v", err)
+	}
+	if pending != 30 {
+		t.Fatalf("在途预留 = %d，期望 30", pending)
+	}
+}
+
+// TestBilling_未注入台账时均为无操作 验证未配置预留台账时三方法安全降级。
+func TestBilling_未注入台账时均为无操作(t *testing.T) {
+	ctx := context.Background()
+	billing := newTestBilling(100, 1_000_000, 2_000_000, 0)
+
+	if res, err := billing.Reserve(ctx, model.ReserveRequest{RequestID: "x"}); res != nil || err != nil {
+		t.Fatalf("未注入台账时 Reserve 应返回 (nil, nil)，实际 (%v, %v)", res, err)
+	}
+	if res, err := billing.Settle(ctx, "x", 1); res != nil || err != nil {
+		t.Fatalf("未注入台账时 Settle 应返回 (nil, nil)，实际 (%v, %v)", res, err)
+	}
+	if err := billing.Release(ctx, "x"); err != nil {
+		t.Fatalf("未注入台账时 Release 应返回 nil，实际 %v", err)
+	}
+	if pending, err := billing.PendingReserved(ctx, 1); pending != 0 || err != nil {
+		t.Fatalf("未注入台账时 PendingReserved 应返回 (0, nil)，实际 (%d, %v)", pending, err)
+	}
+}
+
+// TestBilling_结算接入_成功多退_失败退还_未知用量按预留收 覆盖 usage.go 的结算分流。
+//
+// 这是 requirement「结算接入」的回归：成功走 Settle（多退少补），
+// 失败走 Release（全额退还），拿不到 usage 时按预留量收（不退成 0）。
+func TestBilling_结算接入_成功多退_失败退还_未知用量按预留收(t *testing.T) {
+	ctx := context.Background()
+	fake := newFakeQuotaRepo()
+	// 输入 1 额度/1M token、输出 2 额度/1M token、倍率 1.0。
+	billing := newTestBilling(100, 1_000_000, 2_000_000, 0).WithQuotaRepository(fake)
+	r := &Relay{billing: billing}
+
+	// 场景一：成功且取得 usage → 结算（按实际用量多退）。
+	if _, err := billing.Reserve(ctx, model.ReserveRequest{RequestID: "ok", UserID: 1, TokenID: 2, Amount: 1000}); err != nil {
+		t.Fatalf("预留失败: %v", err)
+	}
+	ctxOK := reqctx.WithIdentity(ctx, reqctx.Identity{UserID: 1, TokenID: 2, RequestID: "ok"})
+	// (100×1_000_000 + 100×2_000_000) / 1_000_000 = 300。
+	got := r.settleQuota(ctxOK, usageEntry{
+		Model:      "test-model",
+		StatusCode: 200,
+		Usage:      openAIUsage{PromptTokens: 100, CompletionTokens: 100, TotalTokens: 200},
+	})
+	if got != 300 {
+		t.Fatalf("成功结算额度 = %d，期望 300（多退）", got)
+	}
+	if item := fake.byRequestID["ok"]; item.Status != model.ReservationSettled || item.Settled != 300 {
+		t.Fatalf("台账未结算：status=%v settled=%d", item.Status, item.Settled)
+	}
+
+	// 场景二：请求失败 → 释放（全额退还，日志额度为 0）。
+	if _, err := billing.Reserve(ctx, model.ReserveRequest{RequestID: "fail", UserID: 1, TokenID: 2, Amount: 1000}); err != nil {
+		t.Fatalf("预留失败: %v", err)
+	}
+	ctxFail := reqctx.WithIdentity(ctx, reqctx.Identity{UserID: 1, TokenID: 2, RequestID: "fail"})
+	got = r.settleQuota(ctxFail, usageEntry{Model: "test-model", StatusCode: 502, ErrorText: "上游失败"})
+	if got != 0 {
+		t.Fatalf("失败请求计入额度 = %d，期望 0", got)
+	}
+	if item := fake.byRequestID["fail"]; item.Status != model.ReservationReleased {
+		t.Fatalf("失败请求应释放预留，实际 status=%v", item.Status)
+	}
+
+	// 场景三：成功但未取得 usage → 按预留量收（不退成 0）。
+	if _, err := billing.Reserve(ctx, model.ReserveRequest{RequestID: "nousage", UserID: 1, TokenID: 2, Amount: 77}); err != nil {
+		t.Fatalf("预留失败: %v", err)
+	}
+	ctxNo := reqctx.WithIdentity(ctx, reqctx.Identity{UserID: 1, TokenID: 2, RequestID: "nousage"})
+	got = r.settleQuota(ctxNo, usageEntry{Model: "test-model", StatusCode: 200})
+	if got != 77 {
+		t.Fatalf("未取得 usage 时应按预留量收 77，实际 %d", got)
+	}
+
+	// 场景四：未做预留（无 requestID）→ 走响应后扣费，不触碰台账。
+	before := fake.reserveCalls
+	got = r.settleQuota(ctx, usageEntry{
+		Model:      "test-model",
+		StatusCode: 200,
+		Usage:      openAIUsage{PromptTokens: 100, CompletionTokens: 100, TotalTokens: 200},
+	})
+	if got != 300 {
+		t.Fatalf("未预留应走响应后扣费 300，实际 %d", got)
+	}
+	if fake.reserveCalls != before {
+		t.Fatal("未预留的请求不应触碰预留台账")
 	}
 }

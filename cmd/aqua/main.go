@@ -179,6 +179,8 @@ func run() error {
 	orders := store.NewPaymentOrderRepository(st.DB())
 	modelGroups := store.NewModelGroupRepository(st.DB())
 	redeemCodes := store.NewRedeemCodeRepository(st.DB())
+	// 额度预留台账：鉴权时预扣、响应后结算/退还，堵住并发超支漏洞。
+	quotaReservations := store.NewQuotaRepository(st.DB())
 
 	// 启动时清理过期会话：会话表随登录次数持续增长，不清理会无限膨胀。
 	// 清理失败不阻断启动（这只是维护动作，不影响核心功能）。
@@ -193,6 +195,16 @@ func run() error {
 		logger.Warn("清理过期邮箱验证码失败", "error", err)
 	} else if cleaned > 0 {
 		logger.Info("已清理过期邮箱验证码", "count", cleaned)
+	}
+
+	// 启动时回收"在途但已超时"的额度预留并退还额度。
+	//
+	// 为什么必须做：进程被强杀/崩溃会在预留台账里留下永久"在途"记录，
+	// 不回收则这部分额度永远退不回来，用户会以为额度凭空消失。
+	if cleaned, err := quotaReservations.CleanupExpired(ctx, time.Now()); err != nil {
+		logger.Warn("回收在途超时预留失败", "error", err)
+	} else if cleaned > 0 {
+		logger.Info("已回收在途超时预留并退还额度", "count", cleaned)
 	}
 
 	// ── 支付 / 充值 ─────────────────────────────────────────────
@@ -278,7 +290,10 @@ func run() error {
 	// ── 计费组件 ────────────────────────────────────────────────
 	// 负责按模型单价与用量换算额度，并扣减令牌与用户额度。
 	// 价格规则缓存在内存中（后台改价后会主动失效），避免每次转发都查库。
-	billing := relay.NewBilling(modelPrices, modelGroups, tokens, users, "")
+	// 注入额度预留台账后，鉴权阶段会"请求前预扣"、响应后"多退少补"，
+	// 从而堵住并发请求全部通过检查、各自后扣费导致超支的漏洞。
+	billing := relay.NewBilling(modelPrices, modelGroups, tokens, users, "").
+		WithQuotaRepository(quotaReservations)
 
 	// 订阅账号令牌刷新器：让 OAuth 凭据在 access_token 过期前自动续期
 	oauthRefresher := relay.NewOAuthRefresher(oauthProviders, channelKeys)

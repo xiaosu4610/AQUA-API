@@ -180,6 +180,19 @@ func (t *Token) HasQuota() bool {
 	return t.RemainQuota > 0
 }
 
+// AvailableQuota 返回令牌的可用额度；不限额度时返回 QuotaUnlimited（-1）。
+//
+// 为什么令牌不需要像用户那样额外减去"在途预留"：
+//
+//	令牌的额度扣减在【预留阶段】就已真实写入 remain_quota（见 store.QuotaRepository.Reserve），
+//	因此读到的 RemainQuota 本身就已经扣除了在途预留，可用额度即当前剩余额度。
+func (t *Token) AvailableQuota() int64 {
+	if t.UnlimitedQuota {
+		return QuotaUnlimited
+	}
+	return t.RemainQuota
+}
+
 // AllowsModel 判断令牌是否被允许访问指定模型。
 //
 // 匹配规则：白名单为空表示不限制；否则精确匹配（大小写敏感）。

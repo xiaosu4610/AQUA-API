@@ -36,6 +36,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
 	"time"
 
 	"gitee.com/xiaosu4610/aqua-api/internal/model"
@@ -355,15 +356,14 @@ func (r *Relay) recordUsage(ctx context.Context, entry usageEntry) {
 		Error:            entry.ErrorText,
 		CreatedAt:        time.Now(),
 	}
-	// 计费：按用量扣减令牌与用户额度。
+	// 计费：优先走"预留 → 结算/退还"（鉴权阶段已预扣），未预留时退化为响应后扣费。
 	//
-	// 放在写日志之前，这样日志里的 quota 就是本次真实扣减额——
-	// 若先写日志再扣费，日志中的额度会永远是 0（这正是此前的缺陷）。
+	// 放在写日志之前，这样日志里的 quota 就是本次真实计入额度——
+	// 若先写日志再计费，日志中的额度会永远是 0（这正是此前的缺陷）。
 	//
-	// 计费失败不会影响客户端：Charge 内部只记录错误不返回错误，
-	// 用户不该因为"记账失败"而收到报错。
-	logEntry.Quota = r.billing.Charge(writeCtx, entry.UserID, entry.TokenID, entry.Model,
-		int64(entry.Usage.PromptTokens), int64(entry.Usage.CompletionTokens))
+	// 计费失败不会影响客户端：本方法内部只记录错误不返回错误，
+	// 用户不该因为"记账失败"而收到一个报错。
+	logEntry.Quota = r.settleQuota(writeCtx, entry)
 
 	if err := r.usageLogs.Create(writeCtx, logEntry); err != nil {
 		// 日志写入失败不影响用户，但要留下痕迹便于排查
@@ -385,4 +385,71 @@ func (r *Relay) recordUsage(ctx context.Context, entry usageEntry) {
 func identityFromRequest(ctx context.Context) reqctx.Identity {
 	identity, _ := reqctx.IdentityFrom(ctx)
 	return identity
+}
+
+// settleQuota 结算本次调用的额度，返回应写入日志的"实际计入额度"。
+//
+// 两条路径（由鉴权阶段是否做了预留决定）：
+//
+//  1. 做过预留（context 中带 requestID）：
+//     成功 → Settle（按实际 usage 多退少补；拿不到 usage 时按预留量收，绝不退成 0）；
+//     失败（HTTP >= 400）→ Release 全额退还。
+//  2. 未做预留（模型不计费 / 信任额度旁路 / 未启用）：
+//     沿用旧的响应后扣费 Charge（未定价模型 Charge 会返回 0）。
+//
+// 关键约束：本方法绝不向上返回错误——它发生在响应已回传之后，
+// 用户不该因为"记账失败"而收到报错；但失败必须留下【错误级别】日志，
+// 因为额度错账属于必须被发现的资损风险，不能静默 warn。
+func (r *Relay) settleQuota(ctx context.Context, entry usageEntry) int64 {
+	if r.billing == nil {
+		return 0
+	}
+
+	requestID := identityFromRequest(ctx).RequestID
+	if requestID == "" {
+		// 未预留：退化路径。Charge 内部同样只记录错误不返回错误。
+		return r.billing.Charge(ctx, entry.UserID, entry.TokenID, entry.Model,
+			int64(entry.Usage.PromptTokens), int64(entry.Usage.CompletionTokens))
+	}
+
+	// 请求失败（含上游 4xx/5xx、无可用渠道等）：全额退还预扣额度。
+	if entry.StatusCode >= http.StatusBadRequest {
+		if err := r.billing.Release(ctx, requestID); err != nil {
+			slog.Error("退还预留额度失败（用户额度可能被误扣，需人工核查）",
+				"error", err, "request_id", requestID,
+				"user_id", entry.UserID, "token_id", entry.TokenID, "model", entry.Model)
+		}
+		return 0
+	}
+
+	// 成功：按实际用量结算。拿不到 usage 时传 QuotaUnknown（按预留量收）。
+	actual := int64(model.QuotaUnknown)
+	if hasUsage(entry.Usage) {
+		actual = r.billing.Quote(ctx, entry.Model,
+			int64(entry.Usage.PromptTokens), int64(entry.Usage.CompletionTokens))
+	}
+
+	reservation, err := r.billing.Settle(ctx, requestID, actual)
+	if err != nil {
+		// 结算失败：不阻断用户，但必须记错误级别日志（额度可能停留在预扣值）。
+		slog.Error("结算预留额度失败（额度可能不准，需人工核查）",
+			"error", err, "request_id", requestID,
+			"user_id", entry.UserID, "token_id", entry.TokenID, "model", entry.Model)
+		return 0
+	}
+	if reservation == nil {
+		return 0
+	}
+	if actual >= 0 && reservation.Settled != actual {
+		// 补扣受限（可用额度不足）：此时按可用量扣减，账目有缺口，必须可被发现。
+		slog.Error("结算补扣受限：实际入账低于应扣额度",
+			"request_id", requestID, "want", actual, "settled", reservation.Settled,
+			"user_id", entry.UserID, "model", entry.Model)
+	}
+	return reservation.Settled
+}
+
+// hasUsage 判断是否取得了有效用量（全零视为未取得）。
+func hasUsage(usage openAIUsage) bool {
+	return usage.PromptTokens > 0 || usage.CompletionTokens > 0 || usage.TotalTokens > 0
 }
