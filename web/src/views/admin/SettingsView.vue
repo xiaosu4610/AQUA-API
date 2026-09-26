@@ -17,6 +17,8 @@
  * 扩展（Extend）：
  *   新增通用设置项：在 types.ts 的 SiteSettings / UpdateSiteSettingsPayload 加字段，
  *   本页加表单项，后端 LoadSiteSettings / ToMap 同步补映射（三处必须同步）。
+ *   SEO 区块（site_url / keywords / 收录码 / geo / sitemap）同样遵循该三处同步约定：
+ *   列表字段在界面上用逗号分隔字符串承载，提交时拆成数组、读入时再拼回。
  *   支付通道不在此硬编码：通道与字段由后端 payment_channels 下发，
  *   本页只按 field.kind 触发式渲染（勾选哪个通道才展开它的字段），
  *   因此后端新增支付通道时本页无需改动。
@@ -28,7 +30,13 @@ import CopyButton from '@/components/CopyButton.vue'
 import DataState from '@/components/DataState.vue'
 import { fetchSettings, updateSettings } from '@/api/admin'
 import { ApiError } from '@/api/client'
-import type { PaymentChannel, SiteSettings, UpdateSiteSettingsPayload } from '@/api/types'
+import type {
+  PaymentChannel,
+  SeoSettings,
+  SiteSettings,
+  UpdateSeoSettingsPayload,
+  UpdateSiteSettingsPayload,
+} from '@/api/types'
 import { toastError, toastSuccess } from '@/composables/useToast'
 import { useSiteStore } from '@/stores/site'
 
@@ -76,6 +84,71 @@ const checkedChannels = ref<Record<string, boolean>>({})
  * 提交时原样组装成 payment.params 交给后端。
  */
 const paymentParams = ref<Record<string, string>>({})
+
+/* SEO 与站点收录。
+   keywords 与 sitemap_paths 在接口里是 string[]，但界面上用「逗号分隔的单行输入」承载：
+   对站长而言一次改完、一眼看全比逐个增删标签更省事，转换只在本组件内完成。
+   sitemap_url / robots_url 是后端算好的只读地址，仅用于展示与复制，绝不回传。 */
+const seo = ref<SeoSettings | null>(null)
+const seoSiteURL = ref('')
+const seoKeywords = ref('')
+const seoBing = ref('')
+const seoGoogle = ref('')
+const seoBaidu = ref('')
+const seoGeoRegion = ref('')
+const seoGeoPlacename = ref('')
+const seoGeoPosition = ref('')
+const seoSitemapEnabled = ref(false)
+const seoSitemapPaths = ref('')
+
+/** 逗号（兼容中英文）分隔字符串 → 去空数组；同时用于 keywords 与 sitemap_paths */
+function splitList(text: string): string[] {
+  return text
+    .split(/[,，]/)
+    .map((item) => item.trim())
+    .filter((item) => item !== '')
+}
+
+/** site_url：留空合法（后端会按访问请求推导）；非空则必须是带域名的 http(s) 地址 */
+const seoSiteURLInvalid = computed(() => {
+  const raw = seoSiteURL.value.trim()
+  if (!raw) return false
+  try {
+    const parsed = new URL(raw)
+    return parsed.protocol !== 'http:' && parsed.protocol !== 'https:'
+  } catch {
+    return true
+  }
+})
+
+/** sitemap_paths：每项必须以 / 开头，否则会与站点地址拼成非法 URL */
+const seoSitemapPathsInvalid = computed(() =>
+  splitList(seoSitemapPaths.value).some((path) => !path.startsWith('/')),
+)
+
+/** geo_position：留空合法；非空必须形如「纬度;经度」 */
+const seoGeoPositionInvalid = computed(() => {
+  const raw = seoGeoPosition.value.trim()
+  if (!raw) return false
+  return !/^-?\d+(\.\d+)?;\s*-?\d+(\.\d+)?$/.test(raw)
+})
+
+/** 前端先拦一道：避免明显不合法的值白跑一次请求（后端仍会做最终校验） */
+const seoInvalid = computed(
+  () => seoSiteURLInvalid.value || seoSitemapPathsInvalid.value || seoGeoPositionInvalid.value,
+)
+
+/** 与 seoInvalid 对应的可读错误文案（取第一条） */
+const seoErrorText = computed(() => {
+  if (seoSiteURLInvalid.value) return '站点公开访问地址必须是 http:// 或 https:// 开头的完整地址。'
+  if (seoSitemapPathsInvalid.value) return '额外的公开路径每一项都必须以 / 开头。'
+  if (seoGeoPositionInvalid.value) return '经纬度格式应为「纬度;经度」，如 22.5431;114.0579。'
+  return ''
+})
+
+/** 只读：完整 sitemap / robots 地址（后端算好，未启用时为空，展示为「—」） */
+const seoSitemapURL = computed(() => seo.value?.sitemap_url || '')
+const seoRobotsURL = computed(() => seo.value?.robots_url || '')
 
 /** 邮件通道是否就绪（只读，由服务端环境变量决定） */
 const emailReady = computed(() => settings.value?.email_service_ready === true)
@@ -223,6 +296,23 @@ function applyToForm(data: SiteSettings): void {
   }
   checkedChannels.value = checks
   paymentParams.value = params
+
+  // SEO 与站点收录：数组字段拼成逗号分隔字符串，方便在单行输入里一次改完。
+  // seo 缺失时（后端未升级）保持空态，只读地址展示为「—」，不阻断其余设置。
+  const seoData = data.seo
+  if (seoData) {
+    seo.value = seoData
+    seoSiteURL.value = seoData.site_url || ''
+    seoKeywords.value = (seoData.keywords ?? []).join(',')
+    seoBing.value = seoData.bing_verification || ''
+    seoGoogle.value = seoData.google_verification || ''
+    seoBaidu.value = seoData.baidu_verification || ''
+    seoGeoRegion.value = seoData.geo_region || ''
+    seoGeoPlacename.value = seoData.geo_placename || ''
+    seoGeoPosition.value = seoData.geo_position || ''
+    seoSitemapEnabled.value = seoData.sitemap_enabled === true
+    seoSitemapPaths.value = (seoData.sitemap_paths ?? []).join(',')
+  }
 }
 
 /** 元 → 分：用四舍五入到整数，避免 0.1+0.2 类浮点误差 */
@@ -245,6 +335,27 @@ function collectPaymentParams(): Record<string, string> {
   return params
 }
 
+/**
+ * 组装 SEO 提交体。
+ *
+ * 只取可写字段：sitemap_url / robots_url 由后端按 site_url 计算，回传旧值会把新算结果覆盖掉。
+ * 逗号分隔的字符串在这里拆成数组（trim + 去空），与接口的 string[] 对齐。
+ */
+function collectSeoPayload(): UpdateSeoSettingsPayload {
+  return {
+    site_url: seoSiteURL.value.trim(),
+    keywords: splitList(seoKeywords.value),
+    bing_verification: seoBing.value.trim(),
+    google_verification: seoGoogle.value.trim(),
+    baidu_verification: seoBaidu.value.trim(),
+    geo_region: seoGeoRegion.value.trim(),
+    geo_placename: seoGeoPlacename.value.trim(),
+    geo_position: seoGeoPosition.value.trim(),
+    sitemap_enabled: seoSitemapEnabled.value,
+    sitemap_paths: splitList(seoSitemapPaths.value),
+  }
+}
+
 async function handleSave(): Promise<void> {
   if (emailCodeUnavailable.value) {
     toastError('邮件服务未配置，无法开启邮箱验证码校验')
@@ -256,6 +367,11 @@ async function handleSave(): Promise<void> {
         ? '充值兑换比例必须大于 0'
         : paymentChannelIssues.value[0] || '支付通道配置不完整',
     )
+    return
+  }
+  // SEO 校验先拦在前端：错误的值会被注入到全站页面，污染收录结果，必须尽早挡住
+  if (seoInvalid.value) {
+    toastError(seoErrorText.value)
     return
   }
 
@@ -284,6 +400,8 @@ async function handleSave(): Promise<void> {
       epay_types: [],
       stripe_note: '',
     },
+    // 只提交可写字段；只读的 sitemap_url / robots_url 不回传
+    seo: collectSeoPayload(),
   }
 
   saving.value = true
@@ -314,7 +432,7 @@ onMounted(load)
       <button
         type="button"
         class="btn btn-primary"
-        :disabled="saving || loading || emailCodeUnavailable || paymentInvalid"
+        :disabled="saving || loading || emailCodeUnavailable || paymentInvalid || seoInvalid"
         @click="handleSave"
       >
         <span
@@ -632,6 +750,142 @@ onMounted(load)
                 : paymentChannelIssues.join('；')
             }}
           </p>
+        </div>
+      </section>
+
+      <!-- SEO 与站点收录 -->
+      <section class="card lg:col-span-3">
+        <div class="card-head">
+          <div>
+            <h2 class="section-title flex items-center gap-2">
+              <AppIcon name="globe" :size="16" class="text-brand-700" />
+              SEO 与站点收录
+            </h2>
+            <p class="mt-0.5 text-xs text-ink-400">
+              这些值由后端注入到页面 &lt;head&gt;，并据此生成 sitemap.xml 与 robots.txt；保存后立即生效。
+            </p>
+          </div>
+          <label class="flex items-center gap-2 text-sm text-ink-200">
+            <input v-model="seoSitemapEnabled" class="checkbox" type="checkbox" />
+            输出 sitemap.xml 与 robots.txt
+          </label>
+        </div>
+
+        <div class="card-pad space-y-5">
+          <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <div class="sm:col-span-2 lg:col-span-3">
+              <label class="label" for="seo-site-url">站点公开访问地址</label>
+              <input
+                id="seo-site-url"
+                v-model="seoSiteURL"
+                class="input input-mono"
+                type="url"
+                placeholder="https://aqua.ltzy.top"
+              />
+              <p class="hint" :class="seoSiteURLInvalid ? 'text-red-600' : ''">
+                sitemap、robots 与 canonical 都用它生成绝对地址。留空时按访问请求自动推导；
+                但反向代理后推导出的往往是内网地址，不利于收录，建议显式填写。
+              </p>
+            </div>
+
+            <div class="sm:col-span-2 lg:col-span-3">
+              <label class="label" for="seo-keywords">SEO 关键词</label>
+              <input
+                id="seo-keywords"
+                v-model="seoKeywords"
+                class="input"
+                type="text"
+                placeholder="LLM API 网关,大模型中转,OpenAI 兼容"
+              />
+              <p class="hint">多个关键词用逗号分隔，会写入页面的 keywords 标记。</p>
+            </div>
+
+            <div>
+              <label class="label" for="seo-bing">必应站长验证码（msvalidate.01）</label>
+              <input id="seo-bing" v-model="seoBing" class="input input-mono" type="text" />
+            </div>
+            <div>
+              <label class="label" for="seo-google">Google Search Console 验证码</label>
+              <input id="seo-google" v-model="seoGoogle" class="input input-mono" type="text" />
+            </div>
+            <div>
+              <label class="label" for="seo-baidu">百度站长验证码</label>
+              <input id="seo-baidu" v-model="seoBaidu" class="input input-mono" type="text" />
+            </div>
+
+            <div>
+              <label class="label" for="seo-geo-region">地域代码</label>
+              <input id="seo-geo-region" v-model="seoGeoRegion" class="input input-mono" type="text" placeholder="CN-44" />
+            </div>
+            <div>
+              <label class="label" for="seo-geo-placename">地名</label>
+              <input id="seo-geo-placename" v-model="seoGeoPlacename" class="input input-mono" type="text" placeholder="Shenzhen" />
+            </div>
+            <div>
+              <label class="label" for="seo-geo-position">经纬度</label>
+              <input
+                id="seo-geo-position"
+                v-model="seoGeoPosition"
+                class="input input-mono"
+                type="text"
+                placeholder="22.5431;114.0579"
+              />
+              <p class="hint" :class="seoGeoPositionInvalid ? 'text-red-600' : ''">
+                格式为「纬度;经度」，如 22.5431;114.0579。
+              </p>
+            </div>
+
+            <div class="sm:col-span-2 lg:col-span-3">
+              <label class="label" for="seo-sitemap-paths">额外的公开路径</label>
+              <input
+                id="seo-sitemap-paths"
+                v-model="seoSitemapPaths"
+                class="input input-mono"
+                type="text"
+                placeholder="/, /models, /docs"
+              />
+              <p class="hint" :class="seoSitemapPathsInvalid ? 'text-red-600' : ''">
+                以 / 开头、逗号分隔。只填公开页面：登录后才能看的页面写进来会被搜索引擎反复抓取，
+                却永远只能拿到跳转或空页，反而产生大量无效索引。
+              </p>
+            </div>
+          </div>
+
+          <!-- 只读输出地址：站长提交给搜索引擎时直接复制，无需自己拼域名 -->
+          <div class="rounded-lg border border-ink-800 px-3 py-3">
+            <p class="label mb-2">输出地址（只读）</p>
+            <div class="space-y-2">
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="w-24 shrink-0 text-xs text-ink-400">sitemap.xml</span>
+                <code class="chip max-w-full truncate" :title="seoSitemapURL || ''">
+                  {{ seoSitemapURL || '—' }}
+                </code>
+                <CopyButton
+                  v-if="seoSitemapURL"
+                  :value="seoSitemapURL"
+                  small
+                  outline
+                  success-text="sitemap 地址已复制"
+                />
+              </div>
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="w-24 shrink-0 text-xs text-ink-400">robots.txt</span>
+                <code class="chip max-w-full truncate" :title="seoRobotsURL || ''">
+                  {{ seoRobotsURL || '—' }}
+                </code>
+                <CopyButton
+                  v-if="seoRobotsURL"
+                  :value="seoRobotsURL"
+                  small
+                  outline
+                  success-text="robots 地址已复制"
+                />
+              </div>
+            </div>
+            <p class="hint mt-2">未开启「输出 sitemap.xml 与 robots.txt」时这两项为空。</p>
+          </div>
+
+          <p v-if="seoInvalid" class="field-error">{{ seoErrorText }}</p>
         </div>
       </section>
     </div>

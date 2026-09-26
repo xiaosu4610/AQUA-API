@@ -494,6 +494,39 @@ export interface DashboardStats {
 
 /* ────────────────────────── 系统设置 ────────────────────────── */
 
+/**
+ * SEO 与站点收录配置（GET /api/admin/settings 响应中的 seo 对象）。
+ *
+ * 这些值由后端注入到 index.html 的 head 标记块（见 web/index.html 的 aqua:seo 锚点），
+ * 并据此生成 sitemap.xml / robots.txt；前端的职责只是采集与展示，不做任何拼接。
+ */
+export interface SeoSettings {
+  /** 站点公开访问地址（如 https://aqua.ltzy.top）；留空时后端按访问请求推导 */
+  site_url: string
+  /** SEO 关键词 */
+  keywords: string[]
+  /** 必应站长验证码（msvalidate.01） */
+  bing_verification: string
+  /** Google Search Console 验证码 */
+  google_verification: string
+  /** 百度站长验证码 */
+  baidu_verification: string
+  /** 地域代码，如 CN-44 */
+  geo_region: string
+  /** 地名，如 Shenzhen */
+  geo_placename: string
+  /** 经纬度，格式「纬度;经度」，如 22.5431;114.0579 */
+  geo_position: string
+  /** 是否输出 sitemap.xml 与 robots.txt */
+  sitemap_enabled: boolean
+  /** 额外的公开路径（以 / 开头）；只填公开页面，登录后才能看的页面不要写 */
+  sitemap_paths: string[]
+  /** 只读：完整 sitemap 地址（后端算好）；未启用时为空 */
+  sitemap_url: string
+  /** 只读：完整 robots 地址（后端算好）；未启用时为空 */
+  robots_url: string
+}
+
 /** GET /api/admin/settings 响应 */
 export interface SiteSettings {
   site_name: string
@@ -520,7 +553,28 @@ export interface SiteSettings {
   payment_channels: PaymentChannel[]
   /** 各支付通道的密钥是否已通过环境变量就绪；只读 */
   payment_secrets: PaymentSecretStatus
+  /** SEO 与站点收录配置 */
+  seo: SeoSettings
 }
+
+/**
+ * PUT /api/admin/settings 的 seo 字段：只包含可写项。
+ *
+ * sitemap_url / robots_url 由后端按 site_url 计算，属于只读产物，
+ * 前端一律不回传，避免"用旧值覆盖后端算好的地址"。
+ */
+export type UpdateSeoSettingsPayload = Partial<{
+  site_url: string
+  keywords: string[]
+  bing_verification: string
+  google_verification: string
+  baidu_verification: string
+  geo_region: string
+  geo_placename: string
+  geo_position: string
+  sitemap_enabled: boolean
+  sitemap_paths: string[]
+}>
 
 /** PUT /api/admin/settings 请求体：只提交需要变更的字段 */
 export type UpdateSiteSettingsPayload = Partial<{
@@ -531,6 +585,7 @@ export type UpdateSiteSettingsPayload = Partial<{
   default_user_quota: number
   default_group: string
   payment: PaymentSettings
+  seo: UpdateSeoSettingsPayload
 }>
 
 /* ────────────────────────── 查询参数 ────────────────────────── */

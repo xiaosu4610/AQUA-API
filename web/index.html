@@ -15,10 +15,34 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <link rel="icon" href="/favicon.ico" />
     <meta name="theme-color" content="#f5f8fc" />
+    <!--
+      基础 SEO 三件套：描述说清「是什么、给谁用」，keywords 覆盖主要检索词，
+      canonical 先给相对路径兜底（后端注入时会替换成含域名的绝对地址）。
+    -->
     <meta
       name="description"
-      content="AQUA-API 是自托管的 LLM API 网关：统一上游渠道与下游协议，负责路由、计费与运营。"
+      content="AQUA-API 是自托管的 LLM API 网关：统一上游模型渠道与下游 OpenAI / Anthropic / Gemini 兼容协议，提供路由、计费、额度与运营能力，支持私有化部署。"
     />
+    <meta name="keywords" content="LLM API 网关,大模型中转,OpenAI 兼容,Anthropic,Gemini,自托管" />
+    <link rel="canonical" href="/" />
+
+    <!--
+      ⚠️ 下面那对 aqua:seo 标记是「后端注入的锚点」，禁止删除，也不要往中间塞自己的内容。
+      意图：SPA 只有这一个 index.html，后端在返回它时会把标记 start 与 end 之间的
+            整块内容，替换成按后台「SEO 与站点收录」配置生成的 meta 标签
+            （keywords、必应 / Google / 百度收录码、geo 信息、canonical）。
+      为什么用标记块而不是直接写死：写死就无法按不同部署实例配置；
+            用一对固定标记，后端才能稳定定位并整块替换。
+      为什么默认写死 msvalidate.01：这是兜底 —— 即使后端未注入（例如直接跑未配置的实例），
+            页面上也一定带着必应收录码，满足「每个页面都要有这个标记」的要求。
+      为什么放在这一个文件即可：前端是 SPA，/admin/*、/console/* 等所有路由最终
+            都由这一个 index.html 渲染，因此在此处加一次即覆盖全站。
+      如果删掉标记：后端找不到锚点会原样返回（不会报错，但后台配置就完全失效了）。
+    -->
+    <!--aqua:seo:start-->
+    <meta name="msvalidate.01" content="1B0EEE739DC3DB2ACD026924B711EC01" />
+    <!--aqua:seo:end-->
+
     <title>AQUA-API</title>
   </head>
   <body>
