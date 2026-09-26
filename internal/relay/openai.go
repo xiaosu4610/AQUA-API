@@ -671,30 +671,45 @@ func (r *Relay) forwardChat(w http.ResponseWriter, req *http.Request, target for
 	start := time.Now()
 	ch := target.channel
 
-	// 拼接上游地址：去掉 base_url 末尾多余的斜杠，避免出现 "//v1/..." 这类路径
-	upstreamURL := strings.TrimRight(ch.BaseURL, "/") + upstreamPath
+	// 取渠道类型规格，并按该类型决定"怎么发这个请求"。
+	// 现状：渠道记录尚未持久化类型标识，统一解析为 OpenAI 兼容规格，
+	// 因此下面组装出的 URL / 请求头与旧实现（base_url + path、Bearer 鉴权）逐字节一致。
+	spec := upstreamSpecForChannel(ch)
+
+	// 上游协议出站转换：Anthropic 渠道需把内部 OpenAI 请求体改写为 Messages 请求体；
+	// 其余类型原样返回。转换失败（如工具无法映射）必须明确报错，绝不静默丢弃。
+	outBody, convertErr := encodeUpstreamRequestBody(spec, body)
+	if convertErr != nil {
+		writeAdaptedError(w, adapter, http.StatusBadRequest, convertErr.Error(),
+			oai.TypeInvalidRequest, "request_conversion_failed")
+		return forwardResponded
+	}
+
+	built, buildErr := buildUpstreamRequest(upstreamRequestInput{
+		Type:    spec,
+		BaseURL: ch.BaseURL,
+		APIKey:  target.apiKey,
+		Model:   modelName,
+		Path:    upstreamPath,
+		Headers: upstreamForwardHeaders(req.Header),
+	})
+	if buildErr != nil {
+		// 组装失败（如渠道与类型都没提供地址）：属于该渠道的配置问题。
+		// 此时【尚未写出任何响应】，可安全换下一个渠道重试；
+		// 若所有渠道都用尽，由上层统一回 502。
+		return forwardRetryChannel
+	}
 
 	// 用请求 context：客户端断开时自动取消上游请求，避免无谓的上游消耗
-	upReq, err := http.NewRequestWithContext(req.Context(), http.MethodPost, upstreamURL, bytes.NewReader(body))
+	upReq, err := http.NewRequestWithContext(req.Context(), http.MethodPost, built.URL, bytes.NewReader(outBody))
 	if err != nil {
 		// 请求构造失败属于网关侧问题，未向上游发出请求，可换渠道重试
 		return forwardRetryChannel
 	}
-
-	// 请求头策略：只设置必要的头，【绝不复用客户端的 Authorization】——
+	// 请求头由构建器给出：只设置必要的头，【绝不复用客户端的 Authorization】——
 	// 客户端带的是本网关的令牌，上游需要的是渠道密钥，二者混用会导致
 	// 上游鉴权失败，并把网关令牌泄露给第三方上游。
-	upReq.Header.Set("Content-Type", "application/json")
-	upReq.Header.Set("Authorization", "Bearer "+target.apiKey)
-
-	// 保留 Accept：客户端可能要求 text/event-stream（流式），这是协议协商的一部分
-	if accept := req.Header.Get("Accept"); accept != "" {
-		upReq.Header.Set("Accept", accept)
-	}
-	// 保留 User-Agent：部分上游按 UA 做风控或功能分级，透传可减少非预期差异
-	if ua := req.Header.Get("User-Agent"); ua != "" {
-		upReq.Header.Set("User-Agent", ua)
-	}
+	upReq.Header = built.Header
 
 	resp, err := r.client.Do(upReq)
 	if err != nil {
@@ -757,6 +772,15 @@ func (r *Relay) forwardChat(w http.ResponseWriter, req *http.Request, target for
 			drainAndClose(resp)
 			return forwardRetryChannel
 		}
+	}
+
+	// 上游协议入站转换：Anthropic 渠道的响应需改写回内部 OpenAI 协议
+	// （非流式整体改写、流式逐事件转换、错误体改写为 OpenAI 错误体）。
+	// 非 Anthropic 上游此调用为空操作，既有回写路径完全不受影响。
+	if err := normalizeUpstreamResponse(spec, resp, oai.PeekStream(body)); err != nil {
+		// 读取/改写上游响应失败：此时响应头尚未发出，可换渠道重试
+		drainAndClose(resp)
+		return forwardRetryChannel
 	}
 
 	// ── 步骤 5~6：回写响应 ──────────────────────────────────────

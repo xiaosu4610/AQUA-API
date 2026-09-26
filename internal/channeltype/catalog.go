@@ -63,7 +63,7 @@ func Types() []Type {
 					Help: "Azure 用查询参数选择接口版本，写错会直接返回 400。"},
 			},
 			Caps:              CapChat | CapStream | CapTools | CapVision | CapReasoning,
-			SupportsModelList: true, Available: false,
+			SupportsModelList: true, Available: true,
 			Notes: "资源名进域名、部署名进路径、鉴权走 api-key 头，三点都与标准 OpenAI 不同，需专用适配器。",
 		},
 		{
@@ -303,7 +303,7 @@ func Types() []Type {
 			DefaultBaseURL: "https://api.anthropic.com/v1",
 			DefaultHeaders: map[string]string{"anthropic-version": "2023-06-01"},
 			Caps:           CapChat | CapStream | CapTools | CapVision | CapReasoning,
-			Available:      false,
+			Available:      true,
 			Notes:          "原生 Messages 协议：鉴权走 x-api-key，且必须携带版本头，需专用适配器。",
 		},
 		{

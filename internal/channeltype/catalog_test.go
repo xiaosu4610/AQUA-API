@@ -27,13 +27,27 @@ import (
 
 // allowedAuthModes 是「当前已实现的鉴权方式」白名单。
 //
-// 为什么是这三种：转发链路目前只会拼 Authorization: Bearer、
-// 把密钥塞进查询参数，或对本地服务不带凭据；其余鉴权（SigV4 签名、
-// 服务账号、OAuth 续期、Cookie 会话）都还没有实现。
+// 为什么是这几种：转发链路现在会拼 Authorization: Bearer、把密钥放进查询参数、
+// 用自定义头（如 Azure 的 api-key）或 x-api-key（Anthropic 系）承载密钥，
+// 以及对本地服务不带凭据；其余鉴权（SigV4 签名、服务账号、OAuth 续期、
+// Cookie 会话）都还没有实现。
 var allowedAuthModes = map[AuthMode]bool{
-	AuthBearer:   true,
-	AuthQueryKey: true,
-	AuthNone:     true,
+	AuthBearer:       true,
+	AuthQueryKey:     true,
+	AuthNone:         true,
+	AuthAPIKeyHeader: true,
+	AuthXAPIKey:      true,
+}
+
+// implementedProtocols 是「当前已实现的协议适配器」白名单。
+//
+// Azure（部署名 + api-version 进路径与查询）与 Anthropic（Messages 协议）的
+// 出站适配器已实现并通过测试；Gemini / Vertex / Bedrock / PaLM / Ollama /
+// 自定义等协议尚未实现，一律不能标为可用。
+var implementedProtocols = map[Protocol]bool{
+	ProtocolOpenAI:    true,
+	ProtocolAzure:     true,
+	ProtocolAnthropic: true,
 }
 
 // TestTypes_必填字段非空 保证每条类型都具备后台展示与路由所需的最小信息。
@@ -77,16 +91,16 @@ func TestTypes_Key唯一(t *testing.T) {
 	}
 }
 
-// TestAvailable_协议必须是OpenAI 钉住安全底线之一。
+// TestAvailable_协议必须已实现 钉住安全底线之一。
 //
-// 我们目前只实现了 OpenAI 兼容适配器。若某个非 OpenAI 协议的类型被标成
-// Available=true，后台会放行选用，但转发时没有任何适配器能处理它，
-// 结果是"配好了却调不通"。
-func TestAvailable_协议必须是OpenAI(t *testing.T) {
+// 只有实现了协议适配器的类型才能标为 Available=true；否则后台会放行选用，
+// 但转发时没有任何适配器能处理它，结果是"配好了却调不通"。
+// 当前已实现的协议见 implementedProtocols（OpenAI 兼容 / Azure / Anthropic）。
+func TestAvailable_协议必须已实现(t *testing.T) {
 	for _, item := range Types() {
-		if item.Available && item.Protocol != ProtocolOpenAI {
-			t.Errorf("类型 %q（%s）标为可用，但协议为 %q 而非 openai；"+
-				"非 OpenAI 协议的适配器尚未实现，误标会导致配好后调不通",
+		if item.Available && !implementedProtocols[item.Protocol] {
+			t.Errorf("类型 %q（%s）标为可用，但协议为 %q 尚未实现；"+
+				"误标会导致配好后调不通",
 				item.Key, item.Label, item.Protocol)
 		}
 	}
