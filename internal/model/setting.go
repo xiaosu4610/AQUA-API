@@ -105,6 +105,36 @@ const (
 	//	加载映射与校验三处代码。用一个 JSON 键承载，新增通道只需在通道注册表里
 	//	声明字段（见 internal/payment 的通道注册表），存取逻辑完全复用。
 	SettingKeyPaymentParams = "payment_params"
+
+	// ── SEO / 搜索引擎优化（M6）──────────────────────────────────
+	//
+	// 这些是"非密钥"的运营参数：站点公开地址、关键词、各站长平台验证码、Geo 信息。
+	// 后端据此动态生成 sitemap.xml / robots.txt 并向 SPA 首页注入 meta 标签，
+	// 让站点能被搜索引擎正确收录并展示地域信息。
+
+	// SettingKeySEOSiteURL 站点公开访问地址（如 https://aqua.ltzy.top）。
+	//
+	// 用于生成 sitemap 的绝对链接与 canonical。留空时按请求推导，
+	// 但反向代理后推导出的可能是内网地址，因此生产环境建议显式配置。
+	SettingKeySEOSiteURL = "seo_site_url"
+	// SettingKeySEOKeywords 搜索引擎关键词，逗号分隔。
+	SettingKeySEOKeywords = "seo_keywords"
+	// SettingKeySEOBingVerification 必应站长验证码（msvalidate.01 的 content）。
+	SettingKeySEOBingVerification = "seo_bing_verification"
+	// SettingKeySEOGoogleVerification Google Search Console 验证码。
+	SettingKeySEOGoogleVerification = "seo_google_verification"
+	// SettingKeySEOBaiduVerification 百度站长验证码。
+	SettingKeySEOBaiduVerification = "seo_baidu_verification"
+	// SettingKeySEOGeoRegion 地域代码，如 CN-44（省份）或 US-CA。
+	SettingKeySEOGeoRegion = "seo_geo_region"
+	// SettingKeySEOGeoPlacename 地名，如 Shenzhen。
+	SettingKeySEOGeoPlacename = "seo_geo_placename"
+	// SettingKeySEOGeoPosition 经纬度，形如 "22.5431;114.0579"。
+	SettingKeySEOGeoPosition = "seo_geo_position"
+	// SettingKeySEOSitemapEnabled 是否输出 sitemap.xml 与 robots.txt（"true" / "false"）。
+	SettingKeySEOSitemapEnabled = "seo_sitemap_enabled"
+	// SettingKeySEOSitemapPaths 额外的公开路径，逗号分隔（如 "/pricing,/faq"）。
+	SettingKeySEOSitemapPaths = "seo_sitemap_paths"
 )
 
 // SiteSettings 是站点设置的强类型视图。
@@ -123,6 +153,9 @@ type SiteSettings struct {
 
 	// Payment 是充值相关的运营参数（不含任何密钥）。
 	Payment PaymentSettings
+
+	// SEO 是搜索引擎优化相关的运营参数（域名、关键词、站长验证码、Geo 信息）。
+	SEO SEOSettings
 }
 
 // PaymentSettings 是充值 / 支付的运营参数。
@@ -279,6 +312,21 @@ func DefaultSiteSettings() SiteSettings {
 			OrderTTLMinutes: 30,  // 30 分钟未支付自动关单
 			EPayTypes:       []string{"alipay", "wxpay"},
 		},
+		// SEO 默认值：开箱即用——默认开启站点地图，并内置项目官方站点的必应收录码。
+		SEO: SEOSettings{
+			// SiteURL 默认留空：留空时按请求推导（见 server.publicBaseURL）。
+			// 反向代理后建议在后台显式配置为公开域名，否则推导出的可能是内网地址。
+			SiteURL: "",
+			// Keywords 默认给一组贴合本站定位的中文关键词。
+			Keywords: []string{"LLM API 网关", "大模型中转", "OpenAI 兼容", "Anthropic", "自托管"},
+			// BingVerification 默认填项目官方站点的必应收录码。
+			//
+			// 说明：这是项目官方站点的默认收录码，自建用户可在后台改成自己的。
+			// 只有改成自己域名对应的收录码，必应才会认可该站点的验证。
+			BingVerification: "1B0EEE739DC3DB2ACD026924B711EC01",
+			// SitemapEnabled 默认开启：让搜索引擎自动发现站点页面，无需站长手动配置。
+			SitemapEnabled: true,
+		},
 	}
 }
 
@@ -305,6 +353,17 @@ func (s SiteSettings) ToMap() map[string]string {
 		SettingKeyPaymentEPayPID:         s.Payment.EPayPID,
 		SettingKeyPaymentEPayTypes:       strings.Join(s.Payment.EPayTypes, ","),
 		SettingKeyPaymentStripePriceNote: s.Payment.StripeNote,
+
+		SettingKeySEOSiteURL:            s.SEO.SiteURL,
+		SettingKeySEOKeywords:           strings.Join(s.SEO.Keywords, ","),
+		SettingKeySEOBingVerification:   s.SEO.BingVerification,
+		SettingKeySEOGoogleVerification: s.SEO.GoogleVerification,
+		SettingKeySEOBaiduVerification:  s.SEO.BaiduVerification,
+		SettingKeySEOGeoRegion:          s.SEO.GeoRegion,
+		SettingKeySEOGeoPlacename:       s.SEO.GeoPlacename,
+		SettingKeySEOGeoPosition:        s.SEO.GeoPosition,
+		SettingKeySEOSitemapEnabled:     strconv.FormatBool(s.SEO.SitemapEnabled),
+		SettingKeySEOSitemapPaths:       strings.Join(s.SEO.SitemapPaths, ","),
 	}
 }
 
@@ -346,6 +405,7 @@ func LoadSiteSettings(ctx context.Context, repo SettingRepository) (SiteSettings
 	}
 
 	loadPaymentSettings(&settings.Payment, values)
+	loadSEOSettings(&settings.SEO, values)
 
 	return settings, nil
 }

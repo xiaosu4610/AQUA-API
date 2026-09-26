@@ -27,6 +27,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"gitee.com/xiaosu4610/aqua-api/internal/model"
 	"gitee.com/xiaosu4610/aqua-api/internal/oai"
 )
 
@@ -93,6 +94,15 @@ func (s *Server) registerStaticRoutes(fsys fs.FS) {
 			c.String(http.StatusServiceUnavailable,
 				"前端尚未构建。请先执行：cd web && npm install && npm run build，然后重新编译后端。")
 			return
+		}
+
+		// 注入 SEO 元信息（关键词、站长验证码、canonical 等）。
+		// 静态资源（/assets/*）走上面的专用路由，这里是"未命中静态文件的页面路径"，
+		// 首页 "/" 也走这条路径，因此注入能覆盖全部页面。
+		// 读设置失败时跳过注入、照常返回页面：SEO 是增强项，不应让页面打不开。
+		if settings, loadErr := model.LoadSiteSettings(c.Request.Context(), s.deps.Settings); loadErr == nil {
+			base := resolveBaseURL(settings, c)
+			index = injectSEOMeta(index, settings, base, path)
 		}
 
 		// index.html 自身不做缓存：它引用的是带哈希的资源文件名，

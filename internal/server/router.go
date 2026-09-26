@@ -36,6 +36,12 @@ func (s *Server) registerRoutes() {
 	// 仅保留健康检查：站点首页由前端页面承载（见 static.go 的 SPA 回退）。
 	r.GET("/healthz", s.handleHealthz)
 
+	// ── SEO：站点地图与爬虫规则（无需鉴权）────────────────────────
+	// 必须显式注册，否则会被 SPA 回退拦截成 index.html（爬虫将拿不到 XML/纯文本）。
+	// 它们不是 API 路径，走独立处理器，不受 isAPIPath 影响。
+	r.GET("/sitemap.xml", s.handleSitemap)
+	r.GET("/robots.txt", s.handleRobots)
+
 	// ── 公开接口（无需登录）──────────────────────────────────────
 	api := r.Group("/api")
 

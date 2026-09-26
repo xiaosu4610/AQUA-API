@@ -27,6 +27,7 @@ import (
 	"errors"
 	"io/fs"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -112,6 +113,11 @@ type Server struct {
 	// 为什么必须限流：口令校验（bcrypt）是刻意昂贵的操作，
 	// 不限流时攻击者可用少量并发请求打满 CPU（生产实例仅 2 核且与转发共享）。
 	loginLimiter *middleware.RateLimiter
+
+	// sitemapMu 保护 sitemapCache（见 seo.go）。
+	// sitemap.xml 是"读多写少"的端点，用互斥锁而非原子指针，保持实现直观。
+	sitemapMu sync.Mutex
+	sitemap   sitemapCache
 }
 
 // New 创建并装配 HTTP 服务（不启动监听，便于测试直接取用 Handler）。

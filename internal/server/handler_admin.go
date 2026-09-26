@@ -1272,6 +1272,10 @@ func (s *Server) handleGetSettings(c *gin.Context) {
 		return
 	}
 
+	// SEO 基址：优先用配置的站点地址，未配置时按请求推导（与 publicBaseURL 同一逻辑）。
+	// 用它拼出可点击/可复制的 sitemap 与 robots 地址回显给后台。
+	seoBase := strings.TrimRight(resolveBaseURL(settings, c), "/")
+
 	c.JSON(http.StatusOK, gin.H{
 		"site_name":                       settings.SiteName,
 		"site_description":                settings.SiteDescription,
@@ -1297,6 +1301,23 @@ func (s *Server) handleGetSettings(c *gin.Context) {
 			model.PaymentMethodStripe: s.deps.Config.Payment.StripeSecretKey != "" &&
 				s.deps.Config.Payment.StripeWebhookSecret != "",
 			model.PaymentMethodManual: true,
+		},
+
+		// SEO / 搜索引擎优化参数（非密钥，可在此修改并即时生效）
+		"seo": gin.H{
+			"site_url":            settings.SEO.SiteURL,
+			"keywords":            nonNilStrings(settings.SEO.Keywords),
+			"bing_verification":   settings.SEO.BingVerification,
+			"google_verification": settings.SEO.GoogleVerification,
+			"baidu_verification":  settings.SEO.BaiduVerification,
+			"geo_region":          settings.SEO.GeoRegion,
+			"geo_placename":       settings.SEO.GeoPlacename,
+			"geo_position":        settings.SEO.GeoPosition,
+			"sitemap_enabled":     settings.SEO.SitemapEnabled,
+			"sitemap_paths":       nonNilStrings(settings.SEO.SitemapPaths),
+			// 便于后台直接给出可点击/可复制的两个地址
+			"sitemap_url": seoBase + "/sitemap.xml",
+			"robots_url":  seoBase + "/robots.txt",
 		},
 	})
 }
@@ -1475,6 +1496,26 @@ type settingsUpdateRequest struct {
 
 	// 支付 / 充值参数（整体替换，见下方处理逻辑）
 	Payment *paymentSettingsDTO `json:"payment"`
+
+	// SEO / 搜索引擎优化参数（逐项覆盖，见 mergeSEOSettings）
+	SEO *seoSettingsDTO `json:"seo"`
+}
+
+// seoSettingsDTO 是 SEO 设置的可写入参。
+//
+// 为什么字段用指针：未提交的项应保持原值，避免前端只改一项却把其他项清空。
+// 列表型字段用 *[]string 以区分"未提供"与"提供空列表"（后者表示显式清空）。
+type seoSettingsDTO struct {
+	SiteURL            *string   `json:"site_url"`
+	Keywords           *[]string `json:"keywords"`
+	BingVerification   *string   `json:"bing_verification"`
+	GoogleVerification *string   `json:"google_verification"`
+	BaiduVerification  *string   `json:"baidu_verification"`
+	GeoRegion          *string   `json:"geo_region"`
+	GeoPlacename       *string   `json:"geo_placename"`
+	GeoPosition        *string   `json:"geo_position"`
+	SitemapEnabled     *bool     `json:"sitemap_enabled"`
+	SitemapPaths       *[]string `json:"sitemap_paths"`
 }
 
 // handleUpdateSettings 更新系统设置。
@@ -1533,13 +1574,149 @@ func (s *Server) handleUpdateSettings(c *gin.Context) {
 		}
 		current.Payment = updated
 	}
+	if req.SEO != nil {
+		if err := mergeSEOSettings(&current.SEO, req.SEO); err != nil {
+			oai.WriteError(c.Writer, http.StatusBadRequest, err.Error(),
+				oai.TypeInvalidRequest, "invalid_seo_settings")
+			return
+		}
+	}
 
 	if err := s.deps.Settings.SetMany(ctx, current.ToMap()); err != nil {
 		s.respondInternalError(c, "保存系统设置失败")
 		return
 	}
 
+	// 清空 sitemap 缓存：否则站长改完域名/路径要等到第二天才生效（日期键才失效）。
+	s.invalidateSitemapCache()
+
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// SEO 相关字段的长度/数量上限。
+//
+// 设上限的目的：这些值会拼进 HTML/XML 并对外暴露，无限制地接受超长输入
+// 既可能撑大响应体，也可能被用作"通过后台注入超大内容"的途径。
+const (
+	maxSEOListItems = 20  // 关键词 / 额外路径 各不超过 20 项
+	maxSEOItemLen   = 64  // 单项最长 64 个字符
+	maxSEOFieldLen  = 200 // 验证码等标量字段最长 200 个字符
+)
+
+// mergeSEOSettings 校验并合并 SEO 设置（只覆盖请求中出现的字段）。
+func mergeSEOSettings(target *model.SEOSettings, req *seoSettingsDTO) error {
+	if req.SiteURL != nil {
+		normalized := model.NormalizeSiteURL(*req.SiteURL)
+		// 防御性校验：NormalizeSiteURL 已会补全协议，这里再确认一次，
+		// 避免将来规范化逻辑变化导致非法地址被写入并进入 sitemap。
+		if normalized != "" &&
+			!strings.HasPrefix(normalized, "http://") &&
+			!strings.HasPrefix(normalized, "https://") {
+			return fmt.Errorf("站点地址必须以 http:// 或 https:// 开头")
+		}
+		target.SiteURL = normalized
+	}
+
+	if req.Keywords != nil {
+		items, err := normalizeSEOList("关键词", *req.Keywords)
+		if err != nil {
+			return err
+		}
+		target.Keywords = items
+	}
+
+	if req.SitemapPaths != nil {
+		items, err := normalizeSEOList("额外路径", *req.SitemapPaths)
+		if err != nil {
+			return err
+		}
+		for _, item := range items {
+			// 必须是站内绝对路径；用户填了完整 URL（含域名）时明确报错，
+			// 否则会和 base 拼成 "https://a.comhttps://b.com/x" 这种非法链接。
+			if !strings.HasPrefix(item, "/") {
+				return fmt.Errorf("额外路径必须以 / 开头（例如 /pricing）")
+			}
+		}
+		target.SitemapPaths = items
+	}
+
+	scalars := []struct {
+		label string
+		value *string
+		dest  *string
+	}{
+		{"必应验证码", req.BingVerification, &target.BingVerification},
+		{"Google 验证码", req.GoogleVerification, &target.GoogleVerification},
+		{"百度验证码", req.BaiduVerification, &target.BaiduVerification},
+		{"地域代码", req.GeoRegion, &target.GeoRegion},
+		{"地名", req.GeoPlacename, &target.GeoPlacename},
+	}
+	for _, field := range scalars {
+		if field.value == nil {
+			continue
+		}
+		trimmed := strings.TrimSpace(*field.value)
+		if len([]rune(trimmed)) > maxSEOFieldLen {
+			return fmt.Errorf("%s最长 %d 个字符", field.label, maxSEOFieldLen)
+		}
+		*field.dest = trimmed
+	}
+
+	if req.GeoPosition != nil {
+		position := strings.TrimSpace(*req.GeoPosition)
+		if err := validateGeoPosition(position); err != nil {
+			return err
+		}
+		target.GeoPosition = position
+	}
+
+	if req.SitemapEnabled != nil {
+		target.SitemapEnabled = *req.SitemapEnabled
+	}
+
+	return nil
+}
+
+// normalizeSEOList 规整列表型字段：去空白、去空项、去重，并校验数量与单项长度。
+func normalizeSEOList(label string, raw []string) ([]string, error) {
+	result := make([]string, 0, len(raw))
+	seen := make(map[string]struct{}, len(raw))
+	for _, item := range raw {
+		trimmed := strings.TrimSpace(item)
+		if trimmed == "" {
+			continue
+		}
+		if len([]rune(trimmed)) > maxSEOItemLen {
+			return nil, fmt.Errorf("%s单项最长 %d 个字符", label, maxSEOItemLen)
+		}
+		if _, dup := seen[trimmed]; dup {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		result = append(result, trimmed)
+	}
+	if len(result) > maxSEOListItems {
+		return nil, fmt.Errorf("%s最多 %d 项", label, maxSEOListItems)
+	}
+	return result, nil
+}
+
+// validateGeoPosition 校验经纬度格式：非空时必须为 "纬度;经度"。
+func validateGeoPosition(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	lat, lng, found := strings.Cut(raw, ";")
+	if !found {
+		return fmt.Errorf("经纬度格式应为「纬度;经度」，例如 22.5431;114.0579")
+	}
+	if _, err := strconv.ParseFloat(strings.TrimSpace(lat), 64); err != nil {
+		return fmt.Errorf("纬度必须是数字")
+	}
+	if _, err := strconv.ParseFloat(strings.TrimSpace(lng), 64); err != nil {
+		return fmt.Errorf("经度必须是数字")
+	}
+	return nil
 }
 
 // mergePaymentSettings 校验并合并支付设置。

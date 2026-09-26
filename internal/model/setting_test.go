@@ -196,3 +196,100 @@ func TestGenerateTradeNo_带时间前缀且唯一(t *testing.T) {
 		seen[tradeNo] = struct{}{}
 	}
 }
+
+func TestNormalizeSiteURL(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"空串返回空", "", ""},
+		{"仅空白返回空", "   ", ""},
+		{"已带协议去结尾斜杠", "https://a.com/", "https://a.com"},
+		{"裸域名补 https", "a.com", "https://a.com"},
+		{"裸域名带斜杠", "a.com/", "https://a.com"},
+		{"http 带路径去结尾斜杠", "http://a.com/x/", "http://a.com/x"},
+		{"首尾空白被 trim", "  https://a.com/x  ", "https://a.com/x"},
+		{"https 多段路径", "https://a.com/console/", "https://a.com/console"},
+	}
+	for _, tc := range cases {
+		if got := NormalizeSiteURL(tc.in); got != tc.want {
+			t.Errorf("%s: NormalizeSiteURL(%q) = %q，期望 %q", tc.name, tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestLoadSiteSettings_SEO_默认值开箱即用(t *testing.T) {
+	repo := &fakeSettingRepo{values: map[string]string{}}
+
+	loaded, err := LoadSiteSettings(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("读取设置失败: %v", err)
+	}
+
+	if loaded.SEO.BingVerification != "1B0EEE739DC3DB2ACD026924B711EC01" {
+		t.Fatalf("默认应内置官方必应收录码，实际 %q", loaded.SEO.BingVerification)
+	}
+	if !loaded.SEO.SitemapEnabled {
+		t.Fatal("默认应开启 sitemap")
+	}
+	if len(loaded.SEO.Keywords) == 0 {
+		t.Fatal("默认应给出一组关键词")
+	}
+}
+
+func TestLoadSiteSettings_SEO_覆盖与解析(t *testing.T) {
+	repo := &fakeSettingRepo{values: map[string]string{
+		SettingKeySEOSiteURL:            "aqua.example.com/",
+		SettingKeySEOKeywords:           "网关，中转,自托管",
+		SettingKeySEOBingVerification:   "BING-CODE",
+		SettingKeySEOGoogleVerification: "GOOGLE-CODE",
+		SettingKeySEOBaiduVerification:  "BAIDU-CODE",
+		SettingKeySEOGeoRegion:          "CN-44",
+		SettingKeySEOGeoPlacename:       "Shenzhen",
+		SettingKeySEOGeoPosition:        "22.5431;114.0579",
+		SettingKeySEOSitemapEnabled:     "false",
+		SettingKeySEOSitemapPaths:       "/pricing, /faq",
+	}}
+
+	loaded, err := LoadSiteSettings(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("读取设置失败: %v", err)
+	}
+
+	if loaded.SEO.SiteURL != "https://aqua.example.com" {
+		t.Fatalf("站点地址应被规范化，实际 %q", loaded.SEO.SiteURL)
+	}
+	// 中文逗号也应被解析
+	if len(loaded.SEO.Keywords) != 3 {
+		t.Fatalf("关键词应解析为 3 项，实际 %+v", loaded.SEO.Keywords)
+	}
+	if loaded.SEO.BingVerification != "BING-CODE" || loaded.SEO.GoogleVerification != "GOOGLE-CODE" ||
+		loaded.SEO.BaiduVerification != "BAIDU-CODE" {
+		t.Fatalf("验证码未正确覆盖: %+v", loaded.SEO)
+	}
+	if loaded.SEO.GeoRegion != "CN-44" || loaded.SEO.GeoPlacename != "Shenzhen" ||
+		loaded.SEO.GeoPosition != "22.5431;114.0579" {
+		t.Fatalf("Geo 信息未正确覆盖: %+v", loaded.SEO)
+	}
+	if loaded.SEO.SitemapEnabled {
+		t.Fatal("sitemap_enabled=false 应被解析为关闭")
+	}
+	if len(loaded.SEO.SitemapPaths) != 2 {
+		t.Fatalf("额外路径应解析为 2 项，实际 %+v", loaded.SEO.SitemapPaths)
+	}
+}
+
+func TestLoadSiteSettings_SEO_脏布尔回退默认(t *testing.T) {
+	repo := &fakeSettingRepo{values: map[string]string{
+		SettingKeySEOSitemapEnabled: "不是布尔值",
+	}}
+
+	loaded, err := LoadSiteSettings(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("读取设置失败: %v", err)
+	}
+	if !loaded.SEO.SitemapEnabled {
+		t.Fatal("非法布尔值应回退默认（开启）")
+	}
+}
