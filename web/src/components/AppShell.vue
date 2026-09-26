@@ -13,6 +13,8 @@
  *
  * 扩展（Extend）：
  *   新增导航项：在对应 layout 的 groups 里加一项即可（图标名须在 AppIcon 中已登记）；
+ *   注意区块根路径（/console、/admin）走精确匹配高亮（见 isSectionRoot），
+ *   否则子页会把根项一起点亮，侧边栏出现两个选中态。
  *   新增顶栏操作（如全局搜索）：在 header 右侧插槽区追加。
  */
 import { computed, ref, watch } from 'vue'
@@ -56,6 +58,17 @@ const currentTitle = computed(() => (route.meta.title as string | undefined) || 
 const avatarText = computed(() => (auth.user?.username || '?').slice(0, 1).toUpperCase())
 
 const adminEntry = computed(() => props.showAdminLink && auth.isAdmin)
+
+/**
+ * 是否为「区块根路径」（/console、/admin 这类只有一段的路径）。
+ *
+ * 为什么要单独判断：RouterLink 默认按前缀匹配高亮，访问 /console/models 时
+ * 「概览」（to=/console）也会被前缀命中，于是侧边栏同时亮起两项，
+ * 用户反而看不清自己在哪一页。区块根路径必须改成精确匹配才算选中。
+ */
+function isSectionRoot(to: string): boolean {
+  return to.split('/').filter(Boolean).length <= 1
+}
 
 async function handleSignOut(): Promise<void> {
   const ok = await confirmDialog({
@@ -106,7 +119,8 @@ async function handleSignOut(): Promise<void> {
             :key="item.to"
             :to="item.to"
             class="nav-item"
-            active-class="nav-item-active"
+            :active-class="isSectionRoot(item.to) ? undefined : 'nav-item-active'"
+            exact-active-class="nav-item-active"
           >
             <AppIcon :name="item.icon" :size="17" />
             {{ item.label }}
