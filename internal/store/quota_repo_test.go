@@ -447,3 +447,170 @@ func TestQuotaRepository_GetByRequestID_NotFound(t *testing.T) {
 		t.Fatalf("错误 = %v，期望 ErrReservationNotFound", err)
 	}
 }
+
+// TestQuotaRepository_回收过期在途_退还并置终态 验证过期在途被回收：
+// 用户与令牌额度都退回、记录状态落到终态（已释放）。
+func TestQuotaRepository_回收过期在途_退还并置终态(t *testing.T) {
+	repo, users, tokens := newTestQuotaRepos(t)
+	ctx := context.Background()
+
+	// 令牌设有限额：一并验证回收会退还令牌剩余额度。
+	user := newQuotaUser(t, users, 1000, "cleanup-expired")
+	token := newOwnedQuotaToken(t, tokens, user.ID, false, 1000)
+
+	if _, err := reserve(ctx, repo, "stale-expired", user.ID, token.ID, 300); err != nil {
+		t.Fatalf("预留失败: %v", err)
+	}
+	if used := mustUsedQuota(t, users, user.ID); used != 300 {
+		t.Fatalf("预留后已用 = %d，期望 300", used)
+	}
+
+	// 传入"过期之后"的时刻，确保该预留被判定为超时。
+	cleaned, err := repo.CleanupExpired(ctx, time.Now().Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("回收失败: %v", err)
+	}
+	if cleaned != 1 {
+		t.Fatalf("回收条数 = %d，期望 1", cleaned)
+	}
+
+	if used := mustUsedQuota(t, users, user.ID); used != 0 {
+		t.Fatalf("回收后用户已用 = %d，期望 0（额度已退还）", used)
+	}
+	gotToken, err := tokens.GetByID(ctx, token.ID)
+	if err != nil {
+		t.Fatalf("查询令牌失败: %v", err)
+	}
+	if gotToken.UsedQuota != 0 || gotToken.RemainQuota != 1000 {
+		t.Fatalf("回收后令牌额度未退还：used=%d remain=%d，期望 used=0 remain=1000",
+			gotToken.UsedQuota, gotToken.RemainQuota)
+	}
+
+	// 状态必须是终态（已释放），而不是仍留在"在途"。
+	rec, err := repo.GetByRequestID(ctx, "stale-expired")
+	if err != nil {
+		t.Fatalf("查询预留失败: %v", err)
+	}
+	if rec.Status != model.ReservationReleased {
+		t.Fatalf("回收后状态 = %v，期望 %v", rec.Status, model.ReservationReleased)
+	}
+	if !rec.Status.IsTerminal() {
+		t.Fatalf("回收后状态 %v 不是终态", rec.Status)
+	}
+}
+
+// TestQuotaRepository_未过期在途不被回收 验证尚未超时的在途预留不受回收影响。
+func TestQuotaRepository_未过期在途不被回收(t *testing.T) {
+	repo, users, tokens := newTestQuotaRepos(t)
+	ctx := context.Background()
+
+	user := newQuotaUser(t, users, 1000, "cleanup-fresh")
+	token := newOwnedQuotaToken(t, tokens, user.ID, true, 0)
+
+	// reserve 的 TTL 为 1 分钟；用"当前时刻"回收不应命中。
+	if _, err := reserve(ctx, repo, "stale-fresh", user.ID, token.ID, 200); err != nil {
+		t.Fatalf("预留失败: %v", err)
+	}
+
+	cleaned, err := repo.CleanupExpired(ctx, time.Now())
+	if err != nil {
+		t.Fatalf("回收失败: %v", err)
+	}
+	if cleaned != 0 {
+		t.Fatalf("未过期预留被回收，条数 = %d，期望 0", cleaned)
+	}
+	if used := mustUsedQuota(t, users, user.ID); used != 200 {
+		t.Fatalf("未过期预留的额度被改动：已用 = %d，期望 200", used)
+	}
+	rec, err := repo.GetByRequestID(ctx, "stale-fresh")
+	if err != nil {
+		t.Fatalf("查询预留失败: %v", err)
+	}
+	if rec.Status != model.ReservationInFlight {
+		t.Fatalf("未过期预留状态 = %v，期望仍在途", rec.Status)
+	}
+}
+
+// TestQuotaRepository_已结算预留不重复退还 验证"已结算"记录即使 expires_at 已过也不会被回收，
+// 否则会与正常结算叠加、把额度多退一次。
+func TestQuotaRepository_已结算预留不重复退还(t *testing.T) {
+	repo, users, tokens := newTestQuotaRepos(t)
+	ctx := context.Background()
+
+	user := newQuotaUser(t, users, 1000, "cleanup-settled")
+	token := newOwnedQuotaToken(t, tokens, user.ID, true, 0)
+
+	if _, err := reserve(ctx, repo, "stale-settled", user.ID, token.ID, 500); err != nil {
+		t.Fatalf("预留失败: %v", err)
+	}
+	// 正常结算：预留 500、实际 120，退还 380，此后已用应为 120。
+	if _, err := repo.Settle(ctx, "stale-settled", 120); err != nil {
+		t.Fatalf("结算失败: %v", err)
+	}
+	if used := mustUsedQuota(t, users, user.ID); used != 120 {
+		t.Fatalf("结算后已用 = %d，期望 120", used)
+	}
+
+	// 即便传入远晚于 expires_at 的时刻，已结算记录也不在回收范围内。
+	cleaned, err := repo.CleanupExpired(ctx, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("回收失败: %v", err)
+	}
+	if cleaned != 0 {
+		t.Fatalf("已结算记录被回收，条数 = %d，期望 0", cleaned)
+	}
+	if used := mustUsedQuota(t, users, user.ID); used != 120 {
+		t.Fatalf("回收后已用 = %d，期望 120（不得重复退还）", used)
+	}
+	rec, err := repo.GetByRequestID(ctx, "stale-settled")
+	if err != nil {
+		t.Fatalf("查询预留失败: %v", err)
+	}
+	if rec.Status != model.ReservationSettled {
+		t.Fatalf("状态 = %v，期望仍为已结算", rec.Status)
+	}
+}
+
+// TestQuotaRepository_回收幂等_重复调用不再退还 验证回收返回条数正确，且重复调用安全。
+func TestQuotaRepository_回收幂等_重复调用不再退还(t *testing.T) {
+	repo, users, tokens := newTestQuotaRepos(t)
+	ctx := context.Background()
+
+	user := newQuotaUser(t, users, 1000, "cleanup-idem")
+	token := newOwnedQuotaToken(t, tokens, user.ID, true, 0)
+
+	// 两条同时过期的在途预留，用于校验返回条数。
+	if _, err := reserve(ctx, repo, "stale-idem-1", user.ID, token.ID, 100); err != nil {
+		t.Fatalf("预留失败: %v", err)
+	}
+	if _, err := reserve(ctx, repo, "stale-idem-2", user.ID, token.ID, 50); err != nil {
+		t.Fatalf("预留失败: %v", err)
+	}
+	if used := mustUsedQuota(t, users, user.ID); used != 150 {
+		t.Fatalf("预留后已用 = %d，期望 150", used)
+	}
+
+	future := time.Now().Add(2 * time.Minute)
+	cleaned, err := repo.CleanupExpired(ctx, future)
+	if err != nil {
+		t.Fatalf("首次回收失败: %v", err)
+	}
+	if cleaned != 2 {
+		t.Fatalf("首次回收条数 = %d，期望 2", cleaned)
+	}
+	if used := mustUsedQuota(t, users, user.ID); used != 0 {
+		t.Fatalf("首次回收后已用 = %d，期望 0", used)
+	}
+
+	// 第二次回收：已无在途记录，返回 0 且额度不再变化。
+	cleaned, err = repo.CleanupExpired(ctx, future)
+	if err != nil {
+		t.Fatalf("重复回收失败: %v", err)
+	}
+	if cleaned != 0 {
+		t.Fatalf("重复回收条数 = %d，期望 0", cleaned)
+	}
+	if used := mustUsedQuota(t, users, user.ID); used != 0 {
+		t.Fatalf("重复回收后已用 = %d，期望 0（不得二次退还）", used)
+	}
+}

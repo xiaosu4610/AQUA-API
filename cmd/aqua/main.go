@@ -64,6 +64,22 @@ import (
 // 因此默认值可以放心地指向一个"通常存在但允许不存在"的路径。
 const defaultConfigPath = "aqua.json"
 
+// quotaCleanupInterval 是后台周期回收"在途超时预留"的间隔。
+//
+// 取值 5 分钟、且不做成配置项，原因：
+//  1. 预留的在途有效期本身是 15 分钟（store 的 defaultReservationTTL），
+//     已相对上游首字节超时（300 秒）留足缓冲，被回收的都是"确实超时"的残留；
+//  2. 崩溃残留的额度晚几分钟退回并不影响正确性，用户不会因此得到或失去额度，
+//     只是"占用"多持续一会儿，因此无需秒级轮询——周期过短只会让数据库空转。
+const quotaCleanupInterval = 5 * time.Minute
+
+// quotaCleanupInitialDelay 是首次后台回收前的延迟。
+//
+// 目的：启动阶段已经同步回收过一次（解决"上次崩溃"的残留），
+// 这里再延迟一小段，避开迁移、启动自检与撤销旧订单等数据库写入高峰，
+// 让服务先进入稳定状态再开始周期性维护。
+const quotaCleanupInitialDelay = time.Minute
+
 func main() {
 	// 用 run() 承载全部逻辑并统一处理退出码：
 	// 既便于集中做 defer 收尾，也便于将来对 run 做集成测试。
@@ -206,6 +222,11 @@ func run() error {
 	} else if cleaned > 0 {
 		logger.Info("已回收在途超时预留并退还额度", "count", cleaned)
 	}
+
+	// 后台周期回收：上面那一次只解决"上次进程退出时"的残留；
+	// 运行期仍可能因请求处理中途崩溃而留下新的在途记录（可用额度 = 额度 − 已用 − 在途，
+	// 在途不释放则额度被永久占用），因此必须持续兜底。随 ctx 退出，失败不阻断。
+	go runQuotaReservationCleaner(ctx, quotaReservations, logger)
 
 	// ── 支付 / 充值 ─────────────────────────────────────────────
 	// 支付通道注册表：各通道的运营参数（网关地址、商户号、启用列表）从设置表实时读取，
@@ -358,6 +379,50 @@ func run() error {
 
 	logger.Info("AQUA-API 已退出")
 	return nil
+}
+
+// runQuotaReservationCleaner 周期性回收"在途超时"的额度预留并退还额度。
+//
+// 为什么必须有它：CleanupExpired 若只在启动时执行，进程在"预留之后、结算之前"崩溃时，
+// 那笔预留会一直停留在途状态；而可用额度 = 额度 − 已用 − 在途，
+// 在途不释放就等于用户的额度被永久占用（看起来像额度凭空消失）。
+// 周期性兜底即可把这类残留自动退回，无需人工干预。
+//
+// 行为约定（与其它后台协程保持一致）：
+//   - 随 ctx 取消（进程退出信号）立即返回，不阻塞关闭；
+//   - 每轮仅在实际回收发生时打 info，正常情况下不产生日志噪音；
+//   - 单轮失败只打 warn 并继续下一轮，绝不 panic、不退出进程。
+//
+// 说明：本回收不做多实例互斥——回收本身以「条件更新 + 受影响行数」保证幂等，
+// 多个实例并发回收同一批残留时只有一方生效，另一方读到 0 行，不会重复退还。
+func runQuotaReservationCleaner(ctx context.Context, repo model.QuotaRepository, logger *slog.Logger) {
+	// 首轮延迟启动，避开启动迁移/自检的数据库写入高峰。
+	delay := time.NewTimer(quotaCleanupInitialDelay)
+	defer delay.Stop()
+	select {
+	case <-ctx.Done():
+		return
+	case <-delay.C:
+	}
+
+	ticker := time.NewTicker(quotaCleanupInterval)
+	defer ticker.Stop()
+
+	for {
+		cleaned, err := repo.CleanupExpired(ctx, time.Now())
+		switch {
+		case err != nil:
+			logger.Warn("回收在途超时预留失败，将在下一轮重试", "error", err)
+		case cleaned > 0:
+			logger.Info("已回收在途超时预留并退还额度", "count", cleaned)
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 // setupLogger 依据配置构造结构化日志器。
