@@ -32,8 +32,8 @@ Unified protocols · Smart routing · Precise billing · A ready-to-use admin co
 | | Address |
 |---|---|
 | **Official website (live demo)** | **`https://aqua.ltzy.top`** |
-| **Primary repository** | `https://gitee.com/xiaosu4610/AQUA-API` |
-| **Mirror** | GitHub, synced automatically from Gitee |
+| **Primary repository (China)** | `https://gitee.com/xiaosu4610/AQUA-API` |
+| **Mirror (GitHub)** | `https://github.com/xiaosu4610/AQUA-API`（synced automatically from Gitee） |
 
 **This repository is the authoritative source for the official address.** If the domain changes,
 it is updated **here first** and only then mirrored anywhere else. Bookmarking this repository
@@ -479,6 +479,6 @@ license — see [NOTICE](NOTICE).
 
 **If this saved you an afternoon of reconciling invoices, a star is appreciated ⭐**
 
-[🏠 Live demo](https://aqua.ltzy.top) ｜ [🐛 Issues](https://gitee.com/xiaosu4610/AQUA-API/issues) ｜ [📖 简体中文](README.md)
+[🏠 Live demo](https://aqua.ltzy.top) ｜ [🐛 Issues](https://gitee.com/xiaosu4610/AQUA-API/issues) ｜ [🌍 Gitee](https://gitee.com/xiaosu4610/AQUA-API) ｜ [📖 简体中文](README.md)
 
 </div>

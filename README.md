@@ -33,7 +33,7 @@
 |---|---|
 | **官方网站（在线演示）** | **`https://aqua.ltzy.top`** |
 | **主仓库（国内）** | `https://gitee.com/xiaosu4610/AQUA-API` |
-| **镜像仓库（海外）** | GitHub，由 Gitee 自动同步 |
+| **镜像仓库（海外）** | `https://github.com/xiaosu4610/AQUA-API`（由 Gitee 自动同步） |
 
 **本仓库是官方地址的唯一权威来源。** 域名若变更，会**先在本仓库更新**，再同步到其它任何地方。
 所以：**收藏本仓库，比收藏一个域名更可靠。**
@@ -482,6 +482,6 @@ aqua-api.service       systemd 单元（裸机部署）
 
 **如果这个项目帮你省下了对账的时间，欢迎点个 Star ⭐**
 
-[🏠 在线演示](https://aqua.ltzy.top) ｜ [🐛 提交 Issue](https://gitee.com/xiaosu4610/AQUA-API/issues) ｜ [📖 English](README.en.md)
+[🏠 在线演示](https://aqua.ltzy.top) ｜ [🐛 提交 Issue](https://gitee.com/xiaosu4610/AQUA-API/issues) ｜ [🌍 GitHub](https://github.com/xiaosu4610/AQUA-API) ｜ [📖 English](README.en.md)
 
 </div>
