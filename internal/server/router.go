@@ -175,6 +175,10 @@ func (s *Server) registerRoutes() {
 	// 缺了会显示"未获取到模型列表"，使用者容易误判为网关故障。
 	v1.GET("/models", s.handleListModels)
 	v1.POST("/chat/completions", gin.WrapF(s.deps.Relay.ServeChatCompletions))
+	// 向量嵌入：不少免费上游（如 NVIDIA 的 embedding / rerank / clip 模型）
+	// 只提供这个端点，对 /v1/chat/completions 一律 404。支持它才能把这些
+	// 模型真正用起来，否则它们在清单里等于"上架了但调不通"。
+	v1.POST("/embeddings", gin.WrapF(s.deps.Relay.ServeEmbeddings))
 	// Anthropic Messages 协议：Claude 官方 SDK、Claude Code 等客户端默认走这里。
 	// 网关内部会把请求转换为 OpenAI 格式再转发，响应再转换回 Anthropic 格式。
 	v1.POST("/messages", gin.WrapF(s.deps.Relay.ServeAnthropicMessages))

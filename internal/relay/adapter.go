@@ -196,7 +196,7 @@ func (r *Relay) serveWithAdapter(w http.ResponseWriter, req *http.Request, adapt
 	}
 
 	// 复用既有转发链路：路由、密钥池、重试、计费全部沿用
-	r.forwardWithFallback(w, req, modelName, openAIBody, adapter)
+	r.forwardWithFallback(w, req, modelName, openAIBody, adapter, oai.ChatCompletionsPath)
 }
 
 // writeAdaptedError 以目标协议的错误格式写出错误。

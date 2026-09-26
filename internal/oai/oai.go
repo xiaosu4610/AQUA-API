@@ -39,6 +39,13 @@ import (
 const (
 	// ChatCompletionsPath 是 OpenAI 对话补全端点。
 	ChatCompletionsPath = "/v1/chat/completions"
+	// EmbeddingsPath 是 OpenAI 向量嵌入端点。
+	//
+	// 为什么网关也要转发它：NVIDIA 等平台的免费模型里有相当一部分是
+	// embedding / rerank / clip 类模型，它们【只提供 /v1/embeddings】，
+	// 对 /v1/chat/completions 一律返回 404。若不支持这个端点，
+	// 这些模型在网关里就等于"上架了但调不通"，只能从清单里剔掉。
+	EmbeddingsPath = "/v1/embeddings"
 )
 
 // MaxRequestBodyBytes 是允许的请求体上限。
