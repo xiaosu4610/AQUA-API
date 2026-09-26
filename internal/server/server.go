@@ -32,6 +32,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"gitee.com/xiaosu4610/aqua-api/internal/config"
+	"gitee.com/xiaosu4610/aqua-api/internal/mailer"
 	"gitee.com/xiaosu4610/aqua-api/internal/model"
 	"gitee.com/xiaosu4610/aqua-api/internal/relay"
 	"gitee.com/xiaosu4610/aqua-api/internal/server/middleware"
@@ -53,6 +54,12 @@ type Deps struct {
 	UsageLogs model.UsageLogRepository // 调用日志仓储（用量统计）
 	Settings  model.SettingRepository  // 系统设置仓储
 	Relay     *relay.Relay             // 转发引擎（模型 API 的核心处理器）
+
+	// EmailCodes 是注册邮箱验证码仓储（由 main 注入；验证码相关接口依赖它）。
+	EmailCodes model.EmailCodeRepository
+	// Mailer 是出站邮件发送器；未配置时验证码接口会返回明确的"邮件服务未配置"提示，
+	// 而不是让用户误以为"验证码已发出但没收到"。
+	Mailer *mailer.Sender
 
 	// WebFS 是前端构建产物的嵌入文件系统；为 nil 时不托管前端页面（接口仍可用）。
 	//

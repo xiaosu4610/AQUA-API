@@ -72,6 +72,15 @@ type siteStatusResponse struct {
 	RegistrationEnabled bool     `json:"registration_enabled"`
 	SiteDescription     string   `json:"site_description"`
 	Models              []string `json:"models"`
+	// EmailCodeRequired 注册是否必须填写邮箱验证码。
+	//
+	// 前端据此决定"邮箱与验证码"是必填还是可选，避免把校验规则复制到前端后失配。
+	EmailCodeRequired bool `json:"email_code_required"`
+	// EmailServiceReady 邮件发送通道是否已就绪（SMTP 配置完整）。
+	//
+	// 暴露这个布尔值不泄露任何凭据，但能让前端在通道未就绪时提前提示
+	// "请联系管理员"，而不是让用户点半天按钮都收不到邮件。
+	EmailServiceReady bool `json:"email_service_ready"`
 }
 
 // handleSiteStatus 返回站点信息与可用模型列表。
@@ -99,6 +108,8 @@ func (s *Server) handleSiteStatus(c *gin.Context) {
 		RegistrationEnabled: settings.RegistrationEnabled,
 		SiteDescription:     settings.SiteDescription,
 		Models:              models,
+		EmailCodeRequired:   settings.RegistrationRequireEmailCode,
+		EmailServiceReady:   s.deps.Mailer != nil && s.deps.Mailer.Configured(),
 	})
 }
 
@@ -135,6 +146,8 @@ type registerRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 	Email    string `json:"email"`
+	// Code 是邮箱验证码；仅在站点开启"注册必须邮箱验证码"时必填。
+	Code string `json:"code"`
 }
 
 // handleRegister 处理用户注册。
@@ -159,10 +172,44 @@ func (s *Server) handleRegister(c *gin.Context) {
 	}
 
 	username := strings.TrimSpace(req.Username)
+	email := model.NormalizeEmail(req.Email)
+
+	// 先做"不需要消耗外部资源"的校验（口令强度），
+	// 再去校验验证码——顺序反了会导致"口令不合规却已浪费一个验证码"。
 	if err := crypto.ValidatePasswordStrength(req.Password); err != nil {
 		oai.WriteError(c.Writer, http.StatusBadRequest, err.Error(),
 			oai.TypeInvalidRequest, "invalid_password")
 		return
+	}
+
+	ctx := c.Request.Context()
+
+	if settings.RegistrationRequireEmailCode {
+		// 用户名占用预检：放在消费验证码之前。
+		// 理由：用户名被占用是最常见的失败原因之一，若先消费验证码再失败，
+		// 用户必须重新获取验证码才能重试，体验明显变差。
+		// 这里不是并发安全的"预留"，真正的唯一性仍由数据库唯一索引保证。
+		if _, err := s.deps.Users.GetByUsername(ctx, username); err == nil {
+			oai.WriteError(c.Writer, http.StatusConflict,
+				"用户名已被占用", oai.TypeInvalidRequest, "username_taken")
+			return
+		} else if !errors.Is(err, model.ErrUserNotFound) {
+			oai.WriteError(c.Writer, http.StatusInternalServerError,
+				"网关内部错误", oai.TypeServer, oai.CodeInternal)
+			return
+		}
+
+		if !s.verifyAndConsumeRegisterEmailCode(c, email, req.Code) {
+			return
+		}
+	} else if email != "" {
+		// 未开启验证码校验时邮箱仍为可选字段：填了就要合法，
+		// 否则脏数据会进入用户表，后续做邮件通知时无从投递。
+		if err := model.ValidateEmailFormat(email); err != nil {
+			oai.WriteError(c.Writer, http.StatusBadRequest,
+				"邮箱格式不正确", oai.TypeInvalidRequest, "invalid_email")
+			return
+		}
 	}
 
 	hash, err := crypto.HashPassword(req.Password)
@@ -175,14 +222,14 @@ func (s *Server) handleRegister(c *gin.Context) {
 	user := &model.User{
 		Username:     username,
 		PasswordHash: hash,
-		Email:        strings.TrimSpace(req.Email),
+		Email:        email,
 		Role:         model.UserRoleUser,
 		Status:       model.UserStatusEnabled,
 		// 新用户额度取站点默认值：默认 0，即需要管理员分配后才可调用，
 		// 避免任何人注册后即可无偿消耗上游额度。
 		Quota: settings.DefaultUserQuota,
 	}
-	if err := s.deps.Users.Create(c.Request.Context(), user); err != nil {
+	if err := s.deps.Users.Create(ctx, user); err != nil {
 		if errors.Is(err, model.ErrUsernameTaken) {
 			oai.WriteError(c.Writer, http.StatusConflict,
 				"用户名已被占用", oai.TypeInvalidRequest, "username_taken")

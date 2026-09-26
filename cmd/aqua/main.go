@@ -46,6 +46,7 @@ import (
 	aqua "gitee.com/xiaosu4610/aqua-api"
 	"gitee.com/xiaosu4610/aqua-api/internal/config"
 	"gitee.com/xiaosu4610/aqua-api/internal/crypto"
+	"gitee.com/xiaosu4610/aqua-api/internal/mailer"
 	"gitee.com/xiaosu4610/aqua-api/internal/model"
 	"gitee.com/xiaosu4610/aqua-api/internal/relay"
 	"gitee.com/xiaosu4610/aqua-api/internal/server"
@@ -162,6 +163,7 @@ func run() error {
 	sessions := store.NewSessionRepository(st.DB())
 	usageLogs := store.NewUsageLogRepository(st.DB())
 	settings := store.NewSettingRepository(st.DB())
+	emailCodes := store.NewEmailCodeRepository(st.DB())
 
 	// 启动时清理过期会话：会话表随登录次数持续增长，不清理会无限膨胀。
 	// 清理失败不阻断启动（这只是维护动作，不影响核心功能）。
@@ -169,6 +171,23 @@ func run() error {
 		logger.Warn("清理过期会话失败", "error", err)
 	} else if cleaned > 0 {
 		logger.Info("已清理过期会话", "count", cleaned)
+	}
+
+	// 启动时清理过期验证码：验证码是短生命周期数据，过期即无价值。
+	if cleaned, err := emailCodes.DeleteExpired(ctx, time.Now()); err != nil {
+		logger.Warn("清理过期邮箱验证码失败", "error", err)
+	} else if cleaned > 0 {
+		logger.Info("已清理过期邮箱验证码", "count", cleaned)
+	}
+
+	// ── 邮件发送器 ──────────────────────────────────────────────
+	// 只记录"是否就绪"与发件地址，绝不打印口令（口令仅来自环境变量）。
+	mailerSender := mailer.New(cfg.SMTP)
+	if mailerSender.Configured() {
+		logger.Info("SMTP 邮件通道已就绪", "host", cfg.SMTP.Host, "port", cfg.SMTP.Port, "from", cfg.SMTP.From)
+	} else {
+		logger.Warn("SMTP 邮件通道未配置，注册邮箱验证码将不可用" +
+			"（需设置 AQUA_SMTP_USERNAME / AQUA_SMTP_FROM / AQUA_SMTP_PASSWORD）")
 	}
 
 	// 子命令：创建访问令牌（M2 遗留入口，保留以兼容既有脚本）
@@ -207,6 +226,9 @@ func run() error {
 		UsageLogs: usageLogs,
 		Settings:  settings,
 		Relay:     relayEngine,
+		// 注册邮箱验证码：仓储 + 发信通道
+		EmailCodes: emailCodes,
+		Mailer:     mailerSender,
 		// 前端构建产物（web/dist）已通过根包的 go:embed 嵌入二进制
 		WebFS: aqua.WebDist,
 	})

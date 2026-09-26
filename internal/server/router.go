@@ -10,7 +10,7 @@
 //
 //	server.New() → registerRoutes() → engine 持有全部路由
 //	  ├─ /healthz         运维探活（无需鉴权）
-//	  ├─ /api 公开接口     站点信息、注册、登录
+//	  ├─ /api 公开接口     站点信息、注册、登录、邮箱验证码
 //	  ├─ /api 需登录       当前用户、退出、用户门户
 //	  ├─ /api/admin 需管理员 仪表盘、渠道、令牌、用户、日志、设置
 //	  └─ /v1 模型接口      访问令牌鉴权后转发到上游
@@ -50,6 +50,9 @@ func (s *Server) registerRoutes() {
 	authLimit := s.loginLimiter.Middleware(middleware.ClientIP)
 	api.POST("/auth/register", authLimit, s.handleRegister)
 	api.POST("/auth/login", authLimit, s.handleLogin)
+	// 发送注册邮箱验证码。同样叠加限流：该接口会触发真实发信（有成本），
+	// 且是"把本站当邮件轰炸机"的直接入口。
+	api.POST("/auth/email-code", authLimit, s.handleSendEmailCode)
 
 	// ── 需登录（网站会话）────────────────────────────────────────
 	authed := api.Group("")

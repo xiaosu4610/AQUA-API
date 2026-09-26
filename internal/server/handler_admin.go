@@ -33,6 +33,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"gitee.com/xiaosu4610/aqua-api/internal/crypto"
+	"gitee.com/xiaosu4610/aqua-api/internal/mailer"
 	"gitee.com/xiaosu4610/aqua-api/internal/model"
 	"gitee.com/xiaosu4610/aqua-api/internal/oai"
 )
@@ -764,23 +765,40 @@ func (s *Server) handleGetSettings(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"site_name":            settings.SiteName,
-		"site_description":     settings.SiteDescription,
-		"registration_enabled": settings.RegistrationEnabled,
-		"default_user_quota":   settings.DefaultUserQuota,
-		"default_group":        settings.DefaultGroup,
+		"site_name":                       settings.SiteName,
+		"site_description":                settings.SiteDescription,
+		"registration_enabled":            settings.RegistrationEnabled,
+		"registration_require_email_code": settings.RegistrationRequireEmailCode,
+		"default_user_quota":              settings.DefaultUserQuota,
+		"default_group":                   settings.DefaultGroup,
+		// 邮件通道是否就绪：让管理员在开关"注册邮箱验证码"前就知道
+		// 当前是否具备发信能力，避免开启后用户全部收不到验证码。
+		"email_service_ready": s.deps.Mailer != nil && s.deps.Mailer.Configured(),
+		"email_from":          mailerFromAddress(s.deps.Mailer),
 	})
+}
+
+// mailerFromAddress 返回发件人地址用于界面展示；未配置时返回空字符串。
+//
+// 只暴露地址不暴露口令：地址本身对管理员没有秘密，且能帮助定位
+// "验证码发不出去"这类问题（例如发件地址写错）。
+func mailerFromAddress(sender *mailer.Sender) string {
+	if sender == nil {
+		return ""
+	}
+	return sender.From()
 }
 
 // settingsUpdateRequest 是更新设置的请求体。
 //
 // 说明：字段用指针，未提交的项保持原值，避免前端只改一项却把其他项清空。
 type settingsUpdateRequest struct {
-	SiteName            *string `json:"site_name"`
-	SiteDescription     *string `json:"site_description"`
-	RegistrationEnabled *bool   `json:"registration_enabled"`
-	DefaultUserQuota    *int64  `json:"default_user_quota"`
-	DefaultGroup        *string `json:"default_group"`
+	SiteName                     *string `json:"site_name"`
+	SiteDescription              *string `json:"site_description"`
+	RegistrationEnabled          *bool   `json:"registration_enabled"`
+	RegistrationRequireEmailCode *bool   `json:"registration_require_email_code"`
+	DefaultUserQuota             *int64  `json:"default_user_quota"`
+	DefaultGroup                 *string `json:"default_group"`
 }
 
 // handleUpdateSettings 更新系统设置。
@@ -806,6 +824,18 @@ func (s *Server) handleUpdateSettings(c *gin.Context) {
 	}
 	if req.RegistrationEnabled != nil {
 		current.RegistrationEnabled = *req.RegistrationEnabled
+	}
+	if req.RegistrationRequireEmailCode != nil {
+		// 开启验证码校验但邮件通道未配置：明确拒绝而不是静默保存。
+		// 理由：一旦保存，所有用户注册都会卡在"收不到验证码"，
+		// 而管理员从界面上看不出原因，属于极难定位的运营故障。
+		if *req.RegistrationRequireEmailCode && (s.deps.Mailer == nil || !s.deps.Mailer.Configured()) {
+			oai.WriteError(c.Writer, http.StatusBadRequest,
+				"邮件服务未配置，无法开启邮箱验证码校验（请先配置 SMTP 环境变量）",
+				oai.TypeInvalidRequest, "email_service_unavailable")
+			return
+		}
+		current.RegistrationRequireEmailCode = *req.RegistrationRequireEmailCode
 	}
 	if req.DefaultUserQuota != nil {
 		if *req.DefaultUserQuota < model.QuotaUnlimited {
