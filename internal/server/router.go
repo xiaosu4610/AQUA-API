@@ -116,6 +116,12 @@ func (s *Server) registerRoutes() {
 	// 费用试算：给定模型与 token 数，返回应扣额度
 	admin.GET("/prices/quote", s.handleQuotePreview)
 
+	// OAuth 提供方配置（订阅账号池刷新令牌时使用）
+	admin.GET("/oauth-providers", s.handleListOAuthProviders)
+	admin.POST("/oauth-providers", s.handleCreateOAuthProvider)
+	admin.PUT("/oauth-providers/:id", s.handleUpdateOAuthProvider)
+	admin.DELETE("/oauth-providers/:id", s.handleDeleteOAuthProvider)
+
 	admin.GET("/settings", s.handleGetSettings)
 	admin.PUT("/settings", s.handleUpdateSettings)
 

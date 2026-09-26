@@ -176,6 +176,16 @@ type channelUpsertRequest struct {
 	// 语义：非空时把该渠道的密钥池整体替换为这批密钥（差集增删，幂等）；
 	// 为空时不动密钥池（避免"只改个名字却把 500 把密钥清空"）。
 	KeysText string `json:"keys_text"`
+
+	// OAuthTokensText 是"批量订阅账号"文本框内容：每行一条 refresh_token，
+	// 行内可用空格或逗号附加账号标识（如邮箱）。
+	//
+	// 与 KeysText 分开的原因：两类凭据的去重标识不同
+	// （API Key 用密钥本身，订阅账号用 refresh_token），
+	// 混在一个框里会让使用者无法预知"这次导入会替换掉什么"。
+	OAuthTokensText string `json:"oauth_tokens_text"`
+	// OAuthProvider 是这批订阅账号对应的 OAuth 提供方名称（如 claude）。
+	OAuthProvider string `json:"oauth_provider"`
 }
 
 // handleListChannels 返回渠道列表（统一分页格式）。
@@ -298,6 +308,12 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 		return
 	}
 
+	if err := s.replaceChannelOAuthCredentials(ctx, channel.ID, req.OAuthTokensText, req.OAuthProvider); err != nil {
+		oai.WriteError(c.Writer, http.StatusBadRequest, err.Error(),
+			oai.TypeInvalidRequest, "invalid_oauth_tokens")
+		return
+	}
+
 	dto, err := s.channelDTOWithPool(ctx, channel)
 	if err != nil {
 		s.respondInternalError(c, "读取渠道信息失败")
@@ -327,6 +343,29 @@ func (s *Server) replaceChannelKeys(ctx context.Context, channelID uint64, keys,
 		return nil
 	}
 	_, _, err := s.deps.ChannelKeys.ReplaceAll(ctx, channelID, keys, labels)
+	return err
+}
+
+// replaceChannelOAuthCredentials 按提交的文本同步订阅账号（OAuth）凭据。
+//
+// 语义与 replaceChannelKeys 一致：文本为空表示"不修改"，
+// 避免管理员只改渠道名却把订阅账号清空。
+//
+// 两类凭据分开导入的额外好处：ReplaceCredentials 只会增删"本次涉及的类型"，
+// 因此导入 API Key 不会影响已有的订阅账号，反之亦然。
+func (s *Server) replaceChannelOAuthCredentials(ctx context.Context, channelID uint64, tokensText, provider string) error {
+	if strings.TrimSpace(tokensText) == "" {
+		return nil
+	}
+	if s.deps.ChannelKeys == nil {
+		return errors.New("凭据池功能未启用")
+	}
+
+	credentials := model.ParseCredentialList(tokensText, strings.TrimSpace(provider))
+	if len(credentials) == 0 {
+		return errors.New("未能从提交内容中解析出任何订阅账号凭据，请检查格式（每行一条 refresh_token）")
+	}
+	_, _, err := s.deps.ChannelKeys.ReplaceCredentials(ctx, channelID, credentials)
 	return err
 }
 
@@ -403,6 +442,12 @@ func (s *Server) handleUpdateChannel(c *gin.Context) {
 	// 密钥池为空文本时不动（见 parseKeysText 的语义），避免误清空
 	if err := s.replaceChannelKeys(ctx, channel.ID, keys, labels); err != nil {
 		s.respondInternalError(c, "导入渠道密钥失败")
+		return
+	}
+
+	if err := s.replaceChannelOAuthCredentials(ctx, channel.ID, req.OAuthTokensText, req.OAuthProvider); err != nil {
+		oai.WriteError(c.Writer, http.StatusBadRequest, err.Error(),
+			oai.TypeInvalidRequest, "invalid_oauth_tokens")
 		return
 	}
 

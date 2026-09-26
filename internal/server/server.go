@@ -61,6 +61,8 @@ type Deps struct {
 	ModelPrices model.ModelPriceRepository
 	// Billing 用于在改价后清空价格缓存，保证"改完立即生效"。
 	Billing *relay.Billing
+	// OAuthProviders 是 OAuth 提供方配置仓储（订阅账号池刷新令牌时使用）。
+	OAuthProviders model.OAuthProviderRepository
 
 	// EmailCodes 是注册邮箱验证码仓储（由 main 注入；验证码相关接口依赖它）。
 	EmailCodes model.EmailCodeRepository

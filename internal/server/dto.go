@@ -139,11 +139,13 @@ type keyPoolDTO struct {
 	AutoRemoved int `json:"auto_removed"`
 }
 
-// channelKeyDTO 是密钥池中单把密钥的对外表示。
+// channelKeyDTO 是凭据池中单条凭据的对外表示。
 //
 // 安全约束：只输出掩码（masked_key），明文永不返回给前端。
 type channelKeyDTO struct {
 	ID         uint64 `json:"id"`
+	Kind       string `json:"kind"`
+	KindText   string `json:"kind_text"`
 	Label      string `json:"label"`
 	MaskedKey  string `json:"masked_key"`
 	Status     int    `json:"status"`
@@ -154,13 +156,19 @@ type channelKeyDTO struct {
 	CreatedAt  int64  `json:"created_at"`
 }
 
-// toChannelKeyDTO 把密钥模型转为对外 DTO。
+// toChannelKeyDTO 把凭据模型转为对外 DTO。
 func toChannelKeyDTO(key *model.ChannelKey) channelKeyDTO {
 	if key == nil {
 		return channelKeyDTO{}
 	}
+	kindText := "API Key"
+	if key.IsOAuth() {
+		kindText = "订阅账号"
+	}
 	return channelKeyDTO{
 		ID:         key.ID,
+		Kind:       string(key.Kind),
+		KindText:   kindText,
 		Label:      key.Label,
 		MaskedKey:  key.Masked(),
 		Status:     int(key.Status),

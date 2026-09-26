@@ -171,6 +171,7 @@ func run() error {
 	settings := store.NewSettingRepository(st.DB())
 	emailCodes := store.NewEmailCodeRepository(st.DB())
 	modelPrices := store.NewModelPriceRepository(st.DB())
+	oauthProviders := store.NewOAuthProviderRepository(st.DB(), cipher)
 
 	// 启动时清理过期会话：会话表随登录次数持续增长，不清理会无限膨胀。
 	// 清理失败不阻断启动（这只是维护动作，不影响核心功能）。
@@ -233,11 +234,16 @@ func run() error {
 	// 价格规则缓存在内存中（后台改价后会主动失效），避免每次转发都查库。
 	billing := relay.NewBilling(modelPrices, tokens, users, "")
 
+	// 订阅账号令牌刷新器：让 OAuth 凭据在 access_token 过期前自动续期
+	oauthRefresher := relay.NewOAuthRefresher(oauthProviders, channelKeys)
+
 	relayEngine := relay.New(channels, relay.Options{
 		UsageLogs: usageLogs,
 		Tokens:    tokens,
 		// 渠道密钥池：让一个渠道可以挂多把上游密钥并轮询使用
 		Keys: channelKeys,
+		// 订阅账号池：OAuth 凭据自动刷新
+		OAuth: oauthRefresher,
 		// 计费：把 usage 换算成额度并扣减
 		Billing: billing,
 	})
@@ -256,6 +262,8 @@ func run() error {
 		// 计费：价格规则仓储 + 计费组件（后台改价后用它清缓存）
 		ModelPrices: modelPrices,
 		Billing:     billing,
+		// 订阅账号：OAuth 提供方配置（后台维护）
+		OAuthProviders: oauthProviders,
 		// 注册邮箱验证码：仓储 + 发信通道
 		EmailCodes: emailCodes,
 		Mailer:     mailerSender,
