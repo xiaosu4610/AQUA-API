@@ -21,9 +21,9 @@
 //
 //	新增上游：在对应分段追加一条 Type，并按下述红线自检。
 //	改动前必读的两条铁律：
-//	  1) Available 必须诚实——只有**适配器已实现**的类型才置 true。当前只实现了
-//	     OpenAI 兼容适配器，因此只有 Protocol=ProtocolOpenAI 且鉴权落在
-//	     {AuthBearer, AuthQueryKey, AuthNone} 的类型可以置 true；其余一律 false，
+//	  1) Available 必须诚实——只有**协议适配器与鉴权方式都已实现**的类型才置 true。
+//	     已实现的协议/鉴权白名单见 catalog_test.go（implementedProtocols / allowedAuthModes），
+//	     改动本文件前先确认目标类型落在白名单内；不在白名单的类型一律 false，
 //	     后台会显示"即将支持"。标错会让站长"配好了却调不通"，属于安全底线。
 //	  2) 字面量保持紧凑——Go 结构体字面量允许省略零值字段，只写非零项，
 //	     避免每条都重复一堆 false/空串而淹没真正的差异。
@@ -327,15 +327,16 @@ func Types() []Type {
 			Protocol: ProtocolVertex, AuthMode: AuthServiceAccount,
 			BaseURLEditable: true,
 			ExtraFields: []ExtraField{
-				{Key: "project_id", Label: "项目 ID", Required: true, Help: "GCP 项目 ID。"},
+				{Key: "project_id", Label: "项目 ID", Required: true, Help: "GCP 项目 ID，进入请求路径的 projects 段。"},
 				{Key: "region", Label: "区域", Placeholder: "us-central1", Required: true,
-					Help: "如 us-central1，地址与配额都随区域变化。"},
-				{Key: "service_account_json", Label: "服务账号 JSON", Required: true, Secret: true,
-					Help: "服务账号密钥文件内容，属敏感信息，仅加密存储。"},
+					Help: "如 us-central1；同时进入路径的 locations 段，地址也随区域变化。"},
+				{Key: "publisher", Label: "模型发布方", Default: "google",
+					Help: "多数模型填 google；第三方模型填其发布方标识。"},
 			},
 			Caps:      CapChat | CapStream | CapTools | CapVision | CapReasoning,
-			Available: false,
-			Notes:     "企业级 Vertex AI：地址随项目与区域变化，鉴权用服务账号 JSON，需专用适配器。",
+			Available: true,
+			Notes: "企业级 Vertex AI：地址随项目与区域变化，鉴权用服务账号换取令牌。" +
+				"渠道密钥填写服务账号 JSON（client_email / private_key），项目与区域填在扩展配置。",
 		},
 		{
 			Key: "bedrock", Label: "AWS Bedrock", Category: CategoryText,
@@ -343,15 +344,12 @@ func Types() []Type {
 			BaseURLEditable: true,
 			ExtraFields: []ExtraField{
 				{Key: "region", Label: "区域", Placeholder: "us-east-1", Required: true,
-					Help: "Bedrock 服务所在区域，签名与地址都依赖它。"},
-				{Key: "ak", Label: "Access Key ID", Required: true, Secret: true,
-					Help: "IAM 访问密钥 ID。"},
-				{Key: "sk", Label: "Secret Access Key", Required: true, Secret: true,
-					Help: "IAM 访问密钥，属敏感信息，仅加密存储。"},
+					Help: "Bedrock 服务所在区域；SigV4 签名与地址都依赖它。"},
 			},
 			Caps:      CapChat | CapStream | CapTools | CapVision | CapReasoning,
-			Available: false,
-			Notes:     "AWS 托管模型：请求需 SigV4 签名并绑定区域，报文格式与 OpenAI 差异较大，需专用适配器。",
+			Available: true,
+			Notes: "AWS 托管模型：请求经 SigV4 签名并绑定区域。" +
+				"渠道密钥填写 AWS 凭据 JSON（access_key_id / secret_access_key / session_token），区域填在扩展配置。",
 		},
 
 		// ═══════════════════════════════════════════════════════════════

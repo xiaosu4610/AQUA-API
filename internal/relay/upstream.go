@@ -19,10 +19,13 @@
 //
 // 扩展（Extend）：
 //
-//	新增鉴权方式：在 applyUpstreamAuth 增加分支，并在把该渠道类型标为
-//	  Available 之前补一条测试；未实现的鉴权方式必须返回明确错误，
-//	  绝不能静默不带凭据（那会以 401 的形式在上游暴露，极难排查）。
-//	新增类型专属路径：在 upstreamPath 增加分支（按 Protocol 分派）。
+//	新增鉴权方式：简单方式（头/查询参数）在 applyUpstreamAuth 增加分支；
+//	  需要完整 URL 或请求体摘要的方式（如 SigV4、服务账号）在 signUpstreamRequest
+//	  增加分支（见 signature.go / vertex_auth.go）。在把该渠道类型标为 Available 之前
+//	  必须补一条测试；未实现的鉴权方式必须返回明确错误，绝不能静默不带凭据
+//	  （那会以 401/403 的形式在上游暴露，极难排查）。
+//	新增类型专属路径：在 upstreamPath 增加分支（按 Protocol 分派），
+//	  需要新占位符时同步补充 fillPathTemplate。
 package relay
 
 import (
@@ -31,6 +34,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"gitee.com/xiaosu4610/aqua-api/internal/channeltype"
 	"gitee.com/xiaosu4610/aqua-api/internal/model"
@@ -61,6 +65,25 @@ const (
 	// 选择 streamGenerateContent 需配合查询参数 alt=sse，才会得到 SSE 分片；
 	// 否则上游以 JSON 数组形式分块返回，转换层无法逐事件处理。
 	geminiStreamPath = "/v1beta/models/{model}:streamGenerateContent"
+	// bedrockInvokePath 是 Bedrock 非流式调用端点。
+	//
+	// 模板里用 {model} 占位 Bedrock 的「模型 ID」（如 anthropic.claude-3-5-sonnet-...），
+	// 它含冒号等字符，必须按 AWS 规则编码（见 fillBedrockPathTemplate）。
+	bedrockInvokePath = "/model/{model}/invoke"
+	// bedrockStreamPath 是 Bedrock 流式调用端点。
+	bedrockStreamPath = "/model/{model}/invoke-with-response-stream"
+	// vertexGeneratePath 是 Vertex AI 非流式生成端点。
+	//
+	// 与 Gemini 同为 generateContent 协议，但路径里多了项目/区域/发布方三段，
+	// 因此需要 {project}/{location}/{publisher} 占位符（值来自渠道 extra_config）。
+	vertexGeneratePath = "/v1/projects/{project}/locations/{location}/publishers/{publisher}/models/{model}:generateContent"
+	// vertexStreamPath 是 Vertex AI 流式生成端点（配合 alt=sse）。
+	vertexStreamPath = "/v1/projects/{project}/locations/{location}/publishers/{publisher}/models/{model}:streamGenerateContent"
+	// defaultVertexPublisher 是 Vertex 路径里发布方的缺省值。
+	//
+	// 绝大多数模型由 Google 发布，缺省填 google，减少站长填写负担；
+	// 第三方发布方可通过 extra_config.publisher 覆盖。
+	defaultVertexPublisher = "google"
 )
 
 // errUpstreamBaseURLMissing 表示渠道与类型都没提供上游地址，无法确定请求目标。
@@ -139,6 +162,7 @@ func prepareChannelUpstream(
 		Headers: headers,
 		Extra:   ch.ExtraConfig,
 		Stream:  stream,
+		Body:    outBody,
 	})
 	if err != nil {
 		return spec, nil, nil, err
@@ -160,13 +184,32 @@ type upstreamRequestInput struct {
 	Path string
 	// Headers 是调用方希望携带的基础请求头（如 Accept / User-Agent）。
 	Headers http.Header
-	// Extra 是渠道的类型专属参数（如 Azure 的 deployment / api_version）。
+	// Extra 是渠道的类型专属参数（如 Azure 的 deployment / api_version、
+	// Bedrock 的 region、Vertex 的 project_id / region / publisher）。
 	Extra map[string]string
 	// Stream 表示本次请求是否要求流式返回。
 	//
 	// 仅少数协议需要它：Gemini 把"是否流式"写进路径与查询参数，而 OpenAI /
 	// Anthropic 用请求体里的 stream 字段表达，故对它们无影响。
 	Stream bool
+	// Body 是最终要发往上游的请求体（已按协议转换）。
+	//
+	// 只有 SigV4 需要它：签名覆盖了载荷的 SHA256 摘要，因此组装鉴权头时必须拿到
+	// 逐字节的请求体。其余鉴权方式忽略该字段。
+	Body []byte
+	// now 覆盖签名/签发令牌所用的当前时间；零值表示用 time.Now。
+	//
+	// 仅供单元测试注入固定时间（SigV4 与 JWT 都依赖时间，固定时钟才能断言确定性结果）；
+	// 不导出，生产路径不会设置它。
+	now time.Time
+}
+
+// clock 返回本次组装使用的时间（UTC）。
+func (in upstreamRequestInput) clock() time.Time {
+	if in.now.IsZero() {
+		return time.Now().UTC()
+	}
+	return in.now.UTC()
 }
 
 // UpstreamRequest 描述组装完成、可直接发送的上游请求。
@@ -206,14 +249,23 @@ func (r *UpstreamRequest) LogFields() map[string]any {
 //  2. 类型固定头（DefaultHeaders）——刻意放在最后设置，使调用方无法覆盖，
 //     避免模板被意外改坏（如 Anthropic 的 anthropic-version）；
 //  3. 鉴权头/查询参数。
+//
+// 鉴权分两阶段（关键，别合并）：
+//   - 第一阶段（applyUpstreamAuth）：只需头/查询参数即可完成，如 Bearer、api-key、
+//     查询参数密钥。它们在拼最终 URL 之前处理，因为查询参数密钥属于 URL 的一部分。
+//   - 第二阶段（signUpstreamRequest）：SigV4 与服务账号需要「规范化后的 host/path/query」
+//     乃至请求体摘要，必须等最终 URL 拼好后再执行，否则签名覆盖的内容与实际发送的不一致。
 func buildUpstreamRequest(in upstreamRequestInput) (*UpstreamRequest, error) {
 	base, err := resolveUpstreamBaseURL(in)
 	if err != nil {
 		return nil, err
 	}
 
+	path := upstreamPath(in)
+	query := url.Values{}
+	applyUpstreamQuery(in, query)
+
 	req := &UpstreamRequest{
-		URL:      base + upstreamPath(in),
 		Header:   http.Header{},
 		authMode: in.Type.AuthMode,
 	}
@@ -230,18 +282,42 @@ func buildUpstreamRequest(in upstreamRequestInput) (*UpstreamRequest, error) {
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	query := url.Values{}
-	applyUpstreamQuery(in, query)
-	injected, err := applyUpstreamAuth(in.Type, in.APIKey, req.Header, query)
-	if err != nil {
-		return nil, err
+	// 第一阶段鉴权：依赖完整 URL 的方式留到后面处理。
+	if !needsSignedRequest(in.Type.AuthMode) {
+		injected, err := applyUpstreamAuth(in.Type, in.APIKey, req.Header, query)
+		if err != nil {
+			return nil, err
+		}
+		req.authInjected = injected
 	}
-	req.authInjected = injected
 
-	if encoded := query.Encode(); encoded != "" {
-		req.URL += "?" + encoded
+	rawQuery := query.Encode()
+	req.URL = base + path
+	if rawQuery != "" {
+		req.URL += "?" + rawQuery
+	}
+
+	// 第二阶段鉴权：在最终 URL 确定之后签名/换取令牌。
+	if needsSignedRequest(in.Type.AuthMode) {
+		if err := signUpstreamRequest(in, base, path, rawQuery, req.Header); err != nil {
+			return nil, err
+		}
+		req.authInjected = true
 	}
 	return req, nil
+}
+
+// needsSignedRequest 判断该鉴权方式是否必须拿到"最终 URL 与请求体"才能完成。
+//
+// SigV4 的签名覆盖规范化 host/path/query 与载荷摘要；服务账号要换取 access_token，
+// 二者都不能在 URL 拼好之前完成。
+func needsSignedRequest(mode channeltype.AuthMode) bool {
+	switch mode {
+	case channeltype.AuthSigV4, channeltype.AuthServiceAccount:
+		return true
+	default:
+		return false
+	}
 }
 
 // resolveUpstreamBaseURL 解析上游基础地址：渠道填写值优先，其次类型默认值。
@@ -280,6 +356,24 @@ func upstreamPath(in upstreamRequestInput) string {
 		} else {
 			path = geminiGeneratePath
 		}
+	case channeltype.ProtocolVertex:
+		// Vertex 与 Gemini 同为 generateContent 协议，同样去掉可能的 models/ 前缀；
+		// 但路径里多了项目/区域/发布方三段，由 fillPathTemplate 替换占位符。
+		in.Model = strings.TrimPrefix(in.Model, "models/")
+		if in.Stream {
+			path = vertexStreamPath
+		} else {
+			path = vertexGeneratePath
+		}
+	case channeltype.ProtocolBedrock:
+		// Bedrock 的模型 ID 需按 AWS 规则编码，且签名与实发路径必须逐字节一致，
+		// 因此单独走 fillBedrockPathTemplate（见其说明）。
+		if in.Stream {
+			path = bedrockStreamPath
+		} else {
+			path = bedrockInvokePath
+		}
+		return fillBedrockPathTemplate(path, in.Model)
 	}
 	return fillPathTemplate(path, in)
 }
@@ -288,6 +382,9 @@ func upstreamPath(in upstreamRequestInput) string {
 //
 //	{model}      → 模型名
 //	{deployment} → 渠道的部署名；缺省回退为模型名（Azure 常以模型名当部署名）
+//	{project}    → 渠道的 GCP 项目 ID（extra_config.project_id）
+//	{location}   → Vertex 的区域段（extra_config.region）
+//	{publisher}  → 模型发布方；缺省 google（extra_config.publisher 可覆盖）
 //
 // 占位符按路径段转义：模型名/部署名可能含 "/"（如 "meta/llama"），
 // 不转义会把一个路径段拆成两段，导致请求打到不存在的端点。
@@ -299,11 +396,28 @@ func fillPathTemplate(template string, in upstreamRequestInput) string {
 	if deployment == "" {
 		deployment = in.Model
 	}
+	publisher := extraValue(in, "publisher")
+	if publisher == "" {
+		publisher = defaultVertexPublisher
+	}
 	replacer := strings.NewReplacer(
 		"{model}", url.PathEscape(in.Model),
 		"{deployment}", url.PathEscape(deployment),
+		"{project}", url.PathEscape(extraValue(in, "project_id")),
+		"{location}", url.PathEscape(extraValue(in, "region")),
+		"{publisher}", url.PathEscape(publisher),
 	)
 	return replacer.Replace(template)
+}
+
+// fillBedrockPathTemplate 替换 Bedrock 路径里的 {model} 占位符。
+//
+// 与通用 fillPathTemplate 的差异：模型 ID 用 AWS 的 URI 编码规则（awsURIEncode），
+// 而非 net/url.PathEscape。原因是 Bedrock 的模型 ID 含冒号（如 ...-v2:0），
+// SigV4 的规范路径要求把冒号编码为 %3A；若实发路径不编码而签名按编码算，
+// 二者不一致会导致 AWS 侧验签失败。这里让"签名用的路径"与"实发路径"同源。
+func fillBedrockPathTemplate(template, model string) string {
+	return strings.ReplaceAll(template, "{model}", awsURIEncode(model, false))
 }
 
 // applyUpstreamQuery 写入类型专属查询参数。
@@ -314,7 +428,7 @@ func applyUpstreamQuery(in upstreamRequestInput, query url.Values) {
 		if version := extraValue(in, "api_version"); version != "" {
 			query.Set("api-version", version)
 		}
-	case channeltype.ProtocolGemini:
+	case channeltype.ProtocolGemini, channeltype.ProtocolVertex:
 		// 流式生成要求 alt=sse，上游才会以 SSE 分片返回（否则是一段 JSON 数组，
 		// 无法逐事件转换）。非流式不需要该参数。
 		if in.Stream {

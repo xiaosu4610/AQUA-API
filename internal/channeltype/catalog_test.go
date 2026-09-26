@@ -11,8 +11,8 @@
 //
 //	go test ./internal/channeltype/...
 //	  ├─ 逐条遍历 Types()：字段完整性、Key 唯一性
-//	  ├─ 安全底线：Available=true 的类型必须走 OpenAI 协议 + 已实现的鉴权方式
-//	  ├─ 反向约束：SigV4/服务账号/OAuth/Cookie 一律不可用
+//	  ├─ 安全底线：Available=true 的类型必须走已实现的协议 + 已实现的鉴权方式
+//	  ├─ 反向约束：OAuth / Cookie 一律不可用
 //	  └─ 结构约束：分类覆盖、分组总数、Azure 必填额外参数
 //
 // 扩展（Extend）：
@@ -25,31 +25,35 @@ import (
 	"testing"
 )
 
-// allowedAuthModes 是「当前已实现的鉴权方式」白名单。
+// supportedAuthModes 是「当前已实现的鉴权方式」白名单。
 //
-// 为什么是这几种：转发链路现在会拼 Authorization: Bearer、把密钥放进查询参数、
-// 用自定义头（如 Azure 的 api-key）或 x-api-key（Anthropic 系）承载密钥，
-// 以及对本地服务不带凭据；其余鉴权（SigV4 签名、服务账号、OAuth 续期、
-// Cookie 会话）都还没有实现。
-var allowedAuthModes = map[AuthMode]bool{
-	AuthBearer:       true,
-	AuthQueryKey:     true,
-	AuthNone:         true,
-	AuthAPIKeyHeader: true,
-	AuthXAPIKey:      true,
+// 已实现：转发链路会拼 Authorization: Bearer、把密钥放进查询参数、
+// 用自定义头（如 Azure 的 api-key）或 x-api-key（Anthropic 系）承载密钥、
+// 对本地服务不带凭据，以及对 AWS 做 SigV4 签名（Bedrock）、用服务账号换取令牌（Vertex）。
+// 尚未实现：OAuth 订阅账号续期与浏览器 Cookie 会话。
+var supportedAuthModes = map[AuthMode]bool{
+	AuthBearer:         true,
+	AuthQueryKey:       true,
+	AuthNone:           true,
+	AuthAPIKeyHeader:   true,
+	AuthXAPIKey:        true,
+	AuthSigV4:          true,
+	AuthServiceAccount: true,
 }
 
 // implementedProtocols 是「当前已实现的协议适配器」白名单。
 //
-// Azure（部署名 + api-version 进路径与查询）、Anthropic（Messages 协议）与
-// Gemini（generateContent，模型名与动作进路径、密钥走查询参数）的出站适配器
-// 已实现并通过测试；Vertex / Bedrock / PaLM / Ollama / 自定义等协议尚未实现，
-// 一律不能标为可用。
+// Azure（部署名 + api-version 进路径与查询）、Anthropic（Messages 协议）、
+// Gemini / Vertex（generateContent，模型名与动作进路径、密钥走查询参数或服务账号令牌）
+// 与 Bedrock（SigV4 签名 + invoke 路径）的出站适配器已实现并通过测试；
+// PaLM / Ollama / 自定义等协议尚未实现，一律不能标为可用。
 var implementedProtocols = map[Protocol]bool{
 	ProtocolOpenAI:    true,
 	ProtocolAzure:     true,
 	ProtocolAnthropic: true,
 	ProtocolGemini:    true,
+	ProtocolVertex:    true,
+	ProtocolBedrock:   true,
 }
 
 // TestTypes_必填字段非空 保证每条类型都具备后台展示与路由所需的最小信息。
@@ -110,11 +114,11 @@ func TestAvailable_协议必须已实现(t *testing.T) {
 
 // TestAvailable_鉴权必须是已实现方式 钉住安全底线之二。
 //
-// 即便协议是 OpenAI 兼容，只要鉴权方式还没实现（签名、服务账号、
-// OAuth、Cookie），类型同样不能标为可用。
+// 即便协议已实现，只要鉴权方式还没实现（OAuth 续期、Cookie 会话），
+// 类型同样不能标为可用。
 func TestAvailable_鉴权必须是已实现方式(t *testing.T) {
 	for _, item := range Types() {
-		if item.Available && !allowedAuthModes[item.AuthMode] {
+		if item.Available && !supportedAuthModes[item.AuthMode] {
 			t.Errorf("类型 %q（%s）标为可用，但鉴权方式 %q 尚未实现；"+
 				"误标会导致配好后鉴权失败", item.Key, item.Label, item.AuthMode)
 		}
@@ -123,14 +127,12 @@ func TestAvailable_鉴权必须是已实现方式(t *testing.T) {
 
 // TestUnavailable_未实现鉴权方式一律不可用 是上一条的反向约束。
 //
-// 用 AuthSigV4 / AuthServiceAccount / AuthOAuth / AuthCookie 的类型
-// 一定是未完成的接入，必须显式标为不可用，避免被误开。
+// 用 AuthOAuth / AuthCookie 的类型一定是未完成的接入（需要订阅账号续期能力），
+// 必须显式标为不可用，避免被误开。SigV4 / 服务账号已实现，不再列入约束。
 func TestUnavailable_未实现鉴权方式一律不可用(t *testing.T) {
 	unimplemented := map[AuthMode]bool{
-		AuthSigV4:          true,
-		AuthServiceAccount: true,
-		AuthOAuth:          true,
-		AuthCookie:         true,
+		AuthOAuth:  true,
+		AuthCookie: true,
 	}
 	for _, item := range Types() {
 		if unimplemented[item.AuthMode] && item.Available {

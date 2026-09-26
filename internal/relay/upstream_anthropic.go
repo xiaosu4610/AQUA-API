@@ -117,6 +117,14 @@ func encodeUpstreamRequestBody(spec channeltype.Type, body []byte) ([]byte, erro
 			return nil, fmt.Errorf("%w: %v", errRequestBodyConversion, err)
 		}
 		return converted, nil
+	case channeltype.ProtocolVertex:
+		// Vertex 的 generateContent 请求体与 Gemini 一致（同一套 schema），
+		// 差别只在地址与鉴权，因此直接复用 Gemini 的请求转换。
+		converted, err := encodeGeminiRequest(body)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", errRequestBodyConversion, err)
+		}
+		return converted, nil
 	default:
 		return body, nil
 	}
@@ -757,6 +765,9 @@ func normalizeUpstreamResponse(spec channeltype.Type, resp *http.Response, wantS
 	case channeltype.ProtocolAnthropic:
 		return adjustAnthropicUpstreamResponse(resp, wantStream)
 	case channeltype.ProtocolGemini:
+		return adjustGeminiUpstreamResponse(resp, wantStream)
+	case channeltype.ProtocolVertex:
+		// 与请求方向同理：Vertex 的响应体与 Gemini 同构，复用同一套改写逻辑。
 		return adjustGeminiUpstreamResponse(resp, wantStream)
 	default:
 		return nil
