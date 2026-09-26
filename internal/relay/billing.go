@@ -32,6 +32,7 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -51,39 +52,55 @@ const priceCacheTTL = 30 * time.Second
 // defaultBillingGroup 是未指定分组时使用的分组名。
 const defaultBillingGroup = "default"
 
+// ratioScale 是分组倍率的换算基数（百分比：100 = 1.0 倍）。
+//
+// 与 model.ModelGroup 的口径一致；单独在此定义是为了让计费公式里的
+// "除以 100"这件事有一个可检索的名字，而不是散落的魔法数字。
+const ratioScale int64 = 100
+
 // Billing 负责按用量计费，并发安全。
 type Billing struct {
 	prices model.ModelPriceRepository
+	// groups 用于读取当前分组的计费倍率；可为 nil（此时倍率恒为 100）。
+	groups model.ModelGroupRepository
 	tokens model.TokenRepository
 	users  model.UserRepository
 	group  string
 
-	// 价格缓存：规则数量少（几十条）且读多写少，适合整体缓存
+	// 价格与倍率缓存：规则数量少（几十条）且读多写少，适合整体缓存。
+	//
+	// 倍率与价格放在同一份缓存里刷新（而不是各刷各的），
+	// 是为了保证"价格"与"倍率"来自同一时刻的配置——
+	// 否则改价与改倍率同时发生时，可能算出"新价格 × 旧倍率"的中间态。
 	mu       sync.RWMutex
 	cached   []*model.ModelPrice
+	ratio    int64
 	cachedAt time.Time
 }
 
 // NewBilling 创建计费组件。
 //
-// group 为空时使用 default；tokens / users 允许为 nil（此时只计算不扣减，
+// group 为空时使用 default；groups / tokens / users 均允许为 nil
+// （groups 为 nil 时倍率恒为 1.0；tokens/users 为 nil 时只计算不扣减，
 // 便于单元测试与"仅统计不限制"的部署形态）。
-func NewBilling(prices model.ModelPriceRepository, tokens model.TokenRepository,
-	users model.UserRepository, group string) *Billing {
+func NewBilling(prices model.ModelPriceRepository, groups model.ModelGroupRepository,
+	tokens model.TokenRepository, users model.UserRepository, group string) *Billing {
 	if group == "" {
 		group = defaultBillingGroup
 	}
 	return &Billing{
 		prices: prices,
+		groups: groups,
 		tokens: tokens,
 		users:  users,
 		group:  group,
+		ratio:  ratioScale,
 	}
 }
 
-// Invalidate 清空价格缓存。
+// Invalidate 清空价格与倍率缓存。
 //
-// 调用时机：后台新增/修改/删除计价规则之后。
+// 调用时机：后台新增/修改/删除计价规则或分组倍率之后。
 // 不清理的话，管理员改完价格会看到"新价格要等半分钟才生效"，容易误判为没生效。
 func (b *Billing) Invalidate() {
 	if b == nil {
@@ -92,6 +109,64 @@ func (b *Billing) Invalidate() {
 	b.mu.Lock()
 	b.cachedAt = time.Time{}
 	b.mu.Unlock()
+}
+
+// refresh 重新加载价格规则与倍率。
+//
+// 两个查询都失败时保持旧值不动：宁可短时间沿用旧价，也不要因为一次读库失败
+// 就把所有调用变成"未定价"（不扣费）——那等于白送。
+func (b *Billing) refresh(ctx context.Context) {
+	if b.prices != nil {
+		prices, err := b.prices.List(ctx, b.group, true)
+		if err != nil {
+			// 读价失败不能阻断转发：保留旧缓存并留下日志。
+			slog.Warn("读取计价规则失败，本次沿用旧缓存", "error", err, "group", b.group)
+			return
+		}
+		b.mu.Lock()
+		b.cached = prices
+		b.mu.Unlock()
+	}
+
+	ratio := ratioScale
+	if b.groups != nil {
+		group, err := b.groups.GetByName(ctx, b.group)
+		switch {
+		case err == nil:
+			if group.Ratio > 0 {
+				ratio = group.Ratio
+			}
+		case errors.Is(err, model.ErrModelGroupNotFound):
+			// 分组不存在（历史数据里的分组名从未登记）：
+			// 按 1.0 倍处理，与本次升级前的行为一致，不产生意外扣费。
+			ratio = ratioScale
+		default:
+			// 读库失败：保留旧倍率，避免"一次故障把倍率变成 1.0"导致少收钱
+			slog.Warn("读取分组倍率失败，本次沿用旧倍率", "error", err, "group", b.group)
+			b.mu.RLock()
+			ratio = b.ratio
+			b.mu.RUnlock()
+			if ratio <= 0 {
+				ratio = ratioScale
+			}
+		}
+	}
+
+	b.mu.Lock()
+	b.ratio = ratio
+	b.cachedAt = time.Now()
+	b.mu.Unlock()
+}
+
+// ratioFor 返回当前分组的计费倍率（百分比）。
+func (b *Billing) ratioFor() int64 {
+	b.mu.RLock()
+	ratio := b.ratio
+	b.mu.RUnlock()
+	if ratio <= 0 {
+		return ratioScale
+	}
+	return ratio
 }
 
 // priceFor 返回适用于该模型的最优计价规则；无匹配时返回 nil（表示未定价）。
@@ -110,18 +185,10 @@ func (b *Billing) priceFor(ctx context.Context, modelName string) *model.ModelPr
 	b.mu.RUnlock()
 
 	if !fresh {
-		prices, err := b.prices.List(ctx, b.group, true)
-		if err != nil {
-			// 读价失败不能阻断转发：按"未定价"处理（不扣费），并留下日志痕迹。
-			// 取舍理由：宁可少收一点钱，也不能让用户因为后台数据问题而无法调用。
-			slog.Warn("读取计价规则失败，本次按未定价处理", "error", err, "group", b.group)
-			return nil
-		}
-		b.mu.Lock()
-		b.cached = prices
-		b.cachedAt = time.Now()
-		b.mu.Unlock()
-		cached = prices
+		b.refresh(ctx)
+		b.mu.RLock()
+		cached = b.cached
+		b.mu.RUnlock()
 	}
 
 	return model.MatchModelPrice(cached, modelName)
@@ -132,7 +199,7 @@ func (b *Billing) priceFor(ctx context.Context, modelName string) *model.ModelPr
 // 用于后台预估、测试与展示；扣费请用 Charge。
 func (b *Billing) Quote(ctx context.Context, modelName string, promptTokens, completionTokens int64) int64 {
 	price := b.priceFor(ctx, modelName)
-	return price.ComputeQuota(promptTokens, completionTokens)
+	return applyRatio(price.ComputeQuota(promptTokens, completionTokens), b.ratioFor())
 }
 
 // QuoteOnce 计算"调用一次该模型"应扣的额度（只算不扣）。
@@ -142,7 +209,17 @@ func (b *Billing) Quote(ctx context.Context, modelName string, promptTokens, com
 // count 为本次生成的份数（如一次画 4 张图），<=0 时按 1 次处理。
 func (b *Billing) QuoteOnce(ctx context.Context, modelName string, count int64) int64 {
 	price := b.priceFor(ctx, modelName)
-	return price.ComputePerCallQuota(count)
+	return applyRatio(price.ComputePerCallQuota(count), b.ratioFor())
+}
+
+// applyRatio 按倍率换算额度（向下取整）。
+//
+// 倍率为 100（即 1.0 倍）时数值完全不变，因此未配置分组的部署不受任何影响。
+func applyRatio(base, ratio int64) int64 {
+	if base <= 0 || ratio <= 0 || ratio == ratioScale {
+		return base
+	}
+	return base * ratio / ratioScale
 }
 
 // ChargeOnce 按次计费并扣减额度，返回实际扣减的额度。
@@ -159,7 +236,7 @@ func (b *Billing) ChargeOnce(ctx context.Context, userID, tokenID uint64, modelN
 		return 0
 	}
 
-	quota := price.ComputePerCallQuota(count)
+	quota := applyRatio(price.ComputePerCallQuota(count), b.ratioFor())
 	if quota <= 0 {
 		return 0
 	}
@@ -225,22 +302,11 @@ func (b *Billing) Charge(ctx context.Context, userID, tokenID uint64, modelName 
 		return 0
 	}
 
-	quota := price.ComputeQuota(promptTokens, completionTokens)
+	quota := applyRatio(price.ComputeQuota(promptTokens, completionTokens), b.ratioFor())
 	if quota <= 0 {
 		return 0
 	}
 
-	now := time.Now()
-	if tokenID > 0 && b.tokens != nil {
-		if err := b.tokens.ConsumeQuota(ctx, tokenID, quota, now); err != nil {
-			slog.Warn("扣减令牌额度失败", "error", err, "token_id", tokenID, "quota", quota)
-		}
-	}
-	if userID > 0 && b.users != nil {
-		if err := b.users.AddUsedQuota(ctx, userID, quota); err != nil {
-			slog.Warn("累加用户已用额度失败", "error", err, "user_id", userID, "quota", quota)
-		}
-	}
-
+	b.applyDelta(ctx, userID, tokenID, quota, "扣减")
 	return quota
 }

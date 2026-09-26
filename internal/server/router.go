@@ -46,6 +46,10 @@ func (s *Server) registerRoutes() {
 	// 只暴露非敏感参数，不含任何密钥或后台配置细节。
 	api.GET("/payment/public", s.handlePublicPaymentInfo)
 
+	// 模型广场（无需登录）：站点能力清单，是使用者了解"本站能做什么"的入口。
+	// 只暴露模型名、分组、价格与可用状态，不暴露渠道名与上游地址。
+	api.GET("/models", s.handleModelPlaza)
+
 	// 支付平台异步回调：必须公开（第三方服务器无法携带我们的会话），
 	// 其安全性完全由通道适配器的验签保证（见 internal/payment）。
 	api.POST("/payments/:method/notify", s.handlePaymentNotify)
@@ -132,6 +136,12 @@ func (s *Server) registerRoutes() {
 	admin.DELETE("/prices/:id", s.handleDeletePrice)
 	// 费用试算：给定模型与 token 数，返回应扣额度
 	admin.GET("/prices/quote", s.handleQuotePreview)
+
+	// 模型分组（分组本身是实体，可配置计费倍率）
+	admin.GET("/groups", s.handleListGroups)
+	admin.POST("/groups", s.handleCreateGroup)
+	admin.PUT("/groups/:id", s.handleUpdateGroup)
+	admin.DELETE("/groups/:id", s.handleDeleteGroup)
 
 	// OAuth 提供方配置（订阅账号池刷新令牌时使用）
 	admin.GET("/oauth-providers", s.handleListOAuthProviders)

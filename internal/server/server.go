@@ -60,6 +60,8 @@ type Deps struct {
 
 	// ModelPrices 是模型计价规则仓储（后台维护价格、计算用量费用）。
 	ModelPrices model.ModelPriceRepository
+	// Groups 是模型分组仓储（分组倍率参与计费，也是模型广场的分组来源）。
+	Groups model.ModelGroupRepository
 	// Billing 用于在改价后清空价格缓存，保证"改完立即生效"。
 	Billing *relay.Billing
 	// OAuthProviders 是 OAuth 提供方配置仓储（订阅账号池刷新令牌时使用）。
