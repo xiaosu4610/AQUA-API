@@ -53,7 +53,7 @@ const KIND_STYLE: Record<ToastKind, { icon: 'check' | 'alert' | 'info'; class: s
           <button
             type="button"
             class="btn btn-ghost btn-icon h-6 w-6 text-ink-400"
-            aria-label="关闭提示"
+            :aria-label="$t('components.toast.dismiss')"
             @click="dismiss(item.id)"
           >
             <AppIcon name="close" :size="14" />

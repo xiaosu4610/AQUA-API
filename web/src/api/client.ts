@@ -20,6 +20,7 @@
  */
 import axios, { AxiosError, type AxiosRequestConfig } from 'axios'
 
+import { getLocale } from '@/i18n'
 import type { ApiErrorBody } from './types'
 
 /** API 前缀：契约约定管理/门户接口前缀为 /api */
@@ -181,6 +182,8 @@ async function request<T>(config: AxiosRequestConfig): Promise<T> {
   const token = getSessionToken()
   const headers: Record<string, string> = { ...(config.headers as Record<string, string>) }
   if (token) headers.Authorization = `Bearer ${token}`
+  // 把当前界面语言带给后端，后端据此返回同语言的错误消息（见 i18n/index.ts 的 getLocale）
+  headers['Accept-Language'] = getLocale()
 
   try {
     const response = await axios.request<T>({

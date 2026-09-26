@@ -13,6 +13,7 @@
  * 扩展（Extend）：
  *   需要输入后再确认（如「输入用户名以确认删除」）时，扩展 ConfirmRequest 增加字段，
  *   并在 ConfirmHost.vue 中渲染对应输入框。
+ *   文案：默认按钮文案不在此硬编码 —— 由 ConfirmHost.vue 用词条兜底（common.action.*）。
  */
 import { reactive } from 'vue'
 
@@ -21,9 +22,9 @@ export interface ConfirmRequest {
   title: string
   /** 补充说明：写清影响范围（如「该渠道的令牌将无法调用」） */
   message?: string
-  /** 确认按钮文案，默认「确认」 */
+  /** 确认按钮文案；不传时由 ConfirmHost 用当前语言的默认词条兜底 */
   confirmText?: string
-  /** 取消按钮文案，默认「取消」 */
+  /** 取消按钮文案；不传时由 ConfirmHost 用当前语言的默认词条兜底 */
   cancelText?: string
   /** 是否为破坏性操作（红色按钮）；默认 false */
   danger?: boolean
@@ -34,9 +35,11 @@ interface ConfirmState {
   request: ConfirmRequest
 }
 
+// 注意：这里【不写死中文】。按钮文案的默认值由 ConfirmHost.vue 在渲染时用 $t 兜底，
+// 这样 composables 层与语言解耦，调用方也可以自由传入已翻译的文案。
 const state = reactive<ConfirmState>({
   open: false,
-  request: { title: '', message: '', confirmText: '确认', cancelText: '取消', danger: false },
+  request: { title: '', message: '', confirmText: '', cancelText: '', danger: false },
 })
 
 /** 等待用户答复的 resolver；同一时刻只允许一个确认框（后开覆盖前开，前一个自动视为取消） */
@@ -47,8 +50,8 @@ export function confirmDialog(request: ConfirmRequest): Promise<boolean> {
   // 上一个未决的确认框按「取消」处理，避免 Promise 永久悬挂
   resolver?.(false)
   state.request = {
-    confirmText: '确认',
-    cancelText: '取消',
+    confirmText: '',
+    cancelText: '',
     danger: false,
     ...request,
   }

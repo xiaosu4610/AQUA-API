@@ -12,6 +12,7 @@
  *
  * 扩展（Extend）：
  *   若需要「输入名称以确认」，在 useConfirm.ts 扩展 request 字段后在此渲染输入框。
+ *   文案：request 未提供按钮/说明文案时，用当前语言的词条兜底（common.action.* / common.confirm.*）。
  */
 import AppIcon from './AppIcon.vue'
 import Modal from './Modal.vue'
@@ -36,13 +37,13 @@ const state = useConfirmState()
         <AppIcon :name="state.request.danger ? 'alert' : 'info'" :size="18" />
       </span>
       <p class="flex-1 text-sm leading-relaxed text-ink-200">
-        {{ state.request.message || '确认执行该操作？' }}
+        {{ state.request.message || $t('common.confirm.defaultMessage') }}
       </p>
     </div>
 
     <template #footer>
       <button type="button" class="btn btn-secondary" @click="answerConfirm(false)">
-        {{ state.request.cancelText }}
+        {{ state.request.cancelText || $t('common.action.cancel') }}
       </button>
       <button
         type="button"
@@ -50,7 +51,7 @@ const state = useConfirmState()
         :class="state.request.danger ? 'btn-danger' : 'btn-primary'"
         @click="answerConfirm(true)"
       >
-        {{ state.request.confirmText }}
+        {{ state.request.confirmText || $t('common.action.confirm') }}
       </button>
     </template>
   </Modal>

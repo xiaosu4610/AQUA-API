@@ -5,55 +5,62 @@
  * 意图（Why）：
  *   与管理接口一样，管理导航也按「运营视角」分组，便于快速定位；
  *   布局行为复用 AppShell，保证与门户的操作习惯一致（降低切换成本）。
+ *   导航文案走词条（components.nav.admin.*），语言切换后随 i18n 自动重算。
  *
  * 流转（Flow）：
  *   router → /admin/*（守卫已校验 role=10）→ 本布局 → AppShell + RouterView
  *
  * 扩展（Extend）：
- *   新增管理页面时：在 router/index.ts 注册子路由，并在此追加导航项。
+ *   新增管理页面时：在 router/index.ts 注册子路由，并在此追加导航项（含词条键）。
  */
+import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
+
 import AppShell from '@/components/AppShell.vue'
 import type { NavGroup } from '@/components/nav'
 
-const groups: NavGroup[] = [
+const { t } = useI18n()
+
+/** 导航分组（computed：语言切换后自动重算文案） */
+const groups = computed<NavGroup[]>(() => [
   {
-    title: '总览',
+    title: t('components.nav.admin.overview'),
     items: [
-      { label: '仪表盘', to: '/admin', icon: 'chart' },
-      { label: '模型广场', to: '/admin/models', icon: 'grid' },
+      { label: t('components.nav.admin.dashboard'), to: '/admin', icon: 'chart' },
+      { label: t('components.nav.admin.models'), to: '/admin/models', icon: 'grid' },
     ],
   },
   {
-    title: '资源',
+    title: t('components.nav.admin.resources'),
     items: [
-      { label: '渠道管理', to: '/admin/channels', icon: 'server' },
-      { label: '模型分组', to: '/admin/groups', icon: 'tag' },
-      { label: '计价规则', to: '/admin/prices', icon: 'quota' },
-      { label: '令牌管理', to: '/admin/tokens', icon: 'key' },
-      { label: '用户管理', to: '/admin/users', icon: 'users' },
-      { label: '兑换码', to: '/admin/redeem-codes', icon: 'cart' },
+      { label: t('components.nav.admin.channels'), to: '/admin/channels', icon: 'server' },
+      { label: t('components.nav.admin.groups'), to: '/admin/groups', icon: 'tag' },
+      { label: t('components.nav.admin.prices'), to: '/admin/prices', icon: 'quota' },
+      { label: t('components.nav.admin.tokens'), to: '/admin/tokens', icon: 'key' },
+      { label: t('components.nav.admin.users'), to: '/admin/users', icon: 'users' },
+      { label: t('components.nav.admin.redeemCodes'), to: '/admin/redeem-codes', icon: 'cart' },
     ],
   },
   {
-    title: '运营',
+    title: t('components.nav.admin.operations'),
     items: [
-      { label: '异步任务', to: '/admin/tasks', icon: 'image' },
-      { label: '充值订单', to: '/admin/orders', icon: 'cart' },
-      { label: '订阅账号', to: '/admin/oauth', icon: 'shield' },
+      { label: t('components.nav.admin.tasks'), to: '/admin/tasks', icon: 'image' },
+      { label: t('components.nav.admin.orders'), to: '/admin/orders', icon: 'cart' },
+      { label: t('components.nav.admin.oauth'), to: '/admin/oauth', icon: 'shield' },
     ],
   },
   {
-    title: '运维',
+    title: t('components.nav.admin.maintenance'),
     items: [
-      { label: '调用日志', to: '/admin/logs', icon: 'list' },
-      { label: '系统设置', to: '/admin/settings', icon: 'sliders' },
+      { label: t('components.nav.admin.logs'), to: '/admin/logs', icon: 'list' },
+      { label: t('components.nav.admin.settings'), to: '/admin/settings', icon: 'sliders' },
     ],
   },
-]
+])
 </script>
 
 <template>
-  <AppShell variant-label="管理后台" :groups="groups">
+  <AppShell :variant-label="t('components.shell.admin')" :groups="groups">
     <RouterView />
   </AppShell>
 </template>

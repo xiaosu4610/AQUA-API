@@ -15,6 +15,8 @@
  *   把点击热区放大到整张卡，比让用户去找按钮省一次视觉搜索。
  *   点击后由父组件开弹窗（就地展开），不做路由跳转 —— 跳页会打断浏览节奏。
  *
+ *   文案走词条（components.modelCard.*）；模型名一律 dir="ltr"，避免阿拉伯语下倒排。
+ *
  * 流转（Flow）：
  *   ModelPlazaBoard → v-for → 本组件；emit('select') 交给父组件开详情弹窗
  *
@@ -23,6 +25,7 @@
  *   不要在本组件内请求接口，否则一张页面会发出几十个请求。
  */
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 import AppIcon from './AppIcon.vue'
 import type { PlazaModel, PlazaPrice } from '@/api/types'
@@ -45,6 +48,8 @@ const emit = defineEmits<{
   (e: 'select', model: PlazaModel): void
 }>()
 
+const { t } = useI18n()
+
 /** 所属分组的展示名列表 */
 const groupLabelsOfModel = computed(() =>
   props.model.groups.map((name) => props.groupLabels?.[name] || name),
@@ -59,7 +64,7 @@ function isPerCall(price: PlazaPrice): boolean {
 
 /** 格式化成 "每 1M" 的读数：价格为 0 表示未定价 */
 function tokenPriceText(value: number): string {
-  return value > 0 ? formatNumber(value) : '未定价'
+  return value > 0 ? formatNumber(value) : t('components.modelCard.unpriced')
 }
 
 /** 倍率展示：100 显示为 1.0x */
@@ -78,7 +83,7 @@ function onCopy(): void {
     class="model-card group cursor-pointer"
     role="button"
     tabindex="0"
-    :aria-label="`查看 ${model.model} 详情`"
+    :aria-label="t('components.modelCard.ariaView', { model: model.model })"
     @click="emit('select', model)"
     @keydown.enter.prevent="emit('select', model)"
     @keydown.space.prevent="emit('select', model)"
@@ -90,16 +95,16 @@ function onCopy(): void {
       </span>
 
       <div class="min-w-0 flex-1">
-        <h3 class="truncate font-mono text-sm font-semibold text-ink-50" :title="model.model">
+        <h3 class="truncate font-mono text-sm font-semibold text-ink-50" :title="model.model" dir="ltr">
           {{ model.model }}
         </h3>
         <p class="mt-1.5 flex flex-wrap items-center gap-1.5">
           <span class="badge" :class="model.available ? 'badge-ok' : 'badge-off'">
             <span class="dot" />
-            {{ model.available ? '可用' : '未接入渠道' }}
+            {{ model.available ? t('components.modelCard.available') : t('components.modelCard.unavailable') }}
           </span>
           <span v-if="model.channel_count > 0" class="text-xs text-ink-400">
-            {{ model.channel_count }} 个渠道
+            {{ t('components.modelCard.channelCount', { count: model.channel_count }) }}
           </span>
         </p>
       </div>
@@ -108,8 +113,8 @@ function onCopy(): void {
         v-if="showCopy"
         type="button"
         class="btn-row shrink-0"
-        title="复制模型名"
-        aria-label="复制模型名"
+        :title="t('components.modelCard.copyName')"
+        :aria-label="t('components.modelCard.copyName')"
         @click.stop="onCopy"
       >
         <AppIcon name="copy" :size="14" />
@@ -124,7 +129,7 @@ function onCopy(): void {
           {{ label }}
         </span>
       </template>
-      <span v-else class="text-xs text-ink-500">暂无分组</span>
+      <span v-else class="text-xs text-ink-500">{{ t('components.modelCard.noGroup') }}</span>
     </div>
 
     <!-- 价格：按分组逐条列出（这正是"分组"存在的意义） -->
@@ -142,23 +147,23 @@ function onCopy(): void {
 
           <!-- 按次计费与按 token 计费是两种口径，展示上必须区分 -->
           <span v-if="isPerCall(price)" class="whitespace-nowrap font-mono text-ink-200">
-            {{ formatNumber(price.per_call_price) }} <span class="text-ink-500">/ 次</span>
+            {{ formatNumber(price.per_call_price) }} <span class="text-ink-500">{{ t('components.modelCard.perCall') }}</span>
           </span>
-          <span v-else class="whitespace-nowrap font-mono text-ink-200" title="每 100 万 token 的额度">
+          <span v-else class="whitespace-nowrap font-mono text-ink-200" :title="t('components.modelCard.perMillionTitle')">
             {{ tokenPriceText(price.prompt_price) }} / {{ tokenPriceText(price.completion_price) }}
           </span>
         </div>
         <p class="pt-0.5 text-[11px] text-ink-500">
-          {{ model.prices.some(isPerCall) ? '按次计费' : '输入 / 输出（每 100 万 token）' }}
+          {{ model.prices.some(isPerCall) ? t('components.modelCard.billingPerCall') : t('components.modelCard.billingPerMillion') }}
         </p>
       </template>
-      <p v-else class="text-xs text-ink-500">未配置价格（调用不计费）</p>
+      <p v-else class="text-xs text-ink-500">{{ t('components.modelCard.noPrice') }}</p>
     </div>
 
     <!-- 底部提示：让"卡片可点"这件事变得显式 -->
     <p class="-mb-0.5 flex items-center gap-1 text-[11px] font-medium text-brand-700 opacity-0 transition-opacity group-hover:opacity-100">
       <AppIcon name="info" :size="12" />
-      查看详情
+      {{ t('components.modelCard.viewDetail') }}
     </p>
   </article>
 </template>

@@ -106,8 +106,8 @@ onBeforeUnmount(() => {
             <button
               v-if="showClose"
               type="button"
-              class="btn btn-ghost btn-icon -mr-1.5 -mt-0.5"
-              aria-label="关闭"
+              class="btn btn-ghost btn-icon -me-1.5 -mt-0.5"
+              :aria-label="$t('components.modal.close')"
               @click="emit('close')"
             >
               <AppIcon name="close" :size="18" />

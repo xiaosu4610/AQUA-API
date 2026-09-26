@@ -7,6 +7,7 @@
  *   因此把表格、进度条与详情弹窗收敛成一个组件，避免两份会逐渐分叉的实现。
  *   组件只负责展示与"请求取消"，数据加载由页面负责——这样页面能统一控制
  *   筛选与分页，而不是把请求逻辑藏进组件内部。
+ *   全部文案走词条（components.taskTable.*），列标签同时用于窄屏卡片视图。
  *
  * 关键的展示取舍：
  *   - 进度用进度条而不是数字：任务类场景下"还剩多少"比精确百分比更重要；
@@ -20,9 +21,10 @@
  *
  * 扩展（Extend）：
  *   新增任务类别（音乐等）时无需改动本组件（kind_text 由后端给出）；
- *   新增可选列（渠道、额度）时加 prop 并在表头/单元格各补一处。
+ *   新增可选列（渠道、额度）时加 prop 并在表头/单元格各补一处，同时补词条键。
  */
 import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 import AppIcon from './AppIcon.vue'
 import DataState from './DataState.vue'
@@ -41,6 +43,7 @@ const props = withDefaults(
     tasks: Task[]
     loading?: boolean
     error?: string
+    /** 空态文案（不传则用当前语言默认词条） */
     emptyText?: string
     emptyHint?: string
     /** 是否显示「归属用户」列（管理后台使用） */
@@ -53,7 +56,6 @@ const props = withDefaults(
   {
     loading: false,
     error: '',
-    emptyText: '暂无任务',
     emptyHint: '',
     showUser: false,
     allowCancel: false,
@@ -65,6 +67,10 @@ const emit = defineEmits<{
   (e: 'retry'): void
   (e: 'cancel', task: Task): void
 }>()
+
+const { t } = useI18n()
+
+const emptyMessage = computed(() => props.emptyText ?? t('components.taskTable.empty'))
 
 /** 详情弹窗当前展示的任务 */
 const detail = ref<Task | null>(null)
@@ -141,14 +147,14 @@ function openDetail(task: Task): void {
     <table class="data-table">
       <thead>
         <tr>
-          <th>任务</th>
-          <th v-if="showUser">用户</th>
-          <th>模型 / 适配器</th>
-          <th>进度</th>
-          <th>状态</th>
-          <th class="text-right">额度</th>
-          <th>提交时间</th>
-          <th v-if="allowCancel" class="cell-actions">操作</th>
+          <th>{{ $t('components.taskTable.col.task') }}</th>
+          <th v-if="showUser">{{ $t('components.taskTable.col.user') }}</th>
+          <th>{{ $t('components.taskTable.col.model') }}</th>
+          <th>{{ $t('components.taskTable.col.progress') }}</th>
+          <th>{{ $t('components.taskTable.col.status') }}</th>
+          <th class="text-right">{{ $t('components.taskTable.col.quota') }}</th>
+          <th>{{ $t('components.taskTable.col.createdAt') }}</th>
+          <th v-if="allowCancel" class="cell-actions">{{ $t('components.taskTable.col.actions') }}</th>
         </tr>
       </thead>
       <tbody>
@@ -157,30 +163,30 @@ function openDetail(task: Task): void {
           :error="error"
           :empty="!loading && !error && tasks.length === 0"
           :colspan="columnCount"
-          loading-text="正在读取任务…"
-          :empty-text="emptyText"
+          :loading-text="$t('components.taskTable.loading')"
+          :empty-text="emptyMessage"
           :empty-hint="emptyHint"
           @retry="emit('retry')"
         />
 
         <tr v-for="task in tasks" :key="task.task_ref">
-          <td data-label="任务">
-            <button type="button" class="text-left" @click="openDetail(task)">
-              <span class="block font-mono text-[12px] text-ink-200">{{ task.task_ref }}</span>
+          <td :data-label="$t('components.taskTable.col.task')">
+            <button type="button" class="text-start" @click="openDetail(task)">
+              <span class="block font-mono text-[12px] text-ink-200" dir="ltr">{{ task.task_ref }}</span>
               <span class="mt-0.5 line-clamp-1 block max-w-[18rem] text-xs text-ink-400">
-                {{ task.prompt || '（无提示词）' }}
+                {{ task.prompt || $t('components.taskTable.noPrompt') }}
               </span>
             </button>
           </td>
 
-          <td v-if="showUser" class="cell-muted" data-label="用户">{{ task.user_id }}</td>
+          <td v-if="showUser" class="cell-muted" :data-label="$t('components.taskTable.col.user')">{{ task.user_id }}</td>
 
-          <td data-label="模型 / 适配器">
-            <span class="block font-mono text-xs text-ink-200">{{ task.model || '—' }}</span>
+          <td :data-label="$t('components.taskTable.col.model')">
+            <span class="block font-mono text-xs text-ink-200" dir="ltr">{{ task.model || '—' }}</span>
             <span class="text-[11px] text-ink-500">{{ task.provider }} · {{ task.kind_text }}</span>
           </td>
 
-          <td class="min-w-[7rem]" data-label="进度">
+          <td class="min-w-[7rem]" :data-label="$t('components.taskTable.col.progress')">
             <div class="flex items-center gap-2">
               <span class="h-1.5 w-16 overflow-hidden rounded-full bg-ink-800">
                 <span
@@ -193,18 +199,20 @@ function openDetail(task: Task): void {
             </div>
           </td>
 
-          <td data-label="状态">
+          <td :data-label="$t('components.taskTable.col.status')">
             <span :class="statusBadgeClass(task)">{{ task.status_text }}</span>
             <span v-if="task.error" class="mt-0.5 line-clamp-1 block max-w-[14rem] text-[11px] text-red-600">
               {{ task.error }}
             </span>
           </td>
 
-          <td class="cell-num" data-label="额度">{{ task.quota > 0 ? formatNumber(task.quota) : '—' }}</td>
+          <td class="cell-num" :data-label="$t('components.taskTable.col.quota')">
+            {{ task.quota > 0 ? formatNumber(task.quota) : '—' }}
+          </td>
 
-          <td class="cell-muted" data-label="提交时间">{{ formatDateTime(task.created_at) }}</td>
+          <td class="cell-muted" :data-label="$t('components.taskTable.col.createdAt')">{{ formatDateTime(task.created_at) }}</td>
 
-          <td v-if="allowCancel" class="cell-actions" data-label="操作">
+          <td v-if="allowCancel" class="cell-actions" :data-label="$t('components.taskTable.col.actions')">
             <div class="flex items-center justify-end gap-1">
               <a
                 v-if="task.result_url"
@@ -212,19 +220,19 @@ function openDetail(task: Task): void {
                 :href="task.result_url"
                 target="_blank"
                 rel="noopener noreferrer"
-                title="打开结果"
+                :title="$t('components.taskTable.openResult')"
               >
                 <AppIcon name="external" :size="14" />
               </a>
-              <button type="button" class="btn-row" title="详情" @click="openDetail(task)">
+              <button type="button" class="btn-row" :title="$t('components.taskTable.detail')" @click="openDetail(task)">
                 <AppIcon name="eye" :size="14" />
               </button>
               <button
                 v-if="!isTerminal(task)"
                 type="button"
-                class="btn-row"
+                class="btn-row rtl-flip"
                 :disabled="cancelling === task.task_ref"
-                title="取消任务（会退还已扣额度）"
+                :title="$t('components.taskTable.cancelTask')"
                 @click="emit('cancel', task)"
               >
                 <AppIcon name="close" :size="14" />
@@ -238,8 +246,8 @@ function openDetail(task: Task): void {
     <!-- 详情弹窗：把"提交了什么、上游返回了什么"完整摊开，便于排查 -->
     <Modal
       :open="Boolean(detail)"
-      :title="detail ? `任务 ${detail.task_ref}` : ''"
-      subtitle="任务类接口的价值之一是可复现：这里保留提交参数与上游返回原文。"
+      :title="detail ? $t('components.taskTable.detailTitle', { ref: detail.task_ref }) : ''"
+      :subtitle="$t('components.taskTable.detailSubtitle')"
       width="max-w-3xl"
       @close="detail = null"
     >
@@ -248,8 +256,10 @@ function openDetail(task: Task): void {
           <span :class="statusBadgeClass(detail)">{{ detail.status_text }}</span>
           <span class="chip">{{ detail.kind_text }}</span>
           <span class="chip">{{ detail.provider }}</span>
-          <span class="chip">{{ detail.model || '—' }}</span>
-          <span v-if="detail.quota > 0" class="chip">额度 {{ formatNumber(detail.quota) }}</span>
+          <span class="chip" dir="ltr">{{ detail.model || '—' }}</span>
+          <span v-if="detail.quota > 0" class="chip">
+            {{ $t('components.taskTable.detailQuota', { quota: formatNumber(detail.quota) }) }}
+          </span>
         </div>
 
         <div v-if="detail.error" class="rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-2 text-xs text-red-700">
@@ -258,7 +268,7 @@ function openDetail(task: Task): void {
 
         <!-- 结果预览：图片直接看，其它类型给链接 -->
         <div v-if="detail.result_url">
-          <p class="label">结果</p>
+          <p class="label">{{ $t('components.taskTable.result') }}</p>
           <a
             :href="detail.result_url"
             target="_blank"
@@ -268,48 +278,48 @@ function openDetail(task: Task): void {
             <img
               v-if="isImageResult(detail)"
               :src="detail.result_url"
-              alt="任务结果"
+              :alt="$t('components.taskTable.resultAlt')"
               class="max-h-72 w-full bg-ink-900 object-contain"
               loading="lazy"
             />
-            <span v-else class="block px-3 py-2 font-mono text-xs text-brand-700">{{ detail.result_url }}</span>
+            <span v-else class="block px-3 py-2 font-mono text-xs text-brand-700" dir="ltr">{{ detail.result_url }}</span>
           </a>
         </div>
 
         <div class="grid gap-4 md:grid-cols-2">
           <div>
-            <p class="label">提交参数</p>
-            <pre class="code-block max-h-56 overflow-auto p-3 font-mono text-[12px] leading-relaxed text-ink-200">{{ detailParamsText || '（空）' }}</pre>
+            <p class="label">{{ $t('components.taskTable.params') }}</p>
+            <pre class="code-block max-h-56 overflow-auto p-3 font-mono text-[12px] leading-relaxed text-ink-200" dir="ltr">{{ detailParamsText || $t('components.taskTable.emptyValue') }}</pre>
           </div>
           <div>
-            <p class="label">上游返回</p>
-            <pre class="code-block max-h-56 overflow-auto p-3 font-mono text-[12px] leading-relaxed text-ink-200">{{ detailResultText || '（空）' }}</pre>
+            <p class="label">{{ $t('components.taskTable.upstream') }}</p>
+            <pre class="code-block max-h-56 overflow-auto p-3 font-mono text-[12px] leading-relaxed text-ink-200" dir="ltr">{{ detailResultText || $t('components.taskTable.emptyValue') }}</pre>
           </div>
         </div>
 
         <dl class="grid grid-cols-2 gap-3 text-xs text-ink-400 sm:grid-cols-4">
           <div>
-            <dt>提交时间</dt>
+            <dt>{{ $t('components.taskTable.createdAtLabel') }}</dt>
             <dd class="mt-0.5 text-ink-200">{{ formatDateTime(detail.created_at) }}</dd>
           </div>
           <div>
-            <dt>更新时间</dt>
+            <dt>{{ $t('components.taskTable.updatedAt') }}</dt>
             <dd class="mt-0.5 text-ink-200">{{ formatDateTime(detail.updated_at) }}</dd>
           </div>
           <div>
-            <dt>完成时间</dt>
+            <dt>{{ $t('components.taskTable.finishedAt') }}</dt>
             <dd class="mt-0.5 text-ink-200">{{ detail.finished_at ? formatDateTime(detail.finished_at) : '—' }}</dd>
           </div>
           <div>
-            <dt>渠道 / 用户</dt>
+            <dt>{{ $t('components.taskTable.channelUser') }}</dt>
             <dd class="mt-0.5 text-ink-200">#{{ detail.channel_id }} / #{{ detail.user_id }}</dd>
           </div>
         </dl>
 
         <div>
-          <p class="label">提示词</p>
+          <p class="label">{{ $t('components.taskTable.prompt') }}</p>
           <p class="whitespace-pre-wrap break-words rounded-lg border border-ink-800 bg-ink-950 px-3 py-2 text-sm text-ink-200">
-            {{ detail.prompt || '（无）' }}
+            {{ detail.prompt || $t('components.taskTable.noValue') }}
           </p>
         </div>
       </div>
@@ -323,9 +333,9 @@ function openDetail(task: Task): void {
           rel="noopener noreferrer"
         >
           <AppIcon name="external" :size="14" />
-          打开结果
+          {{ $t('components.taskTable.openResult') }}
         </a>
-        <button type="button" class="btn btn-secondary" @click="detail = null">关闭</button>
+        <button type="button" class="btn btn-secondary" @click="detail = null">{{ $t('components.taskTable.close') }}</button>
         <button
           v-if="detail && allowCancel && !isTerminal(detail)"
           type="button"
@@ -333,7 +343,7 @@ function openDetail(task: Task): void {
           @click="emit('cancel', detail); detail = null"
         >
           <AppIcon name="close" :size="14" />
-          取消任务
+          {{ $t('components.taskTable.cancel') }}
         </button>
       </template>
     </Modal>

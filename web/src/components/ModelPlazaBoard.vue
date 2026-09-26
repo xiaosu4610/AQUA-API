@@ -15,6 +15,8 @@
  *   而且本地筛选切换是瞬时的、没有网络等待 —— 这正是"操作简单"的来源。
  *   模型清单的字段很少，一次性传输的成本远低于每次点击都往返一次。
  *
+ *   文案走词条（components.plaza.*）；模型名一律 dir="ltr"。
+ *
  * 流转（Flow）：
  *   挂载 → fetchModelPlaza()（不带参数，取全量）
  *   → base（关键词过滤）→ matchedExcept(维度)（分面计数）→ visible（最终结果）
@@ -22,9 +24,10 @@
  *
  * 扩展（Extend）：
  *   新增筛选维度：加一个 ref + 在 matchedExcept 里加一条分支 + 在左栏加一段；
- *   新增排序方式：在 SORT_OPTIONS 里加一项并在 sortModels 中处理。
+ *   新增排序方式：在 SORT_OPTIONS 里加一项并在 sortModels 中处理（同时补词条键）。
  */
 import { computed, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 import AppIcon from './AppIcon.vue'
 import DataState from './DataState.vue'
@@ -47,17 +50,21 @@ type ViewMode = 'grid' | 'list'
 /** 分面计数时需要跳过的维度（算 A 维度的计数时，不该被 A 的当前选择影响） */
 type SkipFacet = 'none' | 'group' | 'vendor' | 'status'
 
-const SORT_OPTIONS: { key: SortKey; label: string }[] = [
-  { key: 'default', label: '推荐排序（可用优先）' },
-  { key: 'name', label: '按模型名' },
-  { key: 'vendor', label: '按厂商' },
-]
+const { t } = useI18n()
 
-const STATUS_OPTIONS: { key: StatusFilter; label: string }[] = [
-  { key: 'all', label: '全部状态' },
-  { key: 'available', label: '仅可用' },
-  { key: 'unavailable', label: '仅未接入' },
-]
+/** 排序选项（computed：文案随语言切换重算） */
+const SORT_OPTIONS = computed<{ key: SortKey; label: string }[]>(() => [
+  { key: 'default', label: t('components.plaza.sort.default') },
+  { key: 'name', label: t('components.plaza.sort.name') },
+  { key: 'vendor', label: t('components.plaza.sort.vendor') },
+])
+
+/** 状态筛选项 */
+const STATUS_OPTIONS = computed<{ key: StatusFilter; label: string }[]>(() => [
+  { key: 'all', label: t('components.plaza.status.all') },
+  { key: 'available', label: t('components.plaza.status.available') },
+  { key: 'unavailable', label: t('components.plaza.status.unavailable') },
+])
 
 const models = ref<PlazaModel[]>([])
 const groups = ref<{ name: string; label: string; ratio: number; description: string }[]>([])
@@ -98,7 +105,7 @@ async function load(): Promise<void> {
   } catch (err) {
     models.value = []
     groups.value = []
-    error.value = err instanceof ApiError ? err.message : '加载模型广场失败'
+    error.value = err instanceof ApiError ? err.message : t('components.plaza.loadFailed')
   } finally {
     loading.value = false
   }
@@ -211,9 +218,9 @@ function clearFilters(): void {
 
 /** 列表视图的价格摘要：按次计费优先展示，否则取第一个分组的价格 */
 function priceSummary(model: PlazaModel): string {
-  if (!model.prices.length) return '未定价'
+  if (!model.prices.length) return t('components.plaza.unpriced')
   const perCall = model.prices.find((price) => price.per_call_price > 0)
-  if (perCall) return `${formatNumber(perCall.per_call_price)} / 次`
+  if (perCall) return `${formatNumber(perCall.per_call_price)} ${t('components.modelCard.perCall')}`
   const first = model.prices[0]
   return `${formatNumber(first.prompt_price)} / ${formatNumber(first.completion_price)}`
 }
@@ -221,8 +228,8 @@ function priceSummary(model: PlazaModel): string {
 /** 列表视图的价格口径说明（列头用，避免用户误读单位） */
 const priceCaption = computed(() =>
   visible.value.some((item) => item.prices.some((price) => price.per_call_price > 0))
-    ? '输入 / 输出（每 100 万 token）或按次'
-    : '输入 / 输出（每 100 万 token）',
+    ? t('components.plaza.priceCaptionWithCall')
+    : t('components.plaza.priceCaption'),
 )
 
 function openDetail(model: PlazaModel): void {
@@ -232,7 +239,7 @@ function openDetail(model: PlazaModel): void {
 
 async function handleCopy(value: string): Promise<void> {
   const ok = await copyText(value)
-  if (ok) toastSuccess(`已复制模型名 ${value}`)
+  if (ok) toastSuccess(t('components.plaza.copied', { model: value }))
 }
 
 defineExpose({ reload: load })
@@ -244,10 +251,10 @@ defineExpose({ reload: load })
     <div class="mb-3 flex items-center gap-2 lg:hidden">
       <button type="button" class="btn btn-secondary btn-sm" @click="railOpen = !railOpen">
         <AppIcon name="filter" :size="14" />
-        {{ railOpen ? '收起筛选' : '筛选' }}
+        {{ railOpen ? t('components.plaza.collapseFilter') : t('components.plaza.filter') }}
       </button>
       <span v-if="hasFilter" class="text-xs text-ink-400">
-        已筛选出 {{ visible.length }} 个模型
+        {{ t('components.plaza.filteredCount', { count: visible.length }) }}
       </span>
     </div>
 
@@ -258,10 +265,10 @@ defineExpose({ reload: load })
         :class="railOpen ? 'block' : 'hidden lg:block'"
       >
         <div class="border-b border-ink-800/60 px-3 py-3">
-          <p class="px-1 text-xs text-ink-400">共 {{ models.length }} 个模型</p>
+          <p class="px-1 text-xs text-ink-400">{{ t('components.plaza.totalModels', { total: models.length }) }}</p>
           <p class="mt-1 flex items-center gap-1.5 px-1 text-sm font-semibold text-ink-50">
             <span class="dot bg-emerald-500" />
-            {{ totalAvailable }} 个当前可用
+            {{ t('components.plaza.availableCount', { count: totalAvailable }) }}
           </p>
         </div>
 
@@ -269,7 +276,7 @@ defineExpose({ reload: load })
           <!-- 分组 -->
           <p class="rail-title">
             <AppIcon name="tag" :size="12" />
-            模型分组
+            {{ t('components.plaza.modelGroups') }}
           </p>
           <button
             type="button"
@@ -278,7 +285,7 @@ defineExpose({ reload: load })
             @click="selectGroup('')"
           >
             <AppIcon name="layers" :size="15" />
-            全部分组
+            {{ t('components.plaza.allGroups') }}
             <span class="rail-count">{{ statusCounts.all }}</span>
           </button>
           <button
@@ -298,7 +305,7 @@ defineExpose({ reload: load })
           <!-- 厂商 -->
           <p class="rail-title">
             <AppIcon name="server" :size="12" />
-            上游厂商
+            {{ t('components.plaza.upstreamVendors') }}
           </p>
           <button
             type="button"
@@ -307,7 +314,7 @@ defineExpose({ reload: load })
             @click="selectVendor('')"
           >
             <AppIcon name="layers" :size="15" />
-            全部厂商
+            {{ t('components.plaza.allVendors') }}
             <span class="rail-count">{{ vendors.reduce((sum, item) => sum + item.count, 0) }}</span>
           </button>
           <button
@@ -332,7 +339,7 @@ defineExpose({ reload: load })
           <!-- 状态 -->
           <p class="rail-title">
             <AppIcon name="bolt" :size="12" />
-            可用状态
+            {{ t('components.plaza.availability') }}
           </p>
           <button
             v-for="option in STATUS_OPTIONS"
@@ -358,43 +365,43 @@ defineExpose({ reload: load })
             <AppIcon
               name="search"
               :size="15"
-              class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-500"
+              class="pointer-events-none absolute start-3 top-1/2 -translate-y-1/2 text-ink-500"
             />
             <input
               v-model="keyword"
-              class="input pl-9"
+              class="input ps-9"
               type="search"
-              placeholder="搜索模型名，如 glm / nemotron / kimi"
-              aria-label="搜索模型"
+              :placeholder="t('components.plaza.searchPlaceholder')"
+              :aria-label="t('components.plaza.searchAria')"
             />
           </div>
 
-          <select v-model="sortKey" class="input w-auto" aria-label="排序方式">
+          <select v-model="sortKey" class="input w-auto" :aria-label="t('components.plaza.sortLabel')">
             <option v-for="option in SORT_OPTIONS" :key="option.key" :value="option.key">
               {{ option.label }}
             </option>
           </select>
 
-          <div class="seg" role="group" aria-label="视图切换">
+          <div class="seg" role="group" :aria-label="t('components.plaza.viewSwitch')">
             <button
               type="button"
               class="seg-item"
               :class="view === 'grid' ? 'seg-item-active' : ''"
-              title="卡片视图"
+              :title="t('components.plaza.viewGridTitle')"
               @click="view = 'grid'"
             >
               <AppIcon name="grid" :size="15" />
-              卡片
+              {{ t('components.plaza.viewGrid') }}
             </button>
             <button
               type="button"
               class="seg-item"
               :class="view === 'list' ? 'seg-item-active' : ''"
-              title="列表视图"
+              :title="t('components.plaza.viewListTitle')"
               @click="view = 'list'"
             >
               <AppIcon name="list" :size="15" />
-              列表
+              {{ t('components.plaza.viewList') }}
             </button>
           </div>
 
@@ -402,7 +409,7 @@ defineExpose({ reload: load })
             type="button"
             class="btn btn-secondary btn-sm"
             :disabled="loading"
-            title="重新拉取模型清单"
+            :title="t('components.plaza.refreshTitle')"
             @click="load"
           >
             <AppIcon name="refresh" :size="14" />
@@ -412,13 +419,13 @@ defineExpose({ reload: load })
         <!-- 结果计数 + 清除筛选 -->
         <div v-if="!loading && !error" class="mb-3 flex flex-wrap items-center gap-2 text-xs text-ink-400">
           <span>
-            显示 <strong class="font-mono text-ink-100">{{ visible.length }}</strong> / {{ models.length }} 个模型
+            {{ t('components.plaza.showing', { visible: visible.length, total: models.length }) }}
           </span>
           <template v-if="hasFilter">
             <span class="text-ink-600">·</span>
             <button type="button" class="btn btn-ghost btn-sm" @click="clearFilters">
               <AppIcon name="close" :size="13" />
-              清除筛选
+              {{ t('components.plaza.clearFilter') }}
             </button>
           </template>
         </div>
@@ -427,14 +434,14 @@ defineExpose({ reload: load })
           :loading="loading"
           :error="error"
           :empty="!loading && !error && visible.length === 0"
-          loading-text="正在读取模型清单…"
-          empty-text="没有匹配的模型"
-          empty-hint="换个关键词，或清除分组/厂商/状态筛选后重试。若刚部署完成，请先在后台配置渠道并声明模型。"
+          :loading-text="t('components.plaza.loading')"
+          :empty-text="t('components.plaza.empty')"
+          :empty-hint="t('components.plaza.emptyHint')"
           @retry="load"
         >
           <template #action>
             <button v-if="hasFilter" type="button" class="btn btn-secondary btn-sm" @click="clearFilters">
-              清除全部筛选
+              {{ t('components.plaza.clearAllFilter') }}
             </button>
           </template>
         </DataState>
@@ -456,10 +463,10 @@ defineExpose({ reload: load })
           <div
             class="grid grid-cols-[minmax(0,1fr)_120px_140px_92px] gap-3 border-b border-ink-800/70 bg-ink-850/70 px-4 py-2.5 text-xs font-medium text-ink-300"
           >
-            <span>模型</span>
-            <span>状态</span>
+            <span>{{ t('components.plaza.col.model') }}</span>
+            <span>{{ t('components.plaza.col.status') }}</span>
             <span class="text-right">{{ priceCaption }}</span>
-            <span class="text-right">操作</span>
+            <span class="text-right">{{ t('components.plaza.col.action') }}</span>
           </div>
 
           <button
@@ -478,9 +485,9 @@ defineExpose({ reload: load })
                 {{ vendorInitial(vendorOf(item.model)) }}
               </span>
               <span class="min-w-0">
-                <span class="block truncate font-mono text-[13px] font-medium text-ink-50">{{ item.model }}</span>
+                <span class="block truncate font-mono text-[13px] font-medium text-ink-50" dir="ltr">{{ item.model }}</span>
                 <span class="mt-0.5 block truncate text-[11px] text-ink-500">
-                  {{ item.groups.map((name) => groupLabels[name] || name).join(' · ') || '未分组' }}
+                  {{ item.groups.map((name) => groupLabels[name] || name).join(' · ') || t('components.plaza.ungrouped') }}
                 </span>
               </span>
             </span>
@@ -488,15 +495,15 @@ defineExpose({ reload: load })
             <span>
               <span class="badge" :class="item.available ? 'badge-ok' : 'badge-off'">
                 <span class="dot" />
-                {{ item.available ? '可用' : '未接入' }}
+                {{ item.available ? t('components.modelCard.available') : t('components.modelCard.unavailable') }}
               </span>
             </span>
 
             <span class="text-right font-mono text-[13px] text-ink-200">{{ priceSummary(item) }}</span>
 
             <span class="flex items-center justify-end gap-1 text-brand-700">
-              <span class="text-xs font-medium">详情</span>
-              <AppIcon name="chevron-right" :size="13" />
+              <span class="text-xs font-medium">{{ t('components.plaza.detail') }}</span>
+              <AppIcon name="chevron-right" :size="13" class="rtl-flip" />
             </span>
           </button>
         </div>

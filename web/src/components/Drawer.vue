@@ -63,7 +63,7 @@ onBeforeUnmount(() => {
       />
 
       <aside
-        class="absolute right-0 top-0 flex h-full w-full flex-col border-l border-ink-700 bg-ink-900 shadow-pop animate-slide-in-right"
+        class="drawer-panel absolute end-0 top-0 flex h-full w-full flex-col border-s border-ink-700 bg-ink-900 shadow-pop animate-slide-in-right"
         :class="width"
       >
         <header class="flex items-start justify-between gap-4 border-b border-ink-800 px-5 py-4">
@@ -71,7 +71,7 @@ onBeforeUnmount(() => {
             <h2 class="text-base font-semibold text-ink-50">{{ title }}</h2>
             <p v-if="subtitle" class="mt-1 text-xs leading-relaxed text-ink-400">{{ subtitle }}</p>
           </div>
-          <button type="button" class="btn btn-ghost btn-icon -mr-1.5" aria-label="关闭" @click="emit('close')">
+          <button type="button" class="btn btn-ghost btn-icon -me-1.5" :aria-label="$t('components.drawer.close')" @click="emit('close')">
             <AppIcon name="close" :size="18" />
           </button>
         </header>

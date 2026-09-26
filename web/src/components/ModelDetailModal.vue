@@ -11,6 +11,8 @@
  *   为什么要给 cURL 示例：很多用户是拿着模型名来找调用方式的；
  *   把可直接粘贴运行的命令放在同一屏，省掉"再去文档页翻一遍"的往返。
  *
+ *   文案走词条（components.modelDetail.*）；模型名、端点、cURL 一律 dir="ltr"。
+ *
  * 流转（Flow）：
  *   ModelPlazaBoard → 点击卡片 → 传入 model → 本弹窗
  *
@@ -19,6 +21,7 @@
  *   并在此追加一段（不要在前端硬编码模型元数据）。
  */
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 import AppIcon from './AppIcon.vue'
 import CopyButton from './CopyButton.vue'
@@ -41,6 +44,8 @@ const props = withDefaults(
 
 const emit = defineEmits<{ (e: 'close'): void }>()
 
+const { t } = useI18n()
+
 const vendor = computed(() => (props.model ? vendorOf(props.model.model) : ''))
 
 /**
@@ -52,7 +57,7 @@ const vendor = computed(() => (props.model ? vendorOf(props.model.model) : ''))
  */
 const isEmbedding = computed(() => /embed|rerank|clip/i.test(props.model?.model ?? ''))
 
-/** 调用示例：可直接粘贴运行的 cURL */
+/** 调用示例：可直接粘贴运行的 cURL（英文命令，始终 LTR） */
 const curlSample = computed(() => {
   if (!props.model) return ''
   const endpoint = isEmbedding.value ? '/embeddings' : '/chat/completions'
@@ -72,7 +77,7 @@ function isPerCall(price: PlazaPrice): boolean {
 }
 
 function priceText(value: number): string {
-  return value > 0 ? formatNumber(value) : '未定价'
+  return value > 0 ? formatNumber(value) : t('components.modelDetail.unpriced')
 }
 
 function ratioText(ratio: number): string {
@@ -88,7 +93,7 @@ function groupLabel(name: string): string {
   <Modal
     :open="open && !!model"
     :title="model?.model || ''"
-    subtitle="模型详情与调用方式。价格均为每 100 万 token 的额度消耗，按次计费的模型单独标注。"
+    :subtitle="t('components.modelDetail.subtitle')"
     width="max-w-2xl"
     @close="emit('close')"
   >
@@ -99,15 +104,15 @@ function groupLabel(name: string): string {
           {{ vendorInitial(vendor) }}
         </span>
         <div class="min-w-0 flex-1">
-          <p class="truncate font-mono text-sm font-semibold text-ink-50">{{ model.model }}</p>
+          <p class="truncate font-mono text-sm font-semibold text-ink-50" dir="ltr">{{ model.model }}</p>
           <p class="mt-0.5 text-xs text-ink-400">
-            上游厂商：{{ vendorLabel(vendor) }}
-            <template v-if="model.channel_count > 0"> · {{ model.channel_count }} 个渠道支持</template>
+            {{ t('components.modelDetail.upstreamVendor') }}{{ vendorLabel(vendor) }}
+            <template v-if="model.channel_count > 0">{{ t('components.modelDetail.channelSupport', { count: model.channel_count }) }}</template>
           </p>
         </div>
         <span class="badge" :class="model.available ? 'badge-ok' : 'badge-off'">
           <span class="dot" />
-          {{ model.available ? '当前可用' : '未接入渠道' }}
+          {{ model.available ? t('components.modelDetail.available') : t('components.modelDetail.unavailable') }}
         </span>
       </div>
 
@@ -117,23 +122,23 @@ function groupLabel(name: string): string {
         class="mt-3 flex items-start gap-2 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-800"
       >
         <AppIcon name="alert" :size="14" class="mt-0.5 shrink-0" />
-        该模型暂无启用中的上游渠道，调用会立即返回 503。请在后台「渠道管理」里为它配置渠道。
+        {{ t('components.modelDetail.unavailableHint') }}
       </p>
 
       <!-- 分组与价格 -->
       <h3 class="mt-5 flex items-center gap-1.5 text-sm font-semibold text-ink-100">
         <AppIcon name="tag" :size="15" class="text-brand-700" />
-        分组与价格
+        {{ t('components.modelDetail.groupsAndPrices') }}
       </h3>
       <div class="mt-2 table-wrap">
         <table class="data-table min-w-[520px]">
           <thead>
             <tr>
-              <th>分组</th>
-              <th>倍率</th>
-              <th class="text-right">输入</th>
-              <th class="text-right">输出</th>
-              <th class="text-right">按次</th>
+              <th>{{ t('components.modelDetail.col.group') }}</th>
+              <th>{{ t('components.modelDetail.col.ratio') }}</th>
+              <th class="text-right">{{ t('components.modelDetail.col.input') }}</th>
+              <th class="text-right">{{ t('components.modelDetail.col.output') }}</th>
+              <th class="text-right">{{ t('components.modelDetail.col.perCall') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -149,41 +154,52 @@ function groupLabel(name: string): string {
               <td class="cell-num">{{ isPerCall(price) ? formatNumber(price.per_call_price) : '—' }}</td>
             </tr>
             <tr v-if="!model.prices.length">
-              <td colspan="5" class="cell-muted text-center">未配置价格（调用不计费）</td>
+              <td colspan="5" class="cell-muted text-center">{{ t('components.modelDetail.noPrice') }}</td>
             </tr>
           </tbody>
         </table>
       </div>
       <p class="mt-2 text-[11px] leading-relaxed text-ink-500">
-        倍率来自模型分组（100 = 1.0 倍）；实际扣费 = 基础额度 × 倍率 ÷ 100。
+        {{ t('components.modelDetail.ratioHint') }}
       </p>
 
       <!-- 调用示例 -->
       <div class="mt-5 flex flex-wrap items-center justify-between gap-2">
         <h3 class="flex items-center gap-1.5 text-sm font-semibold text-ink-100">
           <AppIcon name="terminal" :size="15" class="text-brand-700" />
-          调用示例
+          {{ t('components.modelDetail.callExample') }}
         </h3>
-        <CopyButton :value="curlSample" label="复制命令" success-text="调用命令已复制" small outline />
+        <CopyButton
+          :value="curlSample"
+          :label="t('components.modelDetail.copyCommand')"
+          :success-text="t('components.modelDetail.commandCopied')"
+          small
+          outline
+        />
       </div>
       <div class="code-block mt-2">
-        <pre>{{ curlSample }}</pre>
+        <pre dir="ltr">{{ curlSample }}</pre>
       </div>
       <p class="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-ink-500">
         <AppIcon name="info" :size="12" class="mt-0.5 shrink-0" />
-        <span v-if="isEmbedding">
-          这是嵌入类模型，必须使用 <code class="chip">/v1/embeddings</code> 端点；用对话端点调用会返回 404。
-        </span>
-        <span v-else>
-          把 <code class="chip">$AQUA_API_KEY</code> 换成你在「访问令牌」里创建的密钥；需要流式输出时在请求体里加
-          <code class="chip">"stream": true</code>。
-        </span>
+        <i18n-t v-if="isEmbedding" keypath="components.modelDetail.embeddingHint" tag="span">
+          <template #endpoint><code class="chip" dir="ltr">/v1/embeddings</code></template>
+        </i18n-t>
+        <i18n-t v-else keypath="components.modelDetail.keyHint" tag="span">
+          <template #key><code class="chip" dir="ltr">$AQUA_API_KEY</code></template>
+          <template #stream><code class="chip" dir="ltr">"stream": true</code></template>
+        </i18n-t>
       </p>
     </template>
 
     <template #footer>
-      <CopyButton :value="model?.model || ''" label="复制模型名" success-text="模型名已复制" outline />
-      <button type="button" class="btn btn-primary" @click="emit('close')">关闭</button>
+      <CopyButton
+        :value="model?.model || ''"
+        :label="t('components.modelDetail.copyModelName')"
+        :success-text="t('components.modelDetail.modelNameCopied')"
+        outline
+      />
+      <button type="button" class="btn btn-primary" @click="emit('close')">{{ t('components.modelDetail.close') }}</button>
     </template>
   </Modal>
 </template>

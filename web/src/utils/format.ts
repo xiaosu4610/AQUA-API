@@ -1,79 +1,28 @@
 /**
- * 展示格式化工具：数字 / 时间 / 耗时 / 百分比。
+ * 展示格式化工具（兼容转发层）。
  *
  * 意图（Why）：
  *   契约里所有时间字段都是 Unix 秒、所有数量字段都是裸数字，
- *   若各页面各写一套 toLocaleString，会出现「有的带千分位、有的不带」的不一致；
- *   统一在此处理，同时也保证空值统一显示为 “—”（而不是 undefined）。
+ *   若各页面各写一套格式化，会出现「有的带千分位、有的不带」的不一致。
+ *   现在「时间 / 数字」的本地化统一交给 src/i18n/format.ts（基于 Intl，跟随当前语言），
+ *   本文件保留原有导入路径以免大范围改动调用方，只做转发与少量仍属「换算/解析」的工具。
  *
  * 流转（Flow）：
- *   .vue / LogTable 等组件 → 本文件 → 字符串
+ *   .vue / LogTable 等组件 → 本文件（转发）→ i18n/format.ts → Intl.* → 已本地化字符串
  *
  * 扩展（Extend）：
- *   新增格式化需求先加到这里；涉及货币换算时（契约未定义 quota 单位）需先与后端确认单位。
+ *   新增「本地化展示」格式化请加在 i18n/format.ts（那里能拿到当前语言）；
+ *   本文件只保留与语言无关的换算与解析（formatLatency / parseModelList 等）。
  */
+import { EMPTY, formatDateTime, formatNumber } from '@/i18n/format'
 
-/** 空值占位符：统一用长破折号，视觉上比 “-” 更清晰 */
-export const EMPTY = '—'
-
-/** 千分位数字（用于配额、Token 数等需要精确读数的场景） */
-export function formatNumber(value: number | null | undefined): string {
-  if (value === null || value === undefined || Number.isNaN(value)) return EMPTY
-  return value.toLocaleString('zh-CN')
-}
+// 时间 / 数字的本地化格式化统一从 i18n/format.ts 转发，保持既有导入路径可用
+export { EMPTY, formatCompact, formatCurrency, formatDate, formatDateTime, formatNumber, formatPercent, formatRelative } from '@/i18n/format'
 
 /**
- * 紧凑数字（1.2万 / 3.5亿）：仅用于仪表盘大卡片，避免长数字撑破布局。
- * 需要精确值时请用 formatNumber，并把完整值放进 title 属性。
+ * 毫秒耗时：>1s 用秒表示，便于快速判断慢请求。
+ * 单位（ms / s）跨语言通用，故不做本地化，留在本文件。
  */
-export function formatCompact(value: number | null | undefined): string {
-  if (value === null || value === undefined || Number.isNaN(value)) return EMPTY
-  if (Math.abs(value) < 10000) return value.toLocaleString('zh-CN')
-  return new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(value)
-}
-
-/** 百分比：0.987 → 98.7% */
-export function formatPercent(ratio: number | null | undefined, digits = 1): string {
-  if (ratio === null || ratio === undefined || Number.isNaN(ratio)) return EMPTY
-  return `${(ratio * 100).toFixed(digits)}%`
-}
-
-function pad(n: number): string {
-  return n < 10 ? `0${n}` : String(n)
-}
-
-/** Unix 秒 → 本地时间 YYYY-MM-DD HH:mm:ss（0/空 视为「无」） */
-export function formatDateTime(ts: number | null | undefined): string {
-  if (!ts) return EMPTY
-  const d = new Date(ts * 1000)
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(
-    d.getMinutes(),
-  )}:${pad(d.getSeconds())}`
-}
-
-/** Unix 秒 → 本地日期 YYYY-MM-DD */
-export function formatDate(ts: number | null | undefined): string {
-  if (!ts) return EMPTY
-  const d = new Date(ts * 1000)
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-}
-
-/**
- * Unix 秒 → 相对时间（如「3 分钟前」）。
- * 为什么需要：日志列表里「刚刚发生的错误」比绝对时间更易扫读。
- */
-export function formatRelative(ts: number | null | undefined): string {
-  if (!ts) return EMPTY
-  const diff = Math.floor(Date.now() / 1000) - ts
-  if (diff < 0) return formatDateTime(ts)
-  if (diff < 60) return '刚刚'
-  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`
-  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`
-  if (diff < 86400 * 30) return `${Math.floor(diff / 86400)} 天前`
-  return formatDate(ts)
-}
-
-/** 毫秒耗时：>1s 用秒表示，便于快速判断慢请求 */
 export function formatLatency(ms: number | null | undefined): string {
   if (ms === null || ms === undefined || Number.isNaN(ms)) return EMPTY
   if (ms < 1000) return `${ms} ms`
@@ -81,7 +30,8 @@ export function formatLatency(ms: number | null | undefined): string {
 }
 
 /**
- * 到期时间展示：0 表示永不过期（契约约定），其中文文案比 “—” 更明确。
+ * 到期时间展示：0 表示永不过期（契约约定）。
+ * TODO(i18n): 「永不过期」是展示文案，待页面域（portal/admin）词条就绪后改走 $t —— 本轮仅迁移共用组件。
  */
 export function formatExpiry(ts: number | null | undefined): string {
   if (!ts) return '永不过期'
@@ -90,6 +40,7 @@ export function formatExpiry(ts: number | null | undefined): string {
 
 /**
  * 剩余额度展示：unlimited_quota 为 true 时忽略 remain_quota（契约明确该字段无意义）。
+ * TODO(i18n): 「不限额度」同 formatExpiry，待页面域词条就绪后改走 $t。
  */
 export function formatQuota(remain: number | null | undefined, unlimited?: boolean): string {
   if (unlimited) return '不限额度'

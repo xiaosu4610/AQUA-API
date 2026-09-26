@@ -5,17 +5,19 @@
  * 意图（Why）：
  *   门户「我的调用记录」与管理「全站调用日志」是同一张表的两种视图（后者多两列）；
  *   共用组件可保证列宽、对齐、状态徽标与错误提示的呈现完全一致。
+ *   表头与单元格标签走词条（components.logTable.*），列标签同时用于窄屏卡片视图。
  *
  * 流转（Flow）：
  *   页面请求 /api/user/logs 或 /api/admin/logs → 传入 logs → 本组件渲染
  *   状态渲染优先级：loading > error > empty > 数据行
  *
  * 扩展（Extend）：
- *   新增列（如 request_id）时：在表头与数据行同时添加，并同步 bumpColumnCount 的基数，
+ *   新增列（如 request_id）时：在表头与数据行同时添加，并同步 bump columnCount 的基数，
  *   否则空态行的 colSpan 会对不齐；同时别忘了给新增的 <td> 补 data-label
- *   （窄屏卡片视图的「标签：值」标签即来自该属性，与表头文案保持一致）。
+ *   （窄屏卡片视图的「标签：值」标签即来自该属性，与表头文案保持一致），并补词条键。
  */
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 import AppIcon from './AppIcon.vue'
 import DataState from './DataState.vue'
@@ -32,7 +34,9 @@ const props = withDefaults(
     showUser?: boolean
     /** 是否显示「渠道」列（管理端） */
     showChannel?: boolean
+    /** 空态文案（不传则用当前语言默认词条） */
     emptyText?: string
+    /** 空态补充说明（不传则用当前语言默认词条） */
     emptyHint?: string
   }>(),
   {
@@ -40,12 +44,15 @@ const props = withDefaults(
     error: '',
     showUser: false,
     showChannel: false,
-    emptyText: '暂无调用记录',
-    emptyHint: '使用访问令牌发起一次模型请求后，这里会出现对应的调用明细。',
   },
 )
 
 const emit = defineEmits<{ (e: 'retry'): void }>()
+
+const { t } = useI18n()
+
+const emptyMessage = computed(() => props.emptyText ?? t('components.logTable.empty'))
+const emptyDescription = computed(() => props.emptyHint ?? t('components.logTable.emptyHint'))
 
 /**
  * 总列数：用于空态/加载态行的 colSpan。
@@ -61,23 +68,23 @@ function isOk(log: UsageLog): boolean {
 
 <template>
   <!-- 滑动提示只在桌面端出现：窄屏已切换为卡片视图（.table-cards），不需要左右滑动 -->
-  <p class="mb-2 hidden text-xs text-ink-400 lg:block">表格列较多，可左右滑动查看完整内容。</p>
+  <p class="mb-2 hidden text-xs text-ink-400 lg:block">{{ $t('components.logTable.scrollHint') }}</p>
 
   <div class="table-wrap table-cards">
     <table class="data-table min-w-[1080px]">
       <thead>
         <tr>
-          <th class="w-[9rem]">时间</th>
-          <th v-if="showUser">用户</th>
-          <th>模型</th>
-          <th v-if="showChannel">渠道</th>
-          <th>令牌</th>
-          <th class="text-right">入 / 出 Token</th>
-          <th class="text-right">合计</th>
-          <th class="text-right">配额</th>
-          <th class="text-right">延迟</th>
-          <th>类型</th>
-          <th>状态</th>
+          <th class="w-[9rem]">{{ $t('components.logTable.col.time') }}</th>
+          <th v-if="showUser">{{ $t('components.logTable.col.user') }}</th>
+          <th>{{ $t('components.logTable.col.model') }}</th>
+          <th v-if="showChannel">{{ $t('components.logTable.col.channel') }}</th>
+          <th>{{ $t('components.logTable.col.token') }}</th>
+          <th class="text-right">{{ $t('components.logTable.col.tokens') }}</th>
+          <th class="text-right">{{ $t('components.logTable.col.total') }}</th>
+          <th class="text-right">{{ $t('components.logTable.col.quota') }}</th>
+          <th class="text-right">{{ $t('components.logTable.col.latency') }}</th>
+          <th>{{ $t('components.logTable.col.kind') }}</th>
+          <th>{{ $t('components.logTable.col.status') }}</th>
         </tr>
       </thead>
 
@@ -87,48 +94,48 @@ function isOk(log: UsageLog): boolean {
           :error="error"
           :empty="!logs.length"
           :colspan="columnCount"
-          :empty-text="emptyText"
-          :empty-hint="emptyHint"
-          loading-text="正在加载调用记录…"
+          :empty-text="emptyMessage"
+          :empty-hint="emptyDescription"
+          :loading-text="$t('components.logTable.loading')"
           @retry="emit('retry')"
         />
 
         <template v-if="!loading && !error && logs.length">
           <tr v-for="log in logs" :key="log.id">
-            <td class="cell-muted whitespace-nowrap" :title="formatDateTime(log.created_at)" data-label="时间">
+            <td class="cell-muted whitespace-nowrap" :title="formatDateTime(log.created_at)" :data-label="$t('components.logTable.col.time')">
               {{ formatRelative(log.created_at) }}
             </td>
 
-            <td v-if="showUser" class="whitespace-nowrap" data-label="用户">
+            <td v-if="showUser" class="whitespace-nowrap" :data-label="$t('components.logTable.col.user')">
               <span class="text-ink-100">{{ log.username || `#${log.user_id}` }}</span>
-              <span class="ml-1 text-[11px] text-ink-500">#{{ log.user_id }}</span>
+              <span class="ms-1 text-[11px] text-ink-500">#{{ log.user_id }}</span>
             </td>
 
-            <td class="whitespace-nowrap" data-label="模型">
-              <span class="chip">{{ log.model || '—' }}</span>
+            <td class="whitespace-nowrap" :data-label="$t('components.logTable.col.model')">
+              <span class="chip" dir="ltr">{{ log.model || '—' }}</span>
             </td>
 
-            <td v-if="showChannel" class="whitespace-nowrap text-ink-200" data-label="渠道">
+            <td v-if="showChannel" class="whitespace-nowrap text-ink-200" :data-label="$t('components.logTable.col.channel')">
               {{ log.channel_name || (log.channel_id ? `#${log.channel_id}` : '—') }}
             </td>
 
-            <td class="max-w-[10rem] truncate text-ink-200" :title="log.token_name" data-label="令牌">
+            <td class="max-w-[10rem] truncate text-ink-200" :title="log.token_name" :data-label="$t('components.logTable.col.token')">
               {{ log.token_name || '—' }}
             </td>
 
-            <td class="cell-num text-ink-300" data-label="入 / 出 Token">
+            <td class="cell-num text-ink-300" :data-label="$t('components.logTable.col.tokens')">
               {{ formatNumber(log.prompt_tokens) }} / {{ formatNumber(log.completion_tokens) }}
             </td>
 
-            <td class="cell-num" data-label="合计">{{ formatNumber(log.total_tokens) }}</td>
-            <td class="cell-num" data-label="配额">{{ formatNumber(log.quota) }}</td>
-            <td class="cell-num text-ink-300" data-label="延迟">{{ formatLatency(log.latency_ms) }}</td>
+            <td class="cell-num" :data-label="$t('components.logTable.col.total')">{{ formatNumber(log.total_tokens) }}</td>
+            <td class="cell-num" :data-label="$t('components.logTable.col.quota')">{{ formatNumber(log.quota) }}</td>
+            <td class="cell-num text-ink-300" :data-label="$t('components.logTable.col.latency')">{{ formatLatency(log.latency_ms) }}</td>
 
-            <td data-label="类型">
-              <span class="badge badge-off">{{ log.is_stream ? '流式' : '非流式' }}</span>
+            <td :data-label="$t('components.logTable.col.kind')">
+              <span class="badge badge-off">{{ log.is_stream ? $t('components.logTable.stream') : $t('components.logTable.nonStream') }}</span>
             </td>
 
-            <td data-label="状态">
+            <td :data-label="$t('components.logTable.col.status')">
               <div class="flex items-center gap-1.5">
                 <span :class="httpStatusBadgeClass(log.status_code)">
                   <span class="dot" />
@@ -138,7 +145,7 @@ function isOk(log: UsageLog): boolean {
                 <span v-if="log.error" class="text-red-600" :title="log.error">
                   <AppIcon name="alert" :size="14" />
                 </span>
-                <span v-if="!isOk(log) && !log.error" class="text-ink-500">失败</span>
+                <span v-if="!isOk(log) && !log.error" class="text-ink-500">{{ $t('components.logTable.failed') }}</span>
               </div>
             </td>
           </tr>

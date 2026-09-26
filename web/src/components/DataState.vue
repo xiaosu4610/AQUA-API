@@ -14,8 +14,10 @@
  * 扩展（Extend）：
  *   表格内使用时传 colspan（此时以 <tr><td> 渲染，保证表格语义与列宽）；
  *   需要空态 CTA 时用 #action 插槽（如「创建第一个令牌」按钮）。
+ *   文案：三个占位文案（加载/空/重试）都有当前语言的默认词条，调用方可按需覆盖。
  */
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 import AppIcon from './AppIcon.vue'
 
@@ -27,13 +29,13 @@ const props = withDefaults(
     error?: string
     /** 是否为空数据 */
     empty?: boolean
-    /** 加载中文案 */
+    /** 加载中文案（不传则用当前语言默认词条） */
     loadingText?: string
-    /** 空态文案 */
+    /** 空态文案（不传则用当前语言默认词条） */
     emptyText?: string
     /** 空态补充说明 */
     emptyHint?: string
-    /** 错误态重试按钮文案（不传则不显示重试按钮） */
+    /** 错误态重试按钮文案（不传则用当前语言默认词条；显式传空串则不显示重试按钮） */
     retryText?: string
     /** 传入后以表格行形式渲染（值即 colSpan） */
     colspan?: number
@@ -44,15 +46,18 @@ const props = withDefaults(
     loading: false,
     error: '',
     empty: false,
-    loadingText: '加载中…',
-    emptyText: '暂无数据',
-    emptyHint: '',
-    retryText: '重新加载',
     compact: false,
   },
 )
 
 const emit = defineEmits<{ (e: 'retry'): void }>()
+
+const { t } = useI18n()
+
+// 用 `??` 而非默认值：显式传空串（如 retryText=""）仍保留「不显示」的语义
+const loadingMessage = computed(() => props.loadingText ?? t('components.dataState.loading'))
+const emptyMessage = computed(() => props.emptyText ?? t('components.dataState.empty'))
+const retryLabel = computed(() => props.retryText ?? t('components.dataState.retry'))
 
 /** 是否以表格行渲染 */
 const asRow = computed(() => typeof props.colspan === 'number' && props.colspan > 0)
@@ -85,7 +90,7 @@ const panelClass = computed(() => [
           class="h-5 w-5 animate-spin rounded-full border-2 border-ink-600 border-t-brand-400"
           aria-hidden="true"
         />
-        <p class="text-sm text-ink-400">{{ loadingText }}</p>
+        <p class="text-sm text-ink-400">{{ loadingMessage }}</p>
       </template>
 
       <!-- 错误态：展示后端返回的可读信息 + 重试入口 -->
@@ -94,9 +99,9 @@ const panelClass = computed(() => [
           <AppIcon name="alert" :size="20" />
         </span>
         <p class="max-w-md text-sm leading-relaxed text-ink-200">{{ error }}</p>
-        <button v-if="retryText" type="button" class="btn btn-secondary btn-sm mt-1" @click="emit('retry')">
+        <button v-if="retryLabel" type="button" class="btn btn-secondary btn-sm mt-1" @click="emit('retry')">
           <AppIcon name="refresh" :size="14" />
-          {{ retryText }}
+          {{ retryLabel }}
         </button>
       </template>
 
@@ -105,7 +110,7 @@ const panelClass = computed(() => [
         <span class="flex h-10 w-10 items-center justify-center rounded-xl bg-ink-850 text-ink-400 ring-1 ring-inset ring-ink-700">
           <AppIcon name="layers" :size="20" />
         </span>
-        <p class="text-sm font-medium text-ink-200">{{ emptyText }}</p>
+        <p class="text-sm font-medium text-ink-200">{{ emptyMessage }}</p>
         <p v-if="emptyHint" class="max-w-md text-xs leading-relaxed text-ink-400">{{ emptyHint }}</p>
         <div v-if="$slots.action" class="mt-1">
           <slot name="action" />

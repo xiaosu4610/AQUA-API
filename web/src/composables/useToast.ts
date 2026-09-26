@@ -12,8 +12,11 @@
  * 扩展（Extend）：
  *   需要「确认后执行」的交互请用 composables/useConfirm.ts；
  *   本文件只做单向通知，不要在这里加交互逻辑。
+ *   文案：这里不硬编码中文 —— 兜底文案取自 i18n 词条，调用方传入的 message 应已是译文。
  */
 import { ref } from 'vue'
+
+import { i18n } from '@/i18n'
 
 export type ToastKind = 'success' | 'error' | 'info'
 
@@ -50,9 +53,9 @@ export function toastSuccess(message: string): void {
   push('success', message)
 }
 
-/** 失败提示：message 为空时给一个兜底文案，避免出现「空提示框」 */
+/** 失败提示：message 为空时用当前语言的兜底文案，避免出现「空提示框」 */
 export function toastError(message: string | undefined): void {
-  push('error', message || '操作失败，请稍后重试')
+  push('error', message || i18n.global.t('common.toast.operationFailed'))
 }
 
 /** 中性提示 */

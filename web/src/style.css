@@ -246,7 +246,7 @@
   }
 
   .data-table {
-    @apply w-full border-collapse text-left text-sm;
+    @apply w-full border-collapse text-start text-sm;
   }
 
   .data-table thead th {
@@ -270,6 +270,7 @@
     @apply bg-brand-500/5;
   }
 
+  /* 数字列：始终右对齐（不随书写方向镜像），便于按位对齐读数 */
   .data-table .cell-num {
     @apply text-right font-mono text-[13px] tabular-nums;
   }
@@ -279,7 +280,7 @@
   }
 
   .data-table .cell-actions {
-    @apply w-px whitespace-nowrap text-right;
+    @apply w-px whitespace-nowrap text-end;
   }
 
   /* ── 徽标与标签 ───────────────────────────────────────── */
@@ -454,7 +455,7 @@
 
   .nav-item-active::before {
     content: '';
-    @apply absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-brand-600;
+    @apply absolute start-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-brand-600;
   }
 
   /* 表格骨架屏（加载态用，避免布局跳动） */
@@ -472,7 +473,7 @@
      但用户的动作完全一样（点一下切换筛选），交互形态统一后
      只需要学一次；计数右对齐便于纵向扫读。 */
   .rail-item {
-    @apply flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm
+    @apply flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-start text-sm
       text-ink-200 transition-colors hover:bg-ink-850 hover:text-ink-50;
   }
 
@@ -481,7 +482,7 @@
   }
 
   .rail-count {
-    @apply ml-auto shrink-0 rounded-md bg-ink-850 px-1.5 py-0.5 font-mono text-[11px] tabular-nums text-ink-400;
+    @apply ms-auto shrink-0 rounded-md bg-ink-850 px-1.5 py-0.5 font-mono text-[11px] tabular-nums text-ink-400;
   }
 
   .rail-title {
@@ -515,7 +516,7 @@
           在列表场景下是纯浪费。 */
   .model-card {
     @apply relative flex h-full flex-col gap-3 rounded-xl border border-ink-800/70 bg-white/85 p-4
-      text-left transition-[transform,border-color,box-shadow] duration-150 ease-out
+      text-start transition-[transform,border-color,box-shadow] duration-150 ease-out
       hover:-translate-y-0.5 hover:border-brand-500/40 hover:shadow-pop;
   }
 
@@ -529,7 +530,7 @@
 
   /* 列表视图行：100+ 模型时的主力视图，一屏能扫读更多条目 */
   .plaza-row {
-    @apply flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-brand-500/5;
+    @apply flex w-full items-center gap-3 px-4 py-3 text-start transition-colors hover:bg-brand-500/5;
   }
 }
 
@@ -623,5 +624,32 @@
     .table-cards .data-table tbody td[data-label].cell-actions {
       @apply w-auto flex-wrap items-center justify-end whitespace-normal;
     }
+  }
+
+  /* ── RTL（阿拉伯语）适配 ───────────────────────────────
+     思路：能用逻辑属性的地方（text-start / ms-auto / start-0 / border-e …）就地改成逻辑属性，
+     布局随书写方向自动镜像；只有「方向性动画 / 方向性图标」这类无法用逻辑属性表达的地方，
+     才用 [dir='rtl'] 少量覆盖。
+     必须保持 LTR 的内容（模型名 / 密钥 / URL / cURL / 代码块）由模板加 dir="ltr" 强制。 */
+
+  /* 抽屉默认从右侧滑入；RTL 下改为从左侧滑入（面板已用 end-0 自动贴到左侧）。
+     选择器提升到三段权重，确保稳定覆盖 .animate-slide-in-right 的动画名。 */
+  [dir='rtl'] .drawer-panel.animate-slide-in-right {
+    animation-name: aqua-slide-in-left;
+  }
+
+  /* 方向性图标（分页上一页/下一页箭头、列表行「详情」箭头等）：RTL 下水平翻转 */
+  [dir='rtl'] .rtl-flip {
+    transform: scaleX(-1);
+  }
+}
+
+/* RTL 抽屉滑入动画：从左侧进入（与 LTR 的 slide-in-right 互为镜像） */
+@keyframes aqua-slide-in-left {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(0);
   }
 }

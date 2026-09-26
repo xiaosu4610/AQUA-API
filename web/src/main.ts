@@ -1,5 +1,5 @@
 /**
- * 应用入口：装配 Pinia、路由、全局样式与全局宿主组件。
+ * 应用入口：装配 Pinia、i18n、路由、全局样式与全局宿主组件。
  *
  * 意图（Why）：
  *   main.ts 只做「装配」，不含业务逻辑（与后端 cmd/aqua/main.go 的思路一致）；
@@ -9,18 +9,20 @@
  * 流转（Flow）：
  *   index.html → main.ts
  *     → 创建 Pinia / Router
+ *     → 安装 i18n（语言检测与 <html lang/dir> 已在 i18n/index.ts 内完成）
  *     → 注入未授权回调（清登录态 + 跳登录页）
  *     → 预取站点信息（失败不阻断，页面自行提示）
  *     → mount(App.vue)
  *
  * 扩展（Extend）：
- *   新增全局插件（如 i18n）在此 use()；新增全局浮层组件请挂到 App.vue。
+ *   新增全局插件在此 use()；新增全局浮层组件请挂到 App.vue。
  */
 import { createPinia } from 'pinia'
 import { createApp } from 'vue'
 
 import App from './App.vue'
 import { setUnauthorizedHandler } from './api/client'
+import { i18n } from './i18n'
 import { router } from './router'
 import { useAuthStore } from './stores/auth'
 import { useSiteStore } from './stores/site'
@@ -30,6 +32,7 @@ const app = createApp(App)
 const pinia = createPinia()
 
 app.use(pinia)
+app.use(i18n)
 app.use(router)
 
 // 会话失效的集中处理：清本地登录态 + 带 redirect 跳登录页
