@@ -22,6 +22,16 @@ export function login(payload: LoginPayload): Promise<AuthResult> {
 }
 
 /**
+ * POST /api/auth/admin-login：超管入口登录（只提交密码，不提交用户名）。
+ *
+ * 为什么单独一个接口而不是把用户名也填成隐藏值：后端需要按"仅密码"的语义
+ * 枚举管理员，并对管理员数量过多的情况给出明确拒绝理由（见后端注释）。
+ */
+export function adminLogin(password: string): Promise<AuthResult> {
+  return api.post<AuthResult>('/auth/admin-login', { password })
+}
+
+/**
  * POST /api/auth/register：受站点 registration_enabled 开关控制（由调用方先行校验）。
  *
  * 站点开启"注册必须邮箱验证码"时，后端会强制校验 email + code；

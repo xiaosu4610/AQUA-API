@@ -54,6 +54,23 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '注册', guestOnly: true },
   },
   {
+    // 安装向导：只在"系统还没有任何管理员"时有意义，安装完成后页面会转为引导态
+    // （后端 /api/install 会返回 409，因此不存在"被重复安装"的风险）。
+    path: '/install',
+    name: 'install',
+    component: () => import('@/views/InstallView.vue'),
+    meta: { title: '安装向导' },
+  },
+  {
+    // 超管独立入口：只输密码。
+    // 刻意放在 /admin 之外（不作为其子路由）——否则会继承 requiresAdmin，
+    // 出现"要登录后台才能看到登录后台的页面"的死循环。
+    path: '/admin/login',
+    name: 'admin-login',
+    component: () => import('@/views/admin/AdminLoginView.vue'),
+    meta: { title: '管理后台登录', guestOnly: true },
+  },
+  {
     // 模型广场对访客开放：不登录也能看"能用什么、什么价"。
     // 这是落地页之外最重要的公开页面（很多用户直接搜索模型名进来）。
     path: '/models',
@@ -264,8 +281,14 @@ router.beforeEach(async (to) => {
   if (!auth.ready) await auth.bootstrap()
 
   const loginRedirect = { name: 'login' as const, query: { redirect: to.fullPath } }
+  // 后台相关页面未登录时送往"超管独立入口"（只输密码），而不是普通登录页：
+  // 站长不需要为了进后台再回忆一次用户名。
+  const adminLoginRedirect = { name: 'admin-login' as const, query: { redirect: to.fullPath } }
 
-  if ((to.meta.requiresAuth || to.meta.requiresAdmin) && !auth.isLoggedIn) {
+  if (to.meta.requiresAdmin && !auth.isLoggedIn) {
+    return adminLoginRedirect
+  }
+  if (to.meta.requiresAuth && !auth.isLoggedIn) {
     return loginRedirect
   }
 

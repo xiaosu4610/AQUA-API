@@ -73,6 +73,13 @@ func (s *Server) registerRoutes() {
 	authLimit := s.loginLimiter.Middleware(middleware.ClientIP)
 	api.POST("/auth/register", authLimit, s.handleRegister)
 	api.POST("/auth/login", authLimit, s.handleLogin)
+	// 超管入口：只输密码（不输用户名）。必须与普通登录共用限流器——
+	// 它会枚举管理员逐个比对 bcrypt 哈希，不限流即等于开放一个 CPU 放大器。
+	api.POST("/auth/admin-login", authLimit, s.handleAdminLogin)
+	// 安装向导：未安装时可用，安装完成后接口自锁（返回 409）。
+	// 安装请求同样含 bcrypt 运算，因此也套限流。
+	api.GET("/install/status", s.handleInstallStatus)
+	api.POST("/install", authLimit, s.handleInstall)
 	// 发送注册邮箱验证码。同样叠加限流：该接口会触发真实发信（有成本），
 	// 且是"把本站当邮件轰炸机"的直接入口。
 	api.POST("/auth/email-code", authLimit, s.handleSendEmailCode)

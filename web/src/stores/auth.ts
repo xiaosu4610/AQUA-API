@@ -20,7 +20,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
-import { fetchMe, login, logout, register } from '@/api/auth'
+import { adminLogin, fetchMe, login, logout, register } from '@/api/auth'
 import {
   ApiError,
   clearSession,
@@ -61,6 +61,18 @@ export const useAuthStore = defineStore('auth', () => {
   /** 登录：成功后返回用户信息，由调用方决定跳转目标 */
   async function signIn(payload: LoginPayload): Promise<AuthUser> {
     const result = await login(payload)
+    applySession(result)
+    return result.user
+  }
+
+  /**
+   * 超管入口登录：只需密码。
+   *
+   * 与 signIn 的区别仅在于凭据形态（后端按"仅密码"匹配管理员），
+   * 会话落盘、角色判断等后续流程完全一致，因此共用 applySession。
+   */
+  async function signInAsAdmin(password: string): Promise<AuthUser> {
+    const result = await adminLogin(password)
     applySession(result)
     return result.user
   }
@@ -129,6 +141,7 @@ export const useAuthStore = defineStore('auth', () => {
     isAdmin,
     displayName,
     signIn,
+    signInAsAdmin,
     signUp,
     signOut,
     clearLocal,

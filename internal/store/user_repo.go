@@ -308,6 +308,47 @@ func (r *userRepository) CountAdmins(ctx context.Context) (int, error) {
 	return total, nil
 }
 
+// maxAdminLookupLimit 是枚举管理员的硬上限。
+//
+// 取 5：超管入口要逐个比对 bcrypt 哈希，而未鉴权的密码比对是典型的 CPU 放大面。
+// 正常部署只有 1~2 个管理员，超过 5 个时说明站点把管理员当普通用户在用，
+// 此时应当改用"用户名 + 密码"登录（见 handler_install 的说明），而不是让
+// 一个未鉴权接口去做 N 次昂贵的哈希运算。
+const maxAdminLookupLimit = 5
+
+// ListAdmins 返回最多 limit 个管理员，按 ID 升序。
+//
+// limit 会被夹到 [1, maxAdminLookupLimit]，调用方无法通过传大数值绕过限制。
+func (r *userRepository) ListAdmins(ctx context.Context, limit int) ([]*model.User, error) {
+	if limit <= 0 {
+		limit = 1
+	}
+	if limit > maxAdminLookupLimit {
+		limit = maxAdminLookupLimit
+	}
+
+	rows, err := r.db.QueryContext(ctx,
+		"SELECT "+userColumns+" FROM users WHERE role = ? ORDER BY id ASC LIMIT ?",
+		int(model.UserRoleAdmin), limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: 查询管理员列表失败: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	admins := make([]*model.User, 0, limit)
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		admins = append(admins, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: 遍历管理员结果集失败: %w", err)
+	}
+	return admins, nil
+}
+
 // buildUserWhere 构造用户查询的 WHERE 子句与参数（全部使用占位符，杜绝 SQL 注入）。
 func buildUserWhere(q model.UserQuery) (string, []any) {
 	var (

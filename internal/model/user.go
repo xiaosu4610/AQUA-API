@@ -284,6 +284,13 @@ type UserRepository interface {
 	//
 	// 用途：删除/降级最后一个管理员会让系统无人可管理，需据此拒绝该操作。
 	CountAdmins(ctx context.Context) (int, error)
+
+	// ListAdmins 返回最多 limit 个管理员，按 ID 升序。
+	//
+	// 为什么需要它：超管入口只要求输入密码（不输用户名），因此必须能枚举
+	// 管理员以便逐个比对口令哈希。limit 是硬约束——bcrypt 比对是刻意昂贵的操作，
+	// 管理员数量若不加限制，未鉴权接口就会变成 CPU 放大器。
+	ListAdmins(ctx context.Context, limit int) ([]*User, error)
 }
 
 // 会话令牌的格式约定。
