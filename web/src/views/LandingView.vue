@@ -349,16 +349,23 @@ const consoleTarget = computed(() => (auth.isAdmin ? '/admin' : '/console'))
             </p>
           </div>
 
-          <!-- 模型列表 -->
-          <div v-else class="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <div
-              v-for="model in site.models"
-              :key="model"
-              class="flex items-center gap-2.5 rounded-xl border border-ink-800 bg-ink-900/50 px-3.5 py-3 transition-colors hover:border-brand-500/30"
-            >
-              <AppIcon name="layers" :size="16" class="text-brand-600/80" />
-              <span class="truncate font-mono text-[13px] text-ink-100" :title="model">{{ model }}</span>
+          <!-- 模型列表：首页最多展示 24 个。
+               上游（如 NIM）动辄上百个模型，全部铺开会把首页拉得极长，
+               反而看不清别的信息；这里给出"还有 N 个"的提示，需要完整清单时去后台看。 -->
+          <div v-else>
+            <div class="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <div
+                v-for="model in site.models.slice(0, 24)"
+                :key="model"
+                class="flex items-center gap-2.5 rounded-xl border border-ink-800 bg-ink-900/50 px-3.5 py-3 transition-colors hover:border-brand-500/30"
+              >
+                <AppIcon name="layers" :size="16" class="text-brand-600/80" />
+                <span class="truncate font-mono text-[13px] text-ink-100" :title="model">{{ model }}</span>
+              </div>
             </div>
+            <p v-if="site.models.length > 24" class="mt-3 text-sm text-ink-400">
+              另有 {{ site.models.length - 24 }} 个模型同样可用（共 {{ site.models.length }} 个）。
+            </p>
           </div>
         </div>
       </section>
