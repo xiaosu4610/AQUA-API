@@ -20,7 +20,7 @@ const groups: NavGroup[] = [
     title: '总览',
     items: [
       { label: '仪表盘', to: '/admin', icon: 'chart' },
-      { label: '模型广场', to: '/models', icon: 'grid' },
+      { label: '模型广场', to: '/admin/models', icon: 'grid' },
     ],
   },
   {

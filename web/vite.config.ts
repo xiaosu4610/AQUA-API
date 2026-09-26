@@ -14,13 +14,18 @@
 // 扩展（Extend）：
 //   新增代理前缀：在 server.proxy 里追加一项。
 //   调整产物路径：改 build.outDir，同时需同步后端 go:embed 的路径指令。
+//   联调远端后端：设置环境变量 AQUA_BACKEND（如 https://aqua.ltzy.top）再 npm run dev，
+//   代理目标随之切换 —— 本地不跑后端也能看到真实数据，便于界面自查。
 import { fileURLToPath, URL } from 'node:url'
 
 import vue from '@vitejs/plugin-vue'
 import { defineConfig } from 'vite'
 
-/** 后端监听地址：契约约定为 127.0.0.1:8787，由 nginx 反向代理对外。 */
-const BACKEND_TARGET = 'http://127.0.0.1:8787'
+/**
+ * 后端监听地址：契约约定为 127.0.0.1:8787，由 nginx 反向代理对外。
+ * 可用环境变量 AQUA_BACKEND 覆盖（本地联调远端生产环境时使用）。
+ */
+const BACKEND_TARGET = process.env.AQUA_BACKEND || 'http://127.0.0.1:8787'
 
 export default defineConfig({
   plugins: [vue()],
@@ -33,8 +38,11 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': { target: BACKEND_TARGET, changeOrigin: false },
-      '/v1': { target: BACKEND_TARGET, changeOrigin: false },
+      // secure: false 仅作用于 dev server 的代理连接：当 AQUA_BACKEND 指向
+      // 走 CDN 的回源域名时，本机 Node 可能无法校验其证书链，
+      // 关掉校验只影响本机开发联调，构建产物与生产链路都不受影响。
+      '/api': { target: BACKEND_TARGET, changeOrigin: false, secure: false },
+      '/v1': { target: BACKEND_TARGET, changeOrigin: false, secure: false },
     },
   },
   build: {

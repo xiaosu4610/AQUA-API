@@ -4,7 +4,7 @@
  * 意图（Why）：
  *  1) 用 history 模式（无 # 号）配合后端 SPA 回退（未命中静态资源时返回 index.html）；
  *  2) 鉴权收敛在守卫里，页面组件不必各自判断登录态；
- *  3) 路由表同时充当「页面地图」：11 个页面一目了然。
+ *  3) 路由表同时充当「页面地图」：所有页面一目了然。
  *
  * 流转（Flow）：
  *   浏览器跳转 → beforeEach（先完成会话校验 → 判断 requiresAuth/requiresAdmin/guestOnly）
@@ -81,6 +81,22 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '访问令牌' },
       },
       {
+        // 控制台内的模型广场：与公开页 /models 是同一个展示组件，
+        // 但套在控制台外壳里，避免点一下就跳出侧边栏与身份上下文。
+        path: 'models',
+        name: 'console-models',
+        component: () => import('@/views/PlazaEmbeddedView.vue'),
+        meta: { title: '模型广场' },
+      },
+      {
+        // 接入示例改为控制台内页面：原来指向落地页锚点（/#quickstart），
+        // 会把人从控制台甩到营销页，回来后还得重新找位置。
+        path: 'docs',
+        name: 'console-docs',
+        component: () => import('@/views/console/DocsView.vue'),
+        meta: { title: '接入示例' },
+      },
+      {
         path: 'logs',
         name: 'console-logs',
         component: () => import('@/views/console/LogsView.vue'),
@@ -112,6 +128,14 @@ const routes: RouteRecordRaw[] = [
         name: 'admin-dashboard',
         component: () => import('@/views/admin/DashboardView.vue'),
         meta: { title: '仪表盘' },
+      },
+      {
+        // 管理后台同样有内嵌的模型广场：管理员看渠道覆盖情况时，
+        // 不该被切到用户门户的外壳里去（导航高亮会变，上下文会断）。
+        path: 'models',
+        name: 'admin-models',
+        component: () => import('@/views/PlazaEmbeddedView.vue'),
+        meta: { title: '模型广场' },
       },
       {
         path: 'channels',

@@ -3,14 +3,20 @@
  * 模型卡片：模型广场里"一个模型"的完整表达。
  *
  * 意图（Why）：
- *   模型广场的核心是"一眼看懂能用什么、什么价"。把这三件事固定在一张卡片里：
- *     1) 模型名 + 是否当前可用（避免用户调用后才发现 503）；
- *     2) 归属哪些分组（不同分组可能有不同价格与不同上游）；
- *     3) 价格（按 token 或按次），并标出分组倍率。
- *   卡片是纯展示组件，不发起请求，也不做路由跳转——便于在广场与后台复用。
+ *   广场的核心是"一眼看懂能用什么、什么价"。卡片把五件事固定下来：
+ *     1) 厂商（头像 + 配色）—— 让人靠颜色/首字扫读，而不必逐字读全名；
+ *     2) 模型名 + 是否当前可用（避免用户调用后才发现 503）；
+ *     3) 归属哪些分组（不同分组价格不同）；
+ *     4) 价格（按 token 或按次），并标出分组倍率；
+ *     5) 明确的"点开看详情"入口。
+ *
+ *   为什么整块卡片可点、而不是只放一个"详情"按钮：
+ *   广场是浏览型页面，用户的默认动作就是"点这个模型看看"；
+ *   把点击热区放大到整张卡，比让用户去找按钮省一次视觉搜索。
+ *   点击后由父组件开弹窗（就地展开），不做路由跳转 —— 跳页会打断浏览节奏。
  *
  * 流转（Flow）：
- *   ModelPlazaView → v-for → 本组件（props: model / groupLabels / 可选点击行为）
+ *   ModelPlazaBoard → v-for → 本组件；emit('select') 交给父组件开详情弹窗
  *
  * 扩展（Extend）：
  *   新增模型属性（上下文长度、能力标签）时加 prop 并在模板中补一段即可；
@@ -21,6 +27,7 @@ import { computed } from 'vue'
 import AppIcon from './AppIcon.vue'
 import type { PlazaModel, PlazaPrice } from '@/api/types'
 import { formatNumber } from '@/utils/format'
+import { vendorInitial, vendorOf, vendorTone } from '@/utils/vendor'
 
 const props = withDefaults(
   defineProps<{
@@ -33,12 +40,17 @@ const props = withDefaults(
   { groupLabels: () => ({}), showCopy: true },
 )
 
-const emit = defineEmits<{ (e: 'copy', value: string): void }>()
+const emit = defineEmits<{
+  (e: 'copy', value: string): void
+  (e: 'select', model: PlazaModel): void
+}>()
 
 /** 所属分组的展示名列表 */
 const groupLabelsOfModel = computed(() =>
-  props.model.groups.map((name) => props.groupLabels[name] || name),
+  props.model.groups.map((name) => props.groupLabels?.[name] || name),
 )
+
+const vendor = computed(() => vendorOf(props.model.model))
 
 /** 是否为"按次计费"的能力（图像/视频类） */
 function isPerCall(price: PlazaPrice): boolean {
@@ -54,17 +66,34 @@ function tokenPriceText(value: number): string {
 function ratioText(ratio: number): string {
   return `${(ratio / 100).toFixed(ratio % 100 === 0 ? 1 : 2)}x`
 }
+
+/** 复制按钮不能同时触发"打开详情"：单独拦住冒泡 */
+function onCopy(): void {
+  emit('copy', props.model.model)
+}
 </script>
 
 <template>
-  <article class="card card-pad flex h-full flex-col gap-3 transition-shadow hover:shadow-pop">
-    <!-- 标题行：模型名 + 可用状态 -->
-    <header class="flex items-start justify-between gap-3">
-      <div class="min-w-0">
+  <article
+    class="model-card group cursor-pointer"
+    role="button"
+    tabindex="0"
+    :aria-label="`查看 ${model.model} 详情`"
+    @click="emit('select', model)"
+    @keydown.enter.prevent="emit('select', model)"
+    @keydown.space.prevent="emit('select', model)"
+  >
+    <!-- 标题行：厂商头像 + 模型名 + 可用状态 -->
+    <header class="flex items-start gap-3">
+      <span class="vendor-avatar" :class="vendorTone(vendor)" aria-hidden="true">
+        {{ vendorInitial(vendor) }}
+      </span>
+
+      <div class="min-w-0 flex-1">
         <h3 class="truncate font-mono text-sm font-semibold text-ink-50" :title="model.model">
           {{ model.model }}
         </h3>
-        <p class="mt-1 flex flex-wrap items-center gap-1.5">
+        <p class="mt-1.5 flex flex-wrap items-center gap-1.5">
           <span class="badge" :class="model.available ? 'badge-ok' : 'badge-off'">
             <span class="dot" />
             {{ model.available ? '可用' : '未接入渠道' }}
@@ -78,10 +107,10 @@ function ratioText(ratio: number): string {
       <button
         v-if="showCopy"
         type="button"
-        class="btn-row"
+        class="btn-row shrink-0"
         title="复制模型名"
         aria-label="复制模型名"
-        @click="emit('copy', model.model)"
+        @click.stop="onCopy"
       >
         <AppIcon name="copy" :size="14" />
       </button>
@@ -90,7 +119,10 @@ function ratioText(ratio: number): string {
     <!-- 分组标签 -->
     <div class="flex min-h-[22px] flex-wrap items-center gap-1.5">
       <template v-if="groupLabelsOfModel.length">
-        <span v-for="label in groupLabelsOfModel" :key="label" class="chip">{{ label }}</span>
+        <span v-for="label in groupLabelsOfModel" :key="label" class="chip">
+          <AppIcon name="tag" :size="11" class="opacity-60" />
+          {{ label }}
+        </span>
       </template>
       <span v-else class="text-xs text-ink-500">暂无分组</span>
     </div>
@@ -122,5 +154,11 @@ function ratioText(ratio: number): string {
       </template>
       <p v-else class="text-xs text-ink-500">未配置价格（调用不计费）</p>
     </div>
+
+    <!-- 底部提示：让"卡片可点"这件事变得显式 -->
+    <p class="-mb-0.5 flex items-center gap-1 text-[11px] font-medium text-brand-700 opacity-0 transition-opacity group-hover:opacity-100">
+      <AppIcon name="info" :size="12" />
+      查看详情
+    </p>
   </article>
 </template>

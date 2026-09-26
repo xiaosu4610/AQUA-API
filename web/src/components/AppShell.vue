@@ -72,7 +72,7 @@ async function handleSignOut(): Promise<void> {
 </script>
 
 <template>
-  <div class="min-h-screen bg-ink-950">
+  <div class="app-ambient min-h-screen bg-ink-950">
     <!-- 窄屏遮罩 -->
     <div
       v-if="sidebarOpen"

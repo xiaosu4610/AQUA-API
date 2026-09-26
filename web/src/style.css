@@ -310,17 +310,90 @@
 
   /* 侧边栏导航项 */
   .nav-item {
-    @apply flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium text-ink-300
+    @apply relative flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium text-ink-300
       transition-colors hover:bg-ink-850 hover:text-ink-100;
   }
 
+  /* 选中态：底色 + 左侧竖条。
+     为什么要竖条：只靠浅底色在"透明亮色"主题下对比度很弱，
+     用户扫一眼侧边栏很难立刻定位"我现在在哪一页"；
+     左边缘的竖条在视觉上是最快能被捕捉的位置标记。 */
   .nav-item-active {
-    @apply bg-brand-500/10 text-brand-700 hover:bg-brand-500/15 hover:text-brand-800;
+    @apply bg-brand-500/15 text-brand-800 hover:bg-brand-500/15 hover:text-brand-800;
+  }
+
+  .nav-item-active::before {
+    content: '';
+    @apply absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-brand-600;
   }
 
   /* 表格骨架屏（加载态用，避免布局跳动） */
   .skeleton {
     @apply animate-pulse rounded bg-ink-800;
+  }
+
+  /* 卡片骨架屏：与 .model-card 同高，加载完成时不会发生布局跳动 */
+  .skeleton-card {
+    @apply h-[176px] animate-pulse rounded-xl border border-ink-800/70 bg-white/60;
+  }
+
+  /* ── 左侧栏目（模型广场 / 筛选面板共用）──────────────────
+     为什么统一成一种「可选中行」：分组、厂商、状态是三种不同维度，
+     但用户的动作完全一样（点一下切换筛选），交互形态统一后
+     只需要学一次；计数右对齐便于纵向扫读。 */
+  .rail-item {
+    @apply flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm
+      text-ink-200 transition-colors hover:bg-ink-850 hover:text-ink-50;
+  }
+
+  .rail-item-active {
+    @apply bg-brand-500/15 font-medium text-brand-800 hover:bg-brand-500/15 hover:text-brand-800;
+  }
+
+  .rail-count {
+    @apply ml-auto shrink-0 rounded-md bg-ink-850 px-1.5 py-0.5 font-mono text-[11px] tabular-nums text-ink-400;
+  }
+
+  .rail-title {
+    @apply flex items-center gap-1.5 px-3 pb-1.5 pt-4 text-[11px] font-semibold uppercase tracking-wider text-ink-500;
+  }
+
+  /* ── 分段控件（视图切换 / 区间切换）────────────────────
+     把互斥选项收进一个整体容器，比一排独立按钮更能表达
+     「这些是同一组开关，只能选一个」。 */
+  .seg {
+    @apply inline-flex items-center gap-0.5 rounded-lg border border-ink-700 bg-ink-850 p-0.5;
+  }
+
+  .seg-item {
+    @apply inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium
+      text-ink-400 transition-colors hover:text-ink-100;
+  }
+
+  .seg-item-active {
+    @apply bg-white text-brand-700 shadow-sm;
+  }
+
+  /* ── 模型卡片 ───────────────────────────────────────────
+     卡片整块可点击（打开详情弹窗），所以必须有明确的位置反馈
+     （轻微上浮 + 阴影），否则用户看不出这块是可交互的。 */
+  .model-card {
+    @apply relative flex h-full flex-col gap-3 rounded-xl border border-ink-800/70 bg-white/70 p-4
+      text-left backdrop-blur-xl transition-all duration-150
+      hover:-translate-y-0.5 hover:border-brand-500/40 hover:shadow-pop;
+  }
+
+  /* 厂商头像：取模型名前缀（nvidia / meta / z-ai …）首字母生成，
+     配色由前缀哈希决定 —— 同一厂商在全站颜色恒定，
+     用户扫列表时可以靠颜色而不是逐字读名字来定位。 */
+  .vendor-avatar {
+    @apply flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-sm font-semibold
+      ring-1 ring-inset;
+  }
+
+  /* 列表视图行：100+ 模型时的主力视图，一屏能扫读更多条目 */
+  .plaza-row {
+    @apply flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-brand-500/5;
   }
 }
 
@@ -339,5 +412,20 @@
 
   .no-scrollbar::-webkit-scrollbar {
     display: none;
+  }
+
+  /* 页面氛围光：在极浅底色上叠两团极淡的品牌色光晕。
+     为什么需要：整站大面积纯色底会让页面显得"平板、单调"，
+     光晕用纯 CSS 实现（不引入图片），既增加纵深又不干扰阅读。 */
+  .app-ambient {
+    background-image:
+      radial-gradient(58rem 30rem at 10% -10%, rgba(6, 182, 212, 0.13), transparent 62%),
+      radial-gradient(46rem 26rem at 94% 2%, rgba(129, 140, 248, 0.12), transparent 64%);
+    background-repeat: no-repeat;
+  }
+
+  /* 标题渐变字：仅用于页面主标题的强调词，不用于正文（正文用渐变会降低可读性） */
+  .text-gradient-brand {
+    @apply bg-gradient-to-r from-brand-700 via-brand-600 to-indigo-600 bg-clip-text text-transparent;
   }
 }

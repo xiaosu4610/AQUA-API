@@ -6,13 +6,23 @@
  *   用户进入控制台最先关心两件事——「我还有多少额度」和「我的调用是否正常」；
  *   因此页面顺序固定为：额度概览卡 → 用量趋势 → 模型分布 → 最近调用。
  *
+ *   为什么「创建令牌」用例内弹窗而不是跳去「访问令牌」页：
+ *   概览是新用户的第一步，此时他还没令牌、只想赶紧拿一把跑起来。
+ *   跳页会让他离开概览（上下文丢失），再回来还得重看一遍；
+ *   就地弹窗则一步到位，密钥弹窗关闭后仍停在本页
+ *   —— 这也是"很多按钮一点就换页面"最该被消掉的地方。
+ *
  * 流转（Flow）：
- *   进入页面 → auth.refreshUser()（校正额度）+ fetchMyUsage(days) + listMyLogs(最近 5 条)
+ *   进入页面 → auth.refreshUser() + site.load()（供令牌表单的模型白名单）
+ *   + fetchMyUsage(days) + listMyLogs(最近 5 条)
  *   → 渲染统计卡与图表；任一请求失败只影响对应区块（分区错误态，不整页白屏）
+ *   创建令牌：openCreateToken() → Modal(TokenFormFields) → createMyToken()
+ *   → OneTimeKeyDialog 一次性展示明文
  *
  * 扩展（Extend）：
  *   新增指标卡：在 <section> 的网格里追加 StatCard（值需先用 utils/format 格式化）；
  *   新增图表：复用 EChart.vue + utils/chart.ts 的配色常量。
+ *   新增"就地操作"：沿用本节模式（按钮 → Modal → 调 api → toast），不要再加跳页按钮。
  */
 import type { EChartsOption } from 'echarts'
 import { computed, onMounted, ref } from 'vue'
@@ -21,11 +31,22 @@ import { RouterLink } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
 import EChart from '@/components/EChart.vue'
 import LogTable from '@/components/LogTable.vue'
+import Modal from '@/components/Modal.vue'
+import OneTimeKeyDialog from '@/components/OneTimeKeyDialog.vue'
 import StatCard from '@/components/StatCard.vue'
+import TokenFormFields from '@/components/TokenFormFields.vue'
 import { ApiError } from '@/api/client'
-import { fetchMyUsage, listMyLogs } from '@/api/portal'
+import { createMyToken, fetchMyUsage, listMyLogs } from '@/api/portal'
 import type { UsageLog, UsageStats } from '@/api/types'
+import {
+  emptyTokenForm,
+  toTokenPayload,
+  validateTokenForm,
+  type TokenFormState,
+} from '@/composables/tokenForm'
+import { toastSuccess } from '@/composables/useToast'
 import { useAuthStore } from '@/stores/auth'
+import { useSiteStore } from '@/stores/site'
 import {
   AXIS_LABEL_STYLE,
   AXIS_LINE_STYLE,
@@ -37,6 +58,7 @@ import {
 import { formatCompact, formatNumber } from '@/utils/format'
 
 const auth = useAuthStore()
+const site = useSiteStore()
 
 /** 可选统计区间（契约通过 ?days= 控制，缺省 7） */
 const DAY_OPTIONS = [7, 14, 30]
@@ -80,8 +102,8 @@ async function loadRecentLogs(): Promise<void> {
 }
 
 onMounted(async () => {
-  // 并行发起：三个区块互不依赖，减少首屏等待
-  await Promise.all([auth.refreshUser(), loadUsage(), loadRecentLogs()])
+  // 并行发起：四个区块互不依赖，减少首屏等待
+  await Promise.all([auth.refreshUser(), loadUsage(), loadRecentLogs(), site.load()])
 })
 
 /** 区间切换：只重取用量统计（日志不受区间影响） */
@@ -89,6 +111,55 @@ function selectDays(value: number): void {
   if (days.value === value) return
   days.value = value
   void loadUsage()
+}
+
+/* ── 就地创建访问令牌 ───────────────────────────────────
+   概览页不承载"令牌管理"（那在「访问令牌」页），
+   但必须提供"立刻拿一把跑起来"的捷径，因此这里只做创建。 */
+
+const createOpen = ref(false)
+const creating = ref(false)
+const createError = ref('')
+const form = ref<TokenFormState>(emptyTokenForm())
+
+/** 创建成功后的明文密钥（仅驻留内存，弹窗关闭即清空） */
+const createdKey = ref('')
+const createdName = ref('')
+const keyDialogOpen = ref(false)
+
+function openCreateToken(): void {
+  form.value = emptyTokenForm()
+  createError.value = ''
+  createOpen.value = true
+}
+
+async function submitCreateToken(): Promise<void> {
+  const invalid = validateTokenForm(form.value)
+  if (invalid) {
+    createError.value = invalid
+    return
+  }
+  creating.value = true
+  createError.value = ''
+  try {
+    const result = await createMyToken(toTokenPayload(form.value))
+    createdKey.value = result.key
+    createdName.value = result.name
+    createOpen.value = false
+    keyDialogOpen.value = true
+  } catch (err) {
+    createError.value = err instanceof ApiError ? err.message : '创建失败，请稍后重试'
+  } finally {
+    creating.value = false
+  }
+}
+
+/** 关闭一次性密钥弹窗：同时清空明文，降低内存中泄漏风险 */
+function closeKeyDialog(): void {
+  keyDialogOpen.value = false
+  createdKey.value = ''
+  createdName.value = ''
+  toastSuccess('令牌已创建，请使用已保存的密钥')
 }
 
 /* ── 统计卡数值 ───────────────────────────────────────── */
@@ -207,10 +278,16 @@ const hasModelData = computed(() => (usage.value?.by_model ?? []).length > 0)
         <h2 class="page-title">概览</h2>
         <p class="page-desc">这里是你的账户额度与调用概况。</p>
       </div>
-      <RouterLink to="/console/tokens" class="btn btn-primary btn-sm">
-        <AppIcon name="key" :size="15" />
-        管理访问令牌
-      </RouterLink>
+      <div class="toolbar">
+        <button type="button" class="btn btn-primary btn-sm" @click="openCreateToken">
+          <AppIcon name="plus" :size="15" />
+          创建令牌
+        </button>
+        <RouterLink to="/console/tokens" class="btn btn-secondary btn-sm">
+          <AppIcon name="key" :size="15" />
+          管理令牌
+        </RouterLink>
+      </div>
     </div>
 
     <!-- 额度与用量汇总 -->
@@ -244,13 +321,13 @@ const hasModelData = computed(() => (usage.value?.by_model ?? []).length > 0)
           <h3 class="section-title">用量趋势</h3>
           <p class="mt-1 text-xs text-ink-400">按天统计的请求数与 Token 消耗。</p>
         </div>
-        <div class="flex items-center gap-1 rounded-lg border border-ink-700 bg-ink-900 p-1">
+        <div class="seg" role="group" aria-label="统计区间">
           <button
             v-for="option in DAY_OPTIONS"
             :key="option"
             type="button"
-            class="rounded-md px-2.5 py-1 text-xs font-medium transition-colors"
-            :class="days === option ? 'bg-brand-500/15 text-brand-700' : 'text-ink-400 hover:text-ink-200'"
+            class="seg-item"
+            :class="days === option ? 'seg-item-active' : ''"
             @click="selectDays(option)"
           >
             {{ option }} 天
@@ -317,5 +394,47 @@ const hasModelData = computed(() => (usage.value?.by_model ?? []).length > 0)
         </div>
       </section>
     </div>
+
+    <!-- 就地创建令牌（不跳页；密钥只展示一次） -->
+    <Modal
+      :open="createOpen"
+      title="创建访问令牌"
+      subtitle="令牌将继承你的账号权限，请按用途分别创建，便于单独停用。"
+      width="max-w-xl"
+      :close-on-backdrop="false"
+      @close="createOpen = false"
+    >
+      <TokenFormFields v-model="form" :available-models="site.models" />
+
+      <p
+        v-if="createError"
+        class="mt-4 flex items-start gap-2 rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-2 text-xs leading-relaxed text-red-800"
+      >
+        <AppIcon name="alert" :size="14" class="mt-0.5 shrink-0" />
+        {{ createError }}
+      </p>
+
+      <template #footer>
+        <button type="button" class="btn btn-secondary" :disabled="creating" @click="createOpen = false">
+          取消
+        </button>
+        <button type="button" class="btn btn-primary" :disabled="creating" @click="submitCreateToken">
+          <span
+            v-if="creating"
+            class="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white"
+            aria-hidden="true"
+          />
+          <AppIcon v-else name="plus" :size="16" />
+          {{ creating ? '创建中…' : '创建令牌' }}
+        </button>
+      </template>
+    </Modal>
+
+    <OneTimeKeyDialog
+      :open="keyDialogOpen"
+      :api-key="createdKey"
+      :token-name="createdName"
+      @close="closeKeyDialog"
+    />
   </div>
 </template>
