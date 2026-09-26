@@ -8,10 +8,13 @@
 // 关键取舍：
 //   - 【不阻断响应】日志写入发生在响应体已回传给客户端之后，即使写库失败，
 //     用户也不该受影响（宁可少一条统计，也不能让调用失败）；
-//   - 【token 数尽力而为】非流式响应可解析 usage 字段；流式响应需从 SSE 分片里找，
-//     部分上游不返回 usage，此时 token 记为 0 但请求数与成功率仍然准确。
-//     这是刻意的取舍：为了拿 token 数去改客户端请求体（注入 stream_options）
-//     会引入兼容性风险，得不偿失。
+//   - 【token 数尽力而为，但绝不静默记 0】usage 由 usageSniffer 【增量】解析：
+//     无论响应多长（OpenAI 兼容协议把 usage 放在流的最后一个事件里），
+//     只要上游返回过 usage 就能取到；确实拿不到时，token 记为 0，
+//     但会在日志的失败原因列标注"未取得 usage"，让计费缺口可见、可追。
+//   - 【不默认改写请求体】注入 stream_options.include_usage 能提升流式 usage 的
+//     返回率，但该字段并非所有 OpenAI 兼容上游都认识（严格校验者会直接 400）。
+//     因此默认关闭，仅保留开关与实现（见 injectStreamUsageOption）。
 //
 // 流转（Flow）：
 //
@@ -30,6 +33,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
 	"time"
 
@@ -37,92 +42,277 @@ import (
 	"gitee.com/xiaosu4610/aqua-api/internal/reqctx"
 )
 
-// usageCaptureLimit 是抓取响应内容用于解析 usage 的最大字节数。
-//
-// 只关心末尾的 usage 对象，但流式响应可能很长；保留 256KB 已足够覆盖绝大多数响应，
-// 同时避免大响应把内存占满。
-const usageCaptureLimit = 256 << 10
-
-// openAIUsage 对应 OpenAI 响应中的 usage 字段。
+// openAIUsage 对应一次调用最终采用的用量（内部统一为 OpenAI 口径）。
 type openAIUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
 }
 
-// usageSniffer 是一个 io.Writer，用于在流式拷贝响应体的同时抓取内容片段，
-// 供后续解析 usage。写入长度超过上限后自动停止记录（不影响正常转发）。
+// rawUsage 是 usage 对象的宽松表示，用于兼容不同上游的字段命名：
+//   - OpenAI 风格：prompt_tokens / completion_tokens / total_tokens
+//   - Anthropic 风格：input_tokens / output_tokens
+//
+// 之所以要兼容两套字段：部分 OpenAI 兼容网关（尤其是代理 Claude 的实现）
+// 会原样回吐 Anthropic 口径的 usage；若只认 prompt_tokens，这些调用会被记 0。
+type rawUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+	InputTokens      int `json:"input_tokens"`
+	OutputTokens     int `json:"output_tokens"`
+}
+
+// normalize 把宽松表示归一化为内部口径。
+//
+// 返回 ok=false 表示该对象"全零"（流式响应里常见的占位对象 `"usage":null`
+// 或 `{"prompt_tokens":0,...}`），应被忽略而不是当作有效用量。
+func (r rawUsage) normalize() (openAIUsage, bool) {
+	usage := openAIUsage{
+		PromptTokens:     r.PromptTokens,
+		CompletionTokens: r.CompletionTokens,
+		TotalTokens:      r.TotalTokens,
+	}
+	// Anthropic 口径回退：仅在本字段为空时采用，避免覆盖 OpenAI 口径的显式值
+	if usage.PromptTokens == 0 {
+		usage.PromptTokens = r.InputTokens
+	}
+	if usage.CompletionTokens == 0 {
+		usage.CompletionTokens = r.OutputTokens
+	}
+	if usage.TotalTokens == 0 {
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	}
+	if usage.PromptTokens == 0 && usage.CompletionTokens == 0 && usage.TotalTokens == 0 {
+		return openAIUsage{}, false
+	}
+	return usage, true
+}
+
+// usageMarker 是响应中承载用量的字段名（对象内部的键）。
+const usageMarker = `"usage"`
+
+// usageTailMaxBytes 是"等待一个 usage 对象接收完整"时允许保留的最大尾部字节数。
+//
+// 作用是内存兜底：一个 usage 对象绝不可能达到这个量级，因此一旦超过就说明
+// 上游发来的并不是合法 JSON（或该对象永远不会闭合）。此时放弃等待、跳过该标记，
+// 避免尾部随响应无限增长。
+const usageTailMaxBytes = 1 << 20
+
+// usageSniffer 是一个 io.Writer：在响应体流经网关的同时【增量】解析其中的 usage。
+//
+// 为什么必须增量（这是本文件的核心）：
+//
+//	OpenAI 兼容协议把 usage 放在流的【最后一个】事件里，而回答本身可能有数 MB。
+//	旧实现只保留响应开头的固定字节数（256KB），长回答末尾的 usage 会被整段丢弃，
+//	于是 extractUsage 返回零值、该次调用被按 0 token 计费——直接造成收入流失。
+//
+// 内存有界：
+//
+//	解析器只保留"尚未解析完的尾部"（通常是一个 SSE 事件，几十到几百字节），
+//	已消费的内容在每次扫描后立即丢弃，因此占用不随响应总长度增长。
+//
+// 兼容多种形态：
+//
+//	按字段名 `"usage"` 定位、按 JSON 对象解析，因此不关心它嵌在何处——
+//	顶层 usage、choices[].usage、Anthropic 风格 message.usage 都能取到；
+//	字段名同时兼容 prompt_tokens/completion_tokens 与 input_tokens/output_tokens。
+//
+// 并发：仅在单个转发 goroutine 内被 Write，无需加锁。
 type usageSniffer struct {
-	buf   bytes.Buffer
-	limit int
+	tail  []byte      // 尚未解析完的尾部（可能含未闭合的 usage 对象）
+	usage openAIUsage // 最后一次解析到的非空 usage
+	found bool
 }
 
 // newUsageSniffer 创建抓取器。
 func newUsageSniffer() *usageSniffer {
-	return &usageSniffer{limit: usageCaptureLimit}
+	return &usageSniffer{}
 }
 
-// Write 实现 io.Writer：始终返回全部写入长度（不能让上游拷贝因抓取失败而中断）。
+// Write 实现 io.Writer：始终返回全部写入长度（抓取绝不能因解析失败而中断转发）。
 func (u *usageSniffer) Write(p []byte) (int, error) {
-	if remaining := u.limit - u.buf.Len(); remaining > 0 {
-		if len(p) <= remaining {
-			u.buf.Write(p)
-		} else {
-			u.buf.Write(p[:remaining])
-		}
+	if len(p) == 0 {
+		return 0, nil
 	}
+	u.tail = append(u.tail, p...)
+	u.scan()
 	return len(p), nil
 }
 
-// Bytes 返回已抓取的内容。
-func (u *usageSniffer) Bytes() []byte {
-	return u.buf.Bytes()
+// Usage 返回解析到的最佳用量：最后一次非空 usage；found 为 false 表示整段响应里没有用量。
+func (u *usageSniffer) Usage() (openAIUsage, bool) {
+	return u.usage, u.found
 }
 
-// extractUsage 从响应（或 SSE 分片流）中提取 usage 信息。
+// scan 在尾部缓冲中增量查找并解析 usage 对象。
 //
-// 实现思路：扫描全部 `"usage"` 出现位置，逐个尝试解析其后的 JSON 对象，
-// 取最后一个解析成功且非零的结果。
-//
-// 为什么要遍历全部而不仅看最后一处：OpenAI 流式响应会在中间分片写 `"usage":null`，
-// 真正的 usage 在最后；而个别兼容实现会把 null 放在最后。遍历可兼容两种情况。
-func extractUsage(raw []byte) (openAIUsage, bool) {
-	const marker = `"usage"`
-
-	var (
-		found openAIUsage
-		ok    bool
-	)
+// 算法：从上次消费位置起查找 `"usage"` 标记 → 跳过冒号与空白 → 尝试解析其后的
+// JSON 对象。解析成功则记录（并越过该对象继续找，取最后一次非空值）；
+// 对象尚未接收完整（截断）则保留尾部等待下次 Write；不是对象（如 null）
+// 或非法 JSON 则跳过该标记继续查找。已消费部分一律丢弃，保证内存有界。
+func (u *usageSniffer) scan() {
 	searchFrom := 0
 	for {
-		idx := bytes.Index(raw[searchFrom:], []byte(marker))
-		if idx < 0 {
-			break
+		rel := bytes.Index(u.tail[searchFrom:], []byte(usageMarker))
+		if rel < 0 {
+			// 之后不再有标记：丢弃已扫描内容，仅保留可能被拆散的标记前缀
+			u.discardBefore(len(u.tail) - (len(usageMarker) - 1))
+			return
 		}
-		absIdx := searchFrom + idx
-		searchFrom = absIdx + len(marker)
+		markerPos := searchFrom + rel
+		valueStart := markerPos + len(usageMarker)
 
-		rest := raw[searchFrom:]
-		start := bytes.IndexByte(rest, '{')
-		if start < 0 {
+		// 跨过 `:` 与空白，定位对象的起始 '{'
+		i := valueStart
+		for i < len(u.tail) && isUsageSeparator(u.tail[i]) {
+			i++
+		}
+		if i >= len(u.tail) {
+			// 字段名已到达但取值还没来：从头保留，等待后续写入
+			u.discardBefore(markerPos)
+			return
+		}
+		if u.tail[i] != '{' {
+			// 取值不是对象（如 `"usage":null`）：跳过该标记继续找
+			searchFrom = valueStart
 			continue
 		}
 
-		var parsed openAIUsage
-		decoder := json.NewDecoder(bytes.NewReader(rest[start:]))
-		if err := decoder.Decode(&parsed); err != nil {
-			// 该处不是合法对象（如 usage 为 null），继续找下一处
+		var raw rawUsage
+		decoder := json.NewDecoder(bytes.NewReader(u.tail[i:]))
+		if err := decoder.Decode(&raw); err != nil {
+			if isTruncatedJSON(err) {
+				if len(u.tail)-markerPos > usageTailMaxBytes {
+					// 超过兜底上限：上游发的不是合法 JSON，跳过以免尾部无限增长
+					searchFrom = valueStart
+					continue
+				}
+				u.discardBefore(markerPos)
+				return
+			}
+			// 非法 JSON：跳过该标记继续找
+			searchFrom = valueStart
 			continue
 		}
-		if parsed.PromptTokens == 0 && parsed.CompletionTokens == 0 && parsed.TotalTokens == 0 {
-			// 全零视为无效（多为占位对象），继续找下一处
-			continue
+		if usage, ok := raw.normalize(); ok {
+			// 取最后一次非空值：流式响应可能先后出现多个 usage 事件
+			u.usage = usage
+			u.found = true
 		}
-		found = parsed
-		ok = true
+		// 越过已解析的对象继续查找
+		searchFrom = i + int(decoder.InputOffset())
+		if searchFrom >= len(u.tail) {
+			u.discardBefore(searchFrom)
+			return
+		}
 	}
-	return found, ok
 }
+
+// discardBefore 丢弃尾部缓冲中 offset 之前的内容。
+//
+// 用 copy 把保留部分前移到切片头部（而非重新分配），避免底层数组随响应增长
+// 不断膨胀；容量上限由"单个未闭合 usage 对象的大小"决定，与响应总长无关。
+func (u *usageSniffer) discardBefore(offset int) {
+	if offset <= 0 {
+		return
+	}
+	if offset >= len(u.tail) {
+		u.tail = u.tail[:0]
+		return
+	}
+	n := copy(u.tail, u.tail[offset:])
+	u.tail = u.tail[:n]
+}
+
+// isUsageSeparator 判断字节是否属于"字段名与取值之间"的合法分隔符。
+func isUsageSeparator(c byte) bool {
+	switch c {
+	case ':', ' ', '\t', '\r', '\n':
+		return true
+	default:
+		return false
+	}
+}
+
+// isTruncatedJSON 判断解析错误是否表示"JSON 尚未接收完整"（而非内容非法）。
+//
+// 之所以要区分：不完整要保留尾部等待下一次写入；非法则应跳过该标记，
+// 否则一个坏对象会让解析器原地卡死、永远等不到后面的正确 usage。
+func isTruncatedJSON(err error) bool {
+	return errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF)
+}
+
+// extractUsage 是一次性解析入口：对"已完整拿到"的响应体（非流式 JSON）解析 usage。
+//
+// 流式响应请使用 usageSniffer 增量解析——它对长回答不会保留整段内容。
+func extractUsage(raw []byte) (openAIUsage, bool) {
+	sniffer := newUsageSniffer()
+	_, _ = sniffer.Write(raw)
+	return sniffer.Usage()
+}
+
+// injectStreamUsageOption 控制是否为"流式对话请求"注入
+// `stream_options: {"include_usage": true}`。
+//
+// 当前【默认关闭】，原因如下（刻意的取舍）：
+//   - 该字段是 OpenAI 后来新增的约定，并非所有 OpenAI 兼容上游都认识它；
+//     遇到严格校验请求体的实现会直接返回 400，把一次本可成功的调用打挂。
+//   - 网关面对大量第三方/自建上游，无法逐一确认其兼容性，因此不能默认开启。
+//
+// 关闭的代价：上游若默认不返回 usage，流式调用的 token 只能记 0
+//
+//	（此时日志会标注"未取得 usage"）；非流式调用不受影响。
+//
+// 若要启用：把常量改成 true 即可。withStreamUsageOption 已限定
+//
+//	"仅流式 + 客户端未显式指定 stream_options"时才注入，并会尊重客户端已有设置。
+const injectStreamUsageOption = false
+
+// withStreamUsageOption 在 enabled 且请求体确实是"未指定 stream_options 的流式请求"时，
+// 注入 include_usage，让上游在最后一个事件里带上 usage。
+//
+// 返回原切片（不改动）的情况：功能开关关闭、请求体非法、非流式请求、
+// 客户端已显式指定 stream_options（此时必须尊重客户端意图，不能覆盖）。
+//
+// 注意：注入会重新序列化请求体，键顺序可能变化——这也是默认关闭的原因之一。
+func withStreamUsageOption(body []byte, enabled bool) []byte {
+	if !enabled {
+		return body
+	}
+
+	var probe struct {
+		Stream        *bool           `json:"stream"`
+		StreamOptions json.RawMessage `json:"stream_options"`
+	}
+	if err := json.Unmarshal(body, &probe); err != nil {
+		return body
+	}
+	if probe.Stream == nil || !*probe.Stream {
+		return body
+	}
+	if len(probe.StreamOptions) > 0 {
+		return body
+	}
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return body
+	}
+	fields["stream_options"] = json.RawMessage(`{"include_usage":true}`)
+	patched, err := json.Marshal(fields)
+	if err != nil {
+		return body
+	}
+	return patched
+}
+
+// usageMissingNote 是"本次调用未取得 usage"的日志标注。
+//
+// 为什么需要它：上游不返回 usage 时 token 只能记 0，若不留痕就会被静默计 0 费，
+// 站长无从发现计费缺口。写入调用日志的失败原因列（该列仅作提示，
+// 成功/失败统计依据的是 status_code，不受影响）。
+const usageMissingNote = "未取得 usage（上游未返回用量，token 记 0）"
 
 // usageEntry 描述一条待记录的用量。
 type usageEntry struct {

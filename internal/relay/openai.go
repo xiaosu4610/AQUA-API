@@ -159,6 +159,11 @@ type forwardTarget struct {
 // 但"选渠道 / 密钥池 / 重试 / 计费 / 日志"这一整套逻辑完全相同，
 // 不该为了多一个端点而复制一遍转发实现。
 func (r *Relay) forwardWithFallback(w http.ResponseWriter, req *http.Request, modelName string, body []byte, adapter Adapter, upstreamPath string) {
+	// 按开关决定是否给流式请求注入 stream_options.include_usage（默认关闭，
+	// 取舍见 usage.go 的 injectStreamUsageOption）。只在这里改写一次，
+	// 保证同一次请求的各次重试使用完全相同的请求体。
+	body = withStreamUsageOption(body, injectStreamUsageOption)
+
 	// 一次性取出候选集：同一次请求内的多次重试都基于它挑选，避免每次重试都查库
 	candidates, err := r.listCandidates(req.Context(), modelName)
 	if err != nil {
@@ -726,11 +731,11 @@ func (r *Relay) forwardChat(w http.ResponseWriter, req *http.Request, target for
 	}
 
 	// 记录用量。此时响应已完整回传，写库不会影响客户端感知的延迟。
-	// 若未取到 usage（部分上游流式响应不返回），token 记为 0，
-	// 但请求数、成功率与耗时仍然准确——统计不至于因缺一项而完全不可用。
-	usage, _ := extractUsage(sniffer.Bytes())
+	// usage 由 sniffer 【增量】解析：无论响应多长、usage 出现在最后一个 SSE 事件里，
+	// 只要上游返回过就能取到（旧实现受 256KB 上限影响，长回答会被整段丢弃而记 0）。
+	usage, hasUsage := sniffer.Usage()
 	identity := identityFromRequest(req.Context())
-	r.recordUsage(req.Context(), usageEntry{
+	entry := usageEntry{
 		UserID:     identity.UserID,
 		TokenID:    identity.TokenID,
 		ChannelID:  ch.ID,
@@ -739,7 +744,13 @@ func (r *Relay) forwardChat(w http.ResponseWriter, req *http.Request, target for
 		LatencyMS:  int(time.Since(start).Milliseconds()),
 		IsStream:   oai.PeekStream(body),
 		StatusCode: resp.StatusCode,
-	})
+	}
+	if !hasUsage {
+		// 上游确实没返回 usage：token 只能记 0，但必须留下标注，
+		// 让计费缺口在日志里可见（该列仅作提示，成功/失败仍以状态码为准）。
+		entry.ErrorText = usageMissingNote
+	}
+	r.recordUsage(req.Context(), entry)
 
 	return forwardResponded
 }
