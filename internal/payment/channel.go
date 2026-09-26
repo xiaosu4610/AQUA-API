@@ -234,7 +234,7 @@ func Channels() []Channel {
 			Key:         "alipay",
 			Label:       "支付宝（官方）",
 			Description: "支付宝开放平台的当面付/电脑网站支付。资金直接进自己的支付宝商户，费率与到账更可控。",
-			Available:   false,
+			Available:   true,
 			NotifyPath:  "/api/payments/alipay/notify",
 			Fields: []Field{
 				{Key: "app_id", Label: "App ID", Kind: KindText, Source: SourceSetting, Required: true,
@@ -254,7 +254,7 @@ func Channels() []Channel {
 			Key:         "wechatpay",
 			Label:       "微信支付（官方）",
 			Description: "微信支付商户平台的 APIv3。需要商户号、证书序列号与 APIv3 密钥。",
-			Available:   false,
+			Available:   true,
 			NotifyPath:  "/api/payments/wechatpay/notify",
 			Fields: []Field{
 				{Key: "mch_id", Label: "商户号", Kind: KindText, Source: SourceSetting, Required: true},

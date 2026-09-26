@@ -340,7 +340,7 @@ func TestRegistry_Get未知通道(t *testing.T) {
 		t.Fatalf("应返回 ErrProviderUnknown，实际 %v", err)
 	}
 	names := registry.Names()
-	if len(names) != 3 {
-		t.Fatalf("应注册 3 个内置通道，实际 %d 个: %v", len(names), names)
+	if len(names) != 5 {
+		t.Fatalf("应注册 5 个内置通道，实际 %d 个: %v", len(names), names)
 	}
 }

@@ -94,6 +94,13 @@ const (
 	PaymentMethodEPay = "epay"
 	// PaymentMethodStripe Stripe Checkout。
 	PaymentMethodStripe = "stripe"
+	// PaymentMethodAlipay 支付宝官方（电脑网站支付 / 当面付）。
+	//
+	// 与易支付通道里的子方式 "alipay" 无关：那是经由聚合网关转发的支付宝，
+	// 本常量指资金直接进自己支付宝商户的官方通道，两者的商户号、密钥体系完全不同。
+	PaymentMethodAlipay = "alipay"
+	// PaymentMethodWeChatPay 微信支付官方（APIv3）。
+	PaymentMethodWeChatPay = "wechatpay"
 	// PaymentMethodManual 人工确认（无支付通道时由管理员手动入账）。
 	PaymentMethodManual = "manual"
 )

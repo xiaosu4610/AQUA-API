@@ -152,6 +152,8 @@ func NewRegistry(opts Options) *Registry {
 	providers := []Provider{
 		newEPayProvider(opts),
 		newStripeProvider(opts),
+		newAlipayProvider(opts),
+		newWeChatPayProvider(opts),
 		newManualProvider(opts),
 	}
 

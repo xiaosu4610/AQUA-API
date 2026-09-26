@@ -172,6 +172,26 @@ type PaymentConfig struct {
 	// StripeWebhookSecret 是 Stripe Webhook 签名密钥（whsec_...），
 	// 来自 AQUA_STRIPE_WEBHOOK_SECRET。用于校验回调确实来自 Stripe。
 	StripeWebhookSecret string `json:"-"`
+
+	// AlipayPrivateKey 是支付宝应用私钥（RSA2），来自 AQUA_ALIPAY_PRIVATE_KEY。
+	// 用于给下单请求签名；形态可能是 PEM，也可能是控制台导出的裸 base64，两种都支持。
+	AlipayPrivateKey string `json:"-"`
+	// AlipayPublicKey 是支付宝公钥，来自 AQUA_ALIPAY_PUBLIC_KEY。
+	// 用于校验异步回调的签名，缺失将导致回调无法验签、一律被拒。
+	AlipayPublicKey string `json:"-"`
+
+	// WeChatPayAPIv3Key 是微信支付 APIv3 密钥（32 字节），来自 AQUA_WECHATPAY_APIV3_KEY。
+	// 用于 AES-256-GCM 解密回调报文。
+	WeChatPayAPIv3Key string `json:"-"`
+	// WeChatPayPrivateKey 是微信支付商户私钥（PEM），来自 AQUA_WECHATPAY_PRIVATE_KEY。
+	// 用于给 APIv3 请求签名。
+	WeChatPayPrivateKey string `json:"-"`
+	// WeChatPayPlatformPublicKey 是微信支付平台证书公钥（PEM），
+	// 来自 AQUA_WECHATPAY_PLATFORM_PUBLIC_KEY。用于校验回调请求头的签名。
+	//
+	// 为什么由使用者手工配置：官方虽提供"下载平台证书"接口，但那需要额外发起网络请求
+	// 并处理证书轮换，属于本里程碑之外的复杂度；手工贴入公钥更简单且可离线部署。
+	WeChatPayPlatformPublicKey string `json:"-"`
 }
 
 // Default 返回一份带完整默认值的配置。
@@ -290,6 +310,13 @@ func applyEnv(cfg *Config) {
 	setIfNotEmpty(&cfg.Payment.EPayKey, EnvPrefix+"EPAY_KEY")
 	setIfNotEmpty(&cfg.Payment.StripeSecretKey, EnvPrefix+"STRIPE_SECRET_KEY")
 	setIfNotEmpty(&cfg.Payment.StripeWebhookSecret, EnvPrefix+"STRIPE_WEBHOOK_SECRET")
+	// 支付宝官方：应用私钥（签名）与支付宝公钥（验签回调）。
+	setIfNotEmpty(&cfg.Payment.AlipayPrivateKey, EnvPrefix+"ALIPAY_PRIVATE_KEY")
+	setIfNotEmpty(&cfg.Payment.AlipayPublicKey, EnvPrefix+"ALIPAY_PUBLIC_KEY")
+	// 微信支付官方 APIv3：APIv3 密钥（解密回调）、商户私钥（请求签名）、平台证书公钥（验签回调）。
+	setIfNotEmpty(&cfg.Payment.WeChatPayAPIv3Key, EnvPrefix+"WECHATPAY_APIV3_KEY")
+	setIfNotEmpty(&cfg.Payment.WeChatPayPrivateKey, EnvPrefix+"WECHATPAY_PRIVATE_KEY")
+	setIfNotEmpty(&cfg.Payment.WeChatPayPlatformPublicKey, EnvPrefix+"WECHATPAY_PLATFORM_PUBLIC_KEY")
 }
 
 // setIfNotEmptyInt 是 setIfNotEmpty 的整数版本：解析失败时保留原值。
