@@ -44,7 +44,8 @@ import (
 type Deps struct {
 	Config   *config.Config          // 运行配置（监听地址、模式等）
 	Store    *store.Store            // 数据库（健康检查需要探测其连通性）
-	Channels model.ChannelRepository // 渠道仓储（供管理接口与路由使用）
+	Channels model.ChannelRepository // 渠道仓储（上游凭证，供路由使用）
+	Tokens   model.TokenRepository   // 令牌仓储（下游凭证，供鉴权使用）
 	Relay    *relay.Relay            // 转发引擎（模型 API 的核心处理器）
 }
 

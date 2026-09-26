@@ -40,6 +40,7 @@ import (
 
 	"gitee.com/xiaosu4610/aqua-api/internal/config"
 	"gitee.com/xiaosu4610/aqua-api/internal/crypto"
+	"gitee.com/xiaosu4610/aqua-api/internal/model"
 	"gitee.com/xiaosu4610/aqua-api/internal/relay"
 	"gitee.com/xiaosu4610/aqua-api/internal/server"
 	"gitee.com/xiaosu4610/aqua-api/internal/store"
@@ -68,6 +69,7 @@ func run() error {
 		configPath  = flag.String("config", defaultConfigPath, "配置文件路径（不存在则使用默认值与环境变量）")
 		showVersion = flag.Bool("version", false, "打印版本信息后退出")
 		genKey      = flag.Bool("gen-key", false, "生成一个加密主密钥（AQUA_APP_KEY）后退出")
+		createToken = flag.String("create-token", "", "创建一个访问令牌（取值为令牌名称）后退出")
 	)
 	flag.Parse()
 
@@ -148,12 +150,22 @@ func run() error {
 
 	// ── 仓储 → 转发引擎 → HTTP 服务 ─────────────────────────────
 	channels := store.NewChannelRepository(st.DB(), cipher)
+	tokens := store.NewTokenRepository(st.DB(), cipher)
+
+	// 子命令：创建访问令牌。
+	// 为什么需要它：M2 尚无管理后台，运维必须有一种途径创建第一个令牌，
+	// 否则鉴权上线后无人能调用网关（先有鸡还是先有蛋的问题）。
+	if *createToken != "" {
+		return createAndPrintToken(ctx, tokens, *createToken, cfg.Server.Listen)
+	}
+
 	relayEngine := relay.New(channels, relay.Options{})
 
 	srv := server.New(server.Deps{
 		Config:   cfg,
 		Store:    st,
 		Channels: channels,
+		Tokens:   tokens,
 		Relay:    relayEngine,
 	})
 
@@ -196,4 +208,47 @@ func setupLogger(cfg *config.Config) *slog.Logger {
 		handler = slog.NewTextHandler(os.Stdout, opts)
 	}
 	return slog.New(handler)
+}
+
+// createAndPrintToken 创建一个访问令牌并把明文打印给运维，随后退出。
+//
+// 设计取舍：
+//   - 创建的令牌为「不限额度、永不过期、不限模型」——M2 尚未实现计费与配额管理，
+//     此时若默认给零额度，令牌将完全不可用；这些限制会在计费模块落地后按需求开放配置。
+//   - 明文只在此刻输出一次：数据库仅保存 SHA-256 摘要（供查找）与 AES 密文（供后台展示），
+//     因此运维必须立即保存，遗失后只能重建。
+func createAndPrintToken(ctx context.Context, tokens model.TokenRepository, name, listenAddr string) error {
+	key, err := model.GenerateTokenKey()
+	if err != nil {
+		return fmt.Errorf("生成令牌失败: %w", err)
+	}
+
+	token := &model.Token{
+		Name:           name,
+		Key:            key,
+		Status:         model.TokenStatusEnabled,
+		UnlimitedQuota: true, // M2 未实现计费，暂不限额度
+		// ExpiresAt 为零值 = 永不过期
+	}
+	if err := tokens.Create(ctx, token); err != nil {
+		return fmt.Errorf("保存令牌失败: %w", err)
+	}
+
+	fmt.Printf(`已创建访问令牌：
+
+  名称：%s
+  令牌：%s
+  权限：不限额度（M2 未实现计费）、不限模型、永不过期
+
+调用示例：
+
+  curl http://%s/v1/chat/completions \
+    -H "Authorization: Bearer %s" \
+    -H "Content-Type: application/json" \
+    -d '{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}'
+
+⚠ 令牌明文仅此一次展示（数据库只存摘要与密文），请立即妥善保存。
+`, token.Name, key, listenAddr, key)
+
+	return nil
 }

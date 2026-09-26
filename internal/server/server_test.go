@@ -72,6 +72,7 @@ func newTestServer(t *testing.T) (*Server, *store.Store) {
 		Config:   cfg,
 		Store:    st,
 		Channels: channels,
+		Tokens:   store.NewTokenRepository(st.DB(), cipher),
 		Relay:    relay.New(channels, relay.Options{}),
 	})
 	return srv, st
