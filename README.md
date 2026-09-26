@@ -19,11 +19,13 @@ AQUA-API 是一个自托管的 **LLM API 网关（AI Gateway）**：上游是各
 |---|---|
 | 配置系统（默认值 → 配置文件 → 环境变量 三级覆盖） | ✅ M1 |
 | SQLite 存储与自动迁移（纯 Go 驱动，零 CGO） | ✅ M1 |
+| 渠道密钥 AES-256-GCM 加密存储（禁止明文落库） | ✅ M1 |
 | 渠道领域模型与仓储 | ✅ M1 |
 | HTTP 服务与健康检查 | ✅ M1 |
-| OpenAI 兼容协议透传（单渠道） | ✅ M1 |
+| OpenAI 兼容协议透传（含 SSE 流式逐片转发） | ✅ M1 |
 | 多渠道路由与负载均衡 | ⏳ M2 |
 | 协议互转（OpenAI ↔ Anthropic ↔ Gemini） | ⏳ M2 |
+| 令牌鉴权与额度管理 | ⏳ M2 |
 | 订阅账号池化（OAuth） | ⏳ M3 |
 | 异步任务（Midjourney / 视频） | ⏳ M4 |
 | 计费与支付 | ⏳ M5 |
@@ -36,23 +38,39 @@ AQUA-API 是一个自托管的 **LLM API 网关（AI Gateway）**：上游是各
 # 1. 构建
 go build -o bin/aqua ./cmd/aqua
 
-# 2. 运行（默认监听 127.0.0.1:8787，数据落在 ./data）
+# 2. 生成加密主密钥（渠道密钥以密文落库，必须提供主密钥）
+./bin/aqua -gen-key
+
+# 3. 注入主密钥（切勿写入配置文件或提交进仓库）
+#    Linux / macOS :  export AQUA_APP_KEY=<上一步生成的密钥>
+#    Windows       :  $env:AQUA_APP_KEY="<上一步生成的密钥>"
+
+# 4. 运行（默认监听 127.0.0.1:8787，数据落在 ./data）
 ./bin/aqua
 
-# 3. 健康检查
+# 5. 健康检查
 curl http://127.0.0.1:8787/healthz
 ```
 
-指定配置文件：
-
-```bash
-./bin/aqua -config ./aqua.json
-```
+指定配置文件：`./bin/aqua -config ./aqua.json`
 
 ## 配置
 
-优先级：**默认值 < 配置文件 < 环境变量**。所有环境变量以 `AQUA_` 为前缀，
-嵌套字段用下划线连接（如 `AQUA_SERVER_LISTEN`）。
+优先级：**默认值 < 配置文件 < 环境变量**。
+
+### 环境变量（全部以 `AQUA_` 为前缀）
+
+| 变量 | 必填 | 说明 |
+|---|---|---|
+| `AQUA_APP_KEY` | ✅ | 加密主密钥，用于加密渠道密钥。**只能通过环境变量提供**，配置文件中的同名字段会被忽略。生成命令：`aqua -gen-key` |
+| `AQUA_SERVER_LISTEN` | | 监听地址，默认 `127.0.0.1:8787` |
+| `AQUA_SERVER_MODE` | | `debug` / `release` / `test` |
+| `AQUA_DATABASE_DRIVER` | | 目前仅支持 `sqlite` |
+| `AQUA_DATABASE_DSN` | | SQLite 文件路径，默认 `./data/aqua.db`（父目录会自动创建） |
+| `AQUA_LOG_LEVEL` | | `debug` / `info` / `warn` / `error` |
+| `AQUA_LOG_FORMAT` | | `text` / `json` |
+
+### 配置文件（不含任何密钥）
 
 ```json
 {
@@ -60,6 +78,23 @@ curl http://127.0.0.1:8787/healthz
   "database": { "driver": "sqlite", "dsn": "./data/aqua.db" },
   "log": { "level": "info" }
 }
+```
+
+> 安全设计：`security.appKey` 的 json tag 为 `-`，即使被写进配置文件也不会被读取，
+> 从而避免密钥随仓库泄露。主密钥须妥善备份——一旦变更，已加密的渠道密钥将无法解密。
+
+## 接口
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/` | 服务信息（名称 / 版本 / 构建信息） |
+| GET | `/healthz` | 健康检查，含数据库连通性探测；依赖不可用时返回 503 |
+| POST | `/v1/chat/completions` | OpenAI 兼容对话接口（当前为透传，鉴权在 M2 加入） |
+
+错误响应遵循 OpenAI 格式，便于现有 SDK 直接解析：
+
+```json
+{"error":{"message":"当前没有可用的上游渠道能处理该模型","type":"server_error","code":"no_available_channel"}}
 ```
 
 ## 开发
