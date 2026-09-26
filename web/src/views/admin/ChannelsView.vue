@@ -629,9 +629,10 @@ const isEmpty = computed(() => !loading.value && !error.value && channels.value.
       </div>
     </div>
 
-    <p class="mb-2 text-xs text-ink-400 lg:hidden">表格列较多，可左右滑动查看完整内容。</p>
+    <!-- 滑动提示只在桌面端出现：窄屏已切换为卡片视图（.table-cards），不需要左右滑动 -->
+    <p class="mb-2 hidden text-xs text-ink-400 lg:block">表格列较多，可左右滑动查看完整内容。</p>
 
-    <div class="table-wrap">
+    <div class="table-wrap table-cards">
       <table class="data-table min-w-[1220px]">
         <thead>
           <tr>
@@ -670,7 +671,7 @@ const isEmpty = computed(() => !loading.value && !error.value && channels.value.
 
           <template v-if="!loading && !error && channels.length">
             <tr v-for="channel in channels" :key="channel.id">
-              <td class="font-medium text-ink-100">
+              <td class="font-medium text-ink-100" data-label="名称">
                 <span class="flex items-center gap-2">
                   {{ channel.name }}
                   <span v-if="channel.last_test_ok === false" class="text-amber-700" title="上次测活失败">
@@ -679,15 +680,15 @@ const isEmpty = computed(() => !loading.value && !error.value && channels.value.
                 </span>
               </td>
 
-              <td class="whitespace-nowrap text-ink-300">{{ channelTypeLabel(channel.type) }}</td>
+              <td class="whitespace-nowrap text-ink-300" data-label="类型">{{ channelTypeLabel(channel.type) }}</td>
 
-              <td class="max-w-[16rem]">
+              <td class="max-w-[16rem]" data-label="Base URL">
                 <span class="block truncate font-mono text-xs text-ink-300" :title="channel.base_url">
                   {{ channel.base_url }}
                 </span>
               </td>
 
-              <td>
+              <td data-label="密钥">
                 <!-- 配了密钥池的渠道：显示池概况并可点开看明细（含失效密钥） -->
                 <button
                   v-if="channel.key_pool && channel.key_pool.total > 0"
@@ -701,25 +702,25 @@ const isEmpty = computed(() => !loading.value && !error.value && channels.value.
                 <code v-else class="chip">{{ channel.masked_key || '未配置' }}</code>
               </td>
 
-              <td class="cell-num">
+              <td class="cell-num" data-label="模型">
                 <span v-if="channel.models && channel.models.length" :title="channel.models.join(', ')">
                   {{ channel.models.length }}
                 </span>
                 <span v-else class="text-xs text-ink-400">全部</span>
               </td>
 
-              <td class="whitespace-nowrap text-ink-300">{{ channel.group || '—' }}</td>
-              <td class="cell-num">{{ channel.priority }}</td>
-              <td class="cell-num">{{ channel.weight }}</td>
+              <td class="whitespace-nowrap text-ink-300" data-label="分组">{{ channel.group || '—' }}</td>
+              <td class="cell-num" data-label="优先级">{{ channel.priority }}</td>
+              <td class="cell-num" data-label="权重">{{ channel.weight }}</td>
 
-              <td>
+              <td data-label="状态">
                 <span :class="statusBadgeClass(channel.status)">
                   <span class="dot" />
                   {{ channel.status_text || (channel.status === STATUS_ENABLED ? '启用' : '停用') }}
                 </span>
               </td>
 
-              <td class="whitespace-nowrap">
+              <td class="whitespace-nowrap" data-label="最近测活">
                 <!-- 测活完成后即时展示延迟与结论，无需去日志里找 -->
                 <span v-if="testResults[channel.id]" class="flex items-center gap-1.5">
                   <span :class="testResults[channel.id].ok ? 'badge badge-ok' : 'badge badge-err'">
@@ -733,7 +734,7 @@ const isEmpty = computed(() => !loading.value && !error.value && channels.value.
                 <span v-else class="cell-muted">未测活</span>
               </td>
 
-              <td class="cell-actions">
+              <td class="cell-actions" data-label="操作">
                 <div class="flex items-center justify-end gap-1">
                   <button
                     type="button"
@@ -1152,7 +1153,7 @@ const isEmpty = computed(() => !loading.value && !error.value && channels.value.
           <span class="text-amber-700">已自动摘除 {{ keyStats.removed }}</span>
         </p>
 
-        <div class="table-wrap">
+        <div class="table-wrap table-cards">
           <table class="data-table">
             <thead>
               <tr>
@@ -1166,18 +1167,18 @@ const isEmpty = computed(() => !loading.value && !error.value && channels.value.
             </thead>
             <tbody>
               <tr v-for="key in channelKeys" :key="key.id">
-                <td><code class="chip">{{ key.masked_key }}</code></td>
-                <td class="cell-muted">{{ key.label || '—' }}</td>
-                <td>
+                <td data-label="密钥"><code class="chip">{{ key.masked_key }}</code></td>
+                <td class="cell-muted" data-label="备注">{{ key.label || '—' }}</td>
+                <td data-label="状态">
                   <span :class="keyStatusClass(key.status)" :title="key.last_error || undefined">
                     {{ key.status_text }}
                   </span>
                 </td>
-                <td class="cell-num">{{ key.fail_count }}</td>
-                <td class="cell-muted">
+                <td class="cell-num" data-label="连续失败">{{ key.fail_count }}</td>
+                <td class="cell-muted" data-label="最近使用">
                   {{ key.last_used_at ? formatDateTime(key.last_used_at) : '未使用' }}
                 </td>
-                <td class="cell-actions">
+                <td class="cell-actions" data-label="操作">
                   <button
                     v-if="key.status !== KEY_STATUS_ENABLED"
                     type="button"

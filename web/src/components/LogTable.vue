@@ -12,7 +12,8 @@
  *
  * 扩展（Extend）：
  *   新增列（如 request_id）时：在表头与数据行同时添加，并同步 bumpColumnCount 的基数，
- *   否则空态行的 colSpan 会对不齐。
+ *   否则空态行的 colSpan 会对不齐；同时别忘了给新增的 <td> 补 data-label
+ *   （窄屏卡片视图的「标签：值」标签即来自该属性，与表头文案保持一致）。
  */
 import { computed } from 'vue'
 
@@ -59,9 +60,10 @@ function isOk(log: UsageLog): boolean {
 </script>
 
 <template>
-  <p class="mb-2 text-xs text-ink-400 lg:hidden">表格列较多，可左右滑动查看完整内容。</p>
+  <!-- 滑动提示只在桌面端出现：窄屏已切换为卡片视图（.table-cards），不需要左右滑动 -->
+  <p class="mb-2 hidden text-xs text-ink-400 lg:block">表格列较多，可左右滑动查看完整内容。</p>
 
-  <div class="table-wrap">
+  <div class="table-wrap table-cards">
     <table class="data-table min-w-[1080px]">
       <thead>
         <tr>
@@ -93,40 +95,40 @@ function isOk(log: UsageLog): boolean {
 
         <template v-if="!loading && !error && logs.length">
           <tr v-for="log in logs" :key="log.id">
-            <td class="cell-muted whitespace-nowrap" :title="formatDateTime(log.created_at)">
+            <td class="cell-muted whitespace-nowrap" :title="formatDateTime(log.created_at)" data-label="时间">
               {{ formatRelative(log.created_at) }}
             </td>
 
-            <td v-if="showUser" class="whitespace-nowrap">
+            <td v-if="showUser" class="whitespace-nowrap" data-label="用户">
               <span class="text-ink-100">{{ log.username || `#${log.user_id}` }}</span>
               <span class="ml-1 text-[11px] text-ink-500">#{{ log.user_id }}</span>
             </td>
 
-            <td class="whitespace-nowrap">
+            <td class="whitespace-nowrap" data-label="模型">
               <span class="chip">{{ log.model || '—' }}</span>
             </td>
 
-            <td v-if="showChannel" class="whitespace-nowrap text-ink-200">
+            <td v-if="showChannel" class="whitespace-nowrap text-ink-200" data-label="渠道">
               {{ log.channel_name || (log.channel_id ? `#${log.channel_id}` : '—') }}
             </td>
 
-            <td class="max-w-[10rem] truncate text-ink-200" :title="log.token_name">
+            <td class="max-w-[10rem] truncate text-ink-200" :title="log.token_name" data-label="令牌">
               {{ log.token_name || '—' }}
             </td>
 
-            <td class="cell-num text-ink-300">
+            <td class="cell-num text-ink-300" data-label="入 / 出 Token">
               {{ formatNumber(log.prompt_tokens) }} / {{ formatNumber(log.completion_tokens) }}
             </td>
 
-            <td class="cell-num">{{ formatNumber(log.total_tokens) }}</td>
-            <td class="cell-num">{{ formatNumber(log.quota) }}</td>
-            <td class="cell-num text-ink-300">{{ formatLatency(log.latency_ms) }}</td>
+            <td class="cell-num" data-label="合计">{{ formatNumber(log.total_tokens) }}</td>
+            <td class="cell-num" data-label="配额">{{ formatNumber(log.quota) }}</td>
+            <td class="cell-num text-ink-300" data-label="延迟">{{ formatLatency(log.latency_ms) }}</td>
 
-            <td>
+            <td data-label="类型">
               <span class="badge badge-off">{{ log.is_stream ? '流式' : '非流式' }}</span>
             </td>
 
-            <td>
+            <td data-label="状态">
               <div class="flex items-center gap-1.5">
                 <span :class="httpStatusBadgeClass(log.status_code)">
                   <span class="dot" />

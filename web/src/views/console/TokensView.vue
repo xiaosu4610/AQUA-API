@@ -230,9 +230,10 @@ const isEmpty = computed(() => !loading.value && !error.value && tokens.value.le
       </div>
     </div>
 
-    <p class="mb-2 text-xs text-ink-400 lg:hidden">表格列较多，可左右滑动查看完整内容。</p>
+    <!-- 滑动提示只在桌面端出现：窄屏已切换为卡片视图（.table-cards），不需要左右滑动 -->
+    <p class="mb-2 hidden text-xs text-ink-400 lg:block">表格列较多，可左右滑动查看完整内容。</p>
 
-    <div class="table-wrap">
+    <div class="table-wrap table-cards">
       <table class="data-table min-w-[1020px]">
         <thead>
           <tr>
@@ -269,28 +270,28 @@ const isEmpty = computed(() => !loading.value && !error.value && tokens.value.le
 
           <template v-if="!loading && !error && tokens.length">
             <tr v-for="token in tokens" :key="token.id">
-              <td class="font-medium text-ink-100">{{ token.name }}</td>
+              <td class="font-medium text-ink-100" data-label="名称">{{ token.name }}</td>
 
-              <td>
+              <td data-label="密钥">
                 <span class="flex items-center gap-1.5">
                   <code class="chip">{{ token.masked_key }}</code>
                 </span>
               </td>
 
-              <td>
+              <td data-label="状态">
                 <span :class="statusBadgeClass(token.status)">
                   <span class="dot" />
                   {{ token.status_text || (token.status === STATUS_ENABLED ? '启用' : '停用') }}
                 </span>
               </td>
 
-              <td class="cell-num">{{ formatQuota(token.remain_quota, token.unlimited_quota) }}</td>
-              <td class="cell-num text-ink-300">{{ formatNumber(token.used_quota) }}</td>
-              <td class="cell-muted whitespace-nowrap">{{ formatExpiry(token.expires_at) }}</td>
-              <td class="cell-muted whitespace-nowrap">{{ token.last_used_at ? formatDateTime(token.last_used_at) : '从未使用' }}</td>
-              <td class="cell-muted whitespace-nowrap">{{ formatDateTime(token.created_at) }}</td>
+              <td class="cell-num" data-label="剩余额度">{{ formatQuota(token.remain_quota, token.unlimited_quota) }}</td>
+              <td class="cell-num text-ink-300" data-label="已用额度">{{ formatNumber(token.used_quota) }}</td>
+              <td class="cell-muted whitespace-nowrap" data-label="有效期">{{ formatExpiry(token.expires_at) }}</td>
+              <td class="cell-muted whitespace-nowrap" data-label="最近使用">{{ token.last_used_at ? formatDateTime(token.last_used_at) : '从未使用' }}</td>
+              <td class="cell-muted whitespace-nowrap" data-label="创建时间">{{ formatDateTime(token.created_at) }}</td>
 
-              <td class="cell-actions">
+              <td class="cell-actions" data-label="操作">
                 <div class="flex items-center justify-end gap-1">
                   <button
                     type="button"

@@ -5,19 +5,22 @@
  * 意图（Why）：
  *   1) 门户与管理端只差「导航项与文案」，共用一套外壳可保证两侧交互一致，
  *      也避免复制出两份会逐渐分叉的布局代码；
- *   2) 桌面端固定侧边栏（信息密度优先），窄屏折叠为抽屉（可用性优先）。
+ *   2) 桌面端固定侧边栏（信息密度优先），窄屏同时提供「抽屉」与「底部导航」：
+ *      抽屉承载全部导航项，底部导航把最高频的几项常驻在拇指区（可用性优先）。
  *
  * 流转（Flow）：
  *   layouts/ConsoleLayout.vue、AdminLayout.vue → 传 groups（导航分组）
- *   → 本组件渲染 RouterLink 导航 + 当前用户信息 + 退出登录 → 默认插槽放页面内容
+ *   → 本组件渲染 RouterLink 导航 + 当前用户信息 + 退出登录 → 默认插槽放页面内容；
+ *     底部导航项由 groups 扁平化后取前若干项自动推导（见 bottomNavItems）。
  *
  * 扩展（Extend）：
  *   新增导航项：在对应 layout 的 groups 里加一项即可（图标名须在 AppIcon 中已登记）；
  *   注意区块根路径（/console、/admin）走精确匹配高亮（见 isSectionRoot），
  *   否则子页会把根项一起点亮，侧边栏出现两个选中态。
  *   新增顶栏操作（如全局搜索）：在 header 右侧插槽区追加。
+ *   调整底部导航项数：改 BOTTOM_NAV_LIMIT（当前 4 项 + 「更多」，共 5 格）。
  */
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import AppIcon from './AppIcon.vue'
@@ -50,6 +53,39 @@ watch(
   () => route.fullPath,
   () => (sidebarOpen.value = false),
 )
+
+/*
+ * 抽屉打开时锁定 body 滚动。
+ * 为什么需要：抽屉在窄屏几乎铺满整屏，若背后页面仍可滚动，手指在抽屉上
+ * 上下滑动会带着页面一起动，观感上像"抽屉在漏"。打开即锁、关闭即解锁，
+ * 组件卸载时兜底恢复，避免把整个页面永久锁死。
+ */
+watch(sidebarOpen, (open) => {
+  document.body.style.overflow = open ? 'hidden' : ''
+})
+
+onBeforeUnmount(() => {
+  document.body.style.overflow = ''
+})
+
+/** 底部导航最多展示的主导航项数（再加一个「更多」，共 5 格，375px 下每格约 75px 不拥挤） */
+const BOTTOM_NAV_LIMIT = 4
+
+/** 按 groups 的声明顺序把所有导航项拉平 */
+const flatNavItems = computed(() => props.groups.flatMap((group) => group.items))
+
+/**
+ * 底部导航项：取声明顺序最靠前的若干项。
+ *
+ * 为什么按顺序推导而不是在导航数据里标一个「常用」字段：
+ * 各 layout 的 groups 本就是按使用顺序排列的（控制台/总览在最前），
+ * 最靠前即代表最常用，直接切片即可，无需在导航数据上新增字段，
+ * 也就不存在"前端写死页面路径"的问题（换一套导航自动跟着变）。
+ */
+const bottomNavItems = computed(() => flatNavItems.value.slice(0, BOTTOM_NAV_LIMIT))
+
+/** 是否需要「更多」：仅当还有未展示的导航项时才出现，避免凭空多出一个无用入口 */
+const hasMoreNav = computed(() => flatNavItems.value.length > bottomNavItems.value.length)
 
 /** 顶栏标题取当前路由 meta.title */
 const currentTitle = computed(() => (route.meta.title as string | undefined) || props.variantLabel)
@@ -85,7 +121,7 @@ async function handleSignOut(): Promise<void> {
 </script>
 
 <template>
-  <div class="app-ambient min-h-screen bg-ink-950">
+  <div class="app-shell app-ambient bg-ink-950">
     <!-- 窄屏遮罩 -->
     <div
       v-if="sidebarOpen"
@@ -156,7 +192,7 @@ async function handleSignOut(): Promise<void> {
     <!-- 主内容区 -->
     <div class="lg:pl-60">
       <header
-        class="sticky top-0 z-20 flex items-center gap-3 border-b border-ink-800 bg-white/90 px-4 py-3 lg:px-8"
+        class="app-header sticky top-0 z-20 flex items-center gap-3 border-b border-ink-800 bg-white/90 px-4 lg:px-8"
       >
         <button
           type="button"
@@ -179,9 +215,38 @@ async function handleSignOut(): Promise<void> {
         </RouterLink>
       </header>
 
-      <main class="pb-16">
+      <main class="main-offset">
         <slot />
       </main>
     </div>
+
+    <!-- 底部导航（仅窄屏）：把最高频页面常驻在拇指区，省去「开抽屉再选」的那一步。
+         项由 groups 自动推导，新增/调整导航项时这里无需改动。 -->
+    <nav class="bottom-nav" aria-label="底部导航">
+      <RouterLink
+        v-for="item in bottomNavItems"
+        :key="item.to"
+        :to="item.to"
+        class="bottom-nav-item"
+        :active-class="isSectionRoot(item.to) ? undefined : 'bottom-nav-item-active'"
+        exact-active-class="bottom-nav-item-active"
+      >
+        <AppIcon :name="item.icon" :size="20" />
+        <span class="max-w-full truncate">{{ item.label }}</span>
+      </RouterLink>
+
+      <!-- 「更多」：打开抽屉查看全部导航项；抽屉打开时同步高亮，形成位置反馈 -->
+      <button
+        v-if="hasMoreNav"
+        type="button"
+        class="bottom-nav-item"
+        :class="sidebarOpen ? 'bottom-nav-item-active' : ''"
+        aria-label="更多导航"
+        @click="sidebarOpen = true"
+      >
+        <AppIcon name="menu" :size="20" />
+        <span>更多</span>
+      </button>
+    </nav>
   </div>
 </template>

@@ -44,6 +44,25 @@
     scroll-behavior: smooth;
   }
 
+  /* 横向溢出兜底。
+     窄屏下只要有一处元素「宽出视口」（长 URL、固定宽度的筛选控件等），
+     整页就能被左右拖动，看起来像"页面在漂"。
+     为什么用 clip 而不是 hidden：hidden 会把 body 变成滚动容器，
+     顶层 sticky 顶栏会因「最近的滚动祖先不再是视口」而失去粘性；
+     clip 只裁剪、不创建滚动容器，既兜住溢出又保住 sticky。
+     真正的横向滚动（数据表）都发生在 .table-wrap 这类内层容器上，不受影响。 */
+  html,
+  body {
+    overflow-x: clip;
+  }
+
+  @supports not (overflow: clip) {
+    html,
+    body {
+      overflow-x: hidden;
+    }
+  }
+
   body {
     @apply bg-ink-950 text-ink-100 antialiased;
     text-rendering: optimizeLegibility;
@@ -209,15 +228,20 @@
 
   /* 触屏设备（无精确指针）的可用性增强。
      用 hover:none 而不是屏幕宽度判断：平板同样是触屏，
-     按宽度判断会漏掉"横屏平板"这种又宽又靠手指操作的场景。 */
+     按宽度判断会漏掉"横屏平板"这种又宽又靠手指操作的场景。
+     尺寸取 40px（.btn-row）与 44px（.input）：
+     两者分别是 W3C/Material 推荐的「最小可点区域」下限，
+     28px 的桌面尺寸在手指下极易点空或点错相邻按钮。 */
   @media (hover: none) {
     .btn-row {
-      @apply h-9 w-9;
+      @apply h-10 w-10;
     }
 
-    /* 输入框在触屏上加大纵向内边距：手指点选更容易命中 */
+    /* 输入框：触屏下不仅加大纵向内边距，还要用 min-height 兜住最小高度，
+       否则 select 等控件的高度由内容决定，仍可能低于 44px。 */
     .input {
       @apply py-2.5;
+      min-height: 44px;
     }
   }
 
@@ -311,12 +335,84 @@
     @apply mb-6 flex flex-wrap items-end justify-between gap-4;
   }
 
+  /* 窄屏（<640px）收紧。
+     左右 20px 的内边距在 375px 下会明显压缩可读行宽，故收到 14px；
+     页头改为纵向堆叠，让标题与按钮组各占一行 —— 这样按钮组即便换行
+     也不会因为「被挤到页面右边缘」而把容器撑破、产生横向溢出。 */
+  @media (max-width: 639px) {
+    .page {
+      @apply px-3.5 py-5;
+    }
+
+    .page-head {
+      @apply flex-col items-stretch gap-3;
+    }
+  }
+
   .filter-bar {
     @apply flex flex-wrap items-end gap-3 rounded-xl border border-ink-800/70 bg-white/85 p-3.5;
   }
 
   .toolbar {
     @apply flex flex-wrap items-center gap-2;
+  }
+
+  /* ── 移动端外壳（安全区 / 视口高度 / 底部导航）──────────
+     这一节集中处理「手机浏览器不是桌面缩小的窗口」这件事：
+     地址栏会伸缩、刘海会遮挡、拇指够不到顶部。 */
+
+  /* 视口高度降级：100vh 在移动端会把地址栏遮住的那部分也算进去，
+     导致页面底部（如最后一屏内容）被顶出可视区；
+     100dvh 跟随实时可视区变化。两行写法让旧浏览器退回 100vh。 */
+  .app-shell {
+    min-height: 100vh;
+    min-height: 100dvh;
+  }
+
+  /* 顶栏的刘海安全区。
+     viewport-fit=cover 之后内容会顶到状态栏下方，必须补出顶部安全区，
+     否则标题会被刘海/状态栏压住。桌面与无刘海机型 env() 为 0，不受影响。 */
+  .app-header {
+    padding-top: calc(env(safe-area-inset-top) + 0.75rem);
+    padding-bottom: 0.75rem;
+  }
+
+  /* 内容区底部留白。
+     窄屏有固定底部导航，必须按「导航高度 + 底部安全区」预留，
+     否则列表最后一屏会被导航条永久遮住（滚到底也看不到）。
+     桌面端无底部导航，保持与旧版一致的 4rem。 */
+  .main-offset {
+    padding-bottom: 4rem;
+  }
+
+  @media (max-width: 1023px) {
+    .main-offset {
+      padding-bottom: calc(5rem + env(safe-area-inset-bottom));
+    }
+  }
+
+  /* 底部导航（仅窄屏）。
+     为什么在已有抽屉侧边栏之外还要它：抽屉是「先点开、再选择」两步，
+     且入口在页面顶部、远离拇指；底部导航常驻在拇指自然活动区，
+     把最高频页面从两步降为一步，是单手可用性的关键。
+     桌面端由固定侧边栏承担导航，故 lg 及以上隐藏。 */
+  .bottom-nav {
+    @apply fixed inset-x-0 bottom-0 z-20 flex items-stretch border-t border-ink-800 bg-white/95 lg:hidden;
+    /* 底部避开 Home 指示条；横屏刘海机型左右也要避开圆角/挖孔 */
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+
+  /* 单个导航项：图标在上、文字在下。
+     min-h 取 3.5rem 保证点按区足够大（>=48px）；文字用 leading-none 收紧凑。 */
+  .bottom-nav-item {
+    @apply flex min-h-[3.5rem] flex-1 flex-col items-center justify-center gap-0.5 px-1 py-2
+      text-[11px] font-medium leading-none text-ink-400 transition-colors active:bg-ink-850;
+  }
+
+  .bottom-nav-item-active {
+    @apply text-brand-700;
   }
 
   /* 侧边栏导航项 */
@@ -444,5 +540,65 @@
   /* 标题渐变字：仅用于页面主标题的强调词，不用于正文（正文用渐变会降低可读性） */
   .text-gradient-brand {
     @apply bg-gradient-to-r from-brand-700 via-brand-600 to-indigo-600 bg-clip-text text-transparent;
+  }
+
+  /* ── 窄屏表格降级（table → 卡片）─────────────────────────
+     问题：后台数据表列多（渠道 11 列、令牌 10 列），375px 下只能横向滑动，
+     用户既看不到"这行是什么"，操作按钮也藏在屏幕外。
+     做法：窄屏把每一行渲染成一张卡片，每个单元格变成「标签：值」两列。
+     为什么用纯 CSS 而不是 v-if 两套模板：同一份 <table> 标记在桌面是表格、
+     窄屏是卡片，无需维护两份列定义（否则很容易改一处漏一处）。
+     标签来源：td 上的 data-label（页面填写，与表头同名），用 ::before 渲染。
+     默认不启用：必须由页面给容器显式加 .table-cards 才生效，
+     避免影响桌面端观感与其他未适配的表格。
+     注意放在 utilities 层：需要以更高优先级覆盖表格自带的 min-w-[1220px] 等宽度工具类。 */
+  @media (max-width: 639px) {
+    /* 卡片模式下容器不再需要横向滚动与自身边框，否则会和每张卡片形成双层边框 */
+    .table-cards.table-wrap {
+      @apply overflow-visible rounded-none border-0 bg-transparent;
+    }
+
+    /* 拆掉表格的列布局：table/thead/tbody/tr 全部改为块级 */
+    .table-cards .data-table {
+      display: block;
+      min-width: 0;
+    }
+
+    .table-cards .data-table thead {
+      display: none;
+    }
+
+    .table-cards .data-table tbody,
+    .table-cards .data-table tbody tr {
+      display: block;
+    }
+
+    /* 数据行才渲染成卡片；空态/加载态那一行（DataState 的 colspan 行）没有
+       data-label，用 :has 排除，保持它自己的居中占位样式。 */
+    .table-cards .data-table tbody tr:has(td[data-label]) {
+      @apply mb-3 rounded-xl border border-ink-800/70 bg-white/85 px-3.5 py-3;
+    }
+
+    /* 单元格 → 「标签 : 值」两列 */
+    .table-cards .data-table tbody td[data-label] {
+      @apply flex items-start justify-between gap-3 border-b-0 px-0 py-1.5;
+    }
+
+    .table-cards .data-table tbody td[data-label]::before {
+      content: attr(data-label);
+      @apply mt-0.5 shrink-0 text-xs font-medium text-ink-400;
+    }
+
+    /* 允许值一侧收缩：否则 flex 项默认 min-width:auto 会拒绝变窄，
+       长 URL/模型名会顶破卡片（truncate 也会因此失效）。 */
+    .table-cards .data-table tbody td[data-label] > * {
+      min-width: 0;
+    }
+
+    /* 操作列：桌面端为省宽用 w-px + nowrap，卡片模式下要还原，
+       否则单元格被压成 1px、按钮溢出。按钮允许换行，避免一行塞不下。 */
+    .table-cards .data-table tbody td[data-label].cell-actions {
+      @apply w-auto flex-wrap items-center justify-end whitespace-normal;
+    }
   }
 }

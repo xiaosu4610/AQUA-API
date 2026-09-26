@@ -316,7 +316,7 @@ const hasModelData = computed(() => (usage.value?.by_model ?? []).length > 0)
 
     <!-- 用量趋势 -->
     <section class="mt-6 card">
-      <div class="card-head">
+      <div class="card-head flex-wrap">
         <div>
           <h3 class="section-title">用量趋势</h3>
           <p class="mt-1 text-xs text-ink-400">按天统计的请求数与 Token 消耗。</p>
@@ -344,11 +344,14 @@ const hasModelData = computed(() => (usage.value?.by_model ?? []).length > 0)
             重试
           </button>
         </div>
-        <div v-else-if="usageLoading" class="flex h-[300px] items-center justify-center gap-2 text-sm text-ink-400">
+        <div v-else-if="usageLoading" class="flex h-[300px] max-sm:h-[240px] items-center justify-center gap-2 text-sm text-ink-400">
           <span class="h-5 w-5 animate-spin rounded-full border-2 border-ink-600 border-t-brand-400" />
           正在加载用量数据…
         </div>
-        <EChart v-else :option="trendOption" :has-data="hasTrendData" height="300px" empty-text="该区间内暂无调用记录" />
+        <!-- 高度交给父容器：窄屏降到 240px，避免图表在 375px 下过高、把下方内容挤出首屏 -->
+        <div v-else class="h-[300px] max-sm:h-[240px]">
+          <EChart :option="trendOption" :has-data="hasTrendData" height="100%" empty-text="该区间内暂无调用记录" />
+        </div>
       </div>
     </section>
 
@@ -363,10 +366,12 @@ const hasModelData = computed(() => (usage.value?.by_model ?? []).length > 0)
         </div>
         <div class="card-pad">
           <div v-if="usageError" class="text-sm text-red-700">{{ usageError }}</div>
-          <div v-else-if="usageLoading" class="flex h-[280px] items-center justify-center text-sm text-ink-400">
+          <div v-else-if="usageLoading" class="flex h-[280px] max-sm:h-[240px] items-center justify-center text-sm text-ink-400">
             正在加载…
           </div>
-          <EChart v-else :option="modelOption" :has-data="hasModelData" height="280px" empty-text="该区间内暂无可统计的模型调用" />
+          <div v-else class="h-[280px] max-sm:h-[240px]">
+            <EChart :option="modelOption" :has-data="hasModelData" height="100%" empty-text="该区间内暂无可统计的模型调用" />
+          </div>
         </div>
       </section>
 
