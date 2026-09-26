@@ -1,0 +1,267 @@
+// Package config 负责 AQUA-API 的配置加载、覆盖与校验。
+//
+// 意图（Why）：
+//
+//	把程序所有运行参数集中到一处管理，并实现「默认值 → 配置文件 → 环境变量」三级覆盖。
+//	这样做的价值：
+//	  1) 单二进制部署时零配置即可启动（默认值兜底）；
+//	  2) 复杂部署用 JSON 文件描述；
+//	  3) 容器/CI 场景用环境变量注入，无需改文件。
+//	环境变量优先级最高，便于临时覆盖与密钥注入（密钥不应写进文件与仓库）。
+//
+// 流转（Flow）：
+//
+//	cmd/aqua/main.go
+//	  └─ config.Load(path)
+//	       ├─ Default()          生成默认值
+//	       ├─ loadFile()         读取 JSON 并「局部覆盖」（文件不存在不算错误）
+//	       ├─ applyEnv()         环境变量覆盖（AQUA_ 前缀）
+//	       └─ Validate()         校验取值合法性
+//	     └─ 返回 *Config，注入 store / server / relay 等模块
+//
+// 扩展（Extend）：
+//
+//	新增一个配置项时，必须同步修改以下四处，缺一不可：
+//	  1) 对应的结构体加字段（并写 json tag）；
+//	  2) Default() 里补默认值；
+//	  3) applyEnv() 里补环境变量映射（如需要）；
+//	  4) Validate() 里补合法性校验（如该字段有取值范围）。
+//	注意：本包只允许依赖标准库，不得引入第三方库，也不得反向依赖 internal 下其他包。
+package config
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"strings"
+)
+
+// 默认值常量。
+//
+// 设计说明：
+//   - 默认监听 127.0.0.1 而非 0.0.0.0：确保默认不对外暴露，
+//     公网访问必须由使用者显式改成 0.0.0.0 或置于反向代理之后。
+//   - 默认使用 SQLite 落在 ./data 目录：零依赖即可跑起来，方便本地与小型部署。
+const (
+	DefaultListen    = "127.0.0.1:8787" // 默认监听地址
+	DefaultMode      = "release"        // 默认运行模式：gin 的 debug/release
+	DefaultDBDriver  = "sqlite"         // 默认数据库驱动
+	DefaultDBDSN     = "./data/aqua.db" // 默认数据源（SQLite 文件路径）
+	DefaultLogLevel  = "info"           // 默认日志级别
+	DefaultLogFormat = "text"           // 默认日志格式
+	EnvPrefix        = "AQUA_"          // 环境变量统一前缀
+	driverSQLite     = "sqlite"         // M1 阶段仅实现该驱动
+	driverPostgres   = "postgres"       // 预留（M5+ 生产推荐）
+	driverMySQL      = "mysql"          // 预留
+)
+
+// Config 是程序运行所需的全部配置。
+//
+// 说明：结构体字段与 JSON 一一对应，便于配置文件书写与阅读。
+// 该结构在加载完成后被视为只读，运行期不做热更新（热更新见后续里程碑）。
+type Config struct {
+	Server   ServerConfig   `json:"server"`   // HTTP 服务相关
+	Database DatabaseConfig `json:"database"` // 数据库相关
+	Log      LogConfig      `json:"log"`      // 日志相关
+}
+
+// ServerConfig 描述 HTTP 服务的监听与运行模式。
+type ServerConfig struct {
+	// Listen 是 HTTP 监听地址，形如 "127.0.0.1:8787" 或 "0.0.0.0:8787"。
+	Listen string `json:"listen"`
+	// Mode 取值 debug / release / test，对应 gin 的运行模式。
+	// debug 会输出详细路由与调试信息，生产环境应使用 release。
+	Mode string `json:"mode"`
+}
+
+// DatabaseConfig 描述数据库连接。
+type DatabaseConfig struct {
+	// Driver 取值 sqlite / postgres / mysql。
+	// 注意：M1 里程碑仅实现 sqlite（纯 Go 驱动，无需 CGO）。
+	Driver string `json:"driver"`
+	// DSN 是数据源名称：
+	//   - sqlite：文件路径，如 ./data/aqua.db
+	//   - postgres/mysql：连接串（预留，可能包含密码，日志输出前须脱敏）
+	DSN string `json:"dsn"`
+}
+
+// LogConfig 描述日志输出。
+type LogConfig struct {
+	// Level 取值 debug / info / warn / error。
+	Level string `json:"level"`
+	// Format 取值 text / json。json 便于日志采集系统解析。
+	Format string `json:"format"`
+}
+
+// Default 返回一份带完整默认值的配置。
+//
+// 设计意图：所有字段都有合理默认，保证「零配置可启动」。
+// 返回指针而非值，是为了让调用方（Load）能在其上做局部覆盖。
+func Default() *Config {
+	return &Config{
+		Server: ServerConfig{
+			Listen: DefaultListen,
+			Mode:   DefaultMode,
+		},
+		Database: DatabaseConfig{
+			Driver: DefaultDBDriver,
+			DSN:    DefaultDBDSN,
+		},
+		Log: LogConfig{
+			Level:  DefaultLogLevel,
+			Format: DefaultLogFormat,
+		},
+	}
+}
+
+// Load 按「默认值 → 配置文件 → 环境变量」的顺序装配配置并校验。
+//
+// 参数 path 为配置文件路径；为空字符串，或文件不存在时，跳过文件加载（不算错误），
+// 直接使用默认值 + 环境变量。这样设计是为了兼容「无配置文件」的极简部署。
+//
+// 返回的 *Config 已完成校验，调用方可直接使用。
+func Load(path string) (*Config, error) {
+	cfg := Default()
+
+	// 第一级覆盖：配置文件（局部覆盖默认值）
+	if path != "" {
+		if err := loadFile(cfg, path); err != nil {
+			return nil, err
+		}
+	}
+
+	// 第二级覆盖：环境变量（优先级最高）
+	applyEnv(cfg)
+
+	// 校验：任何非法取值都在启动阶段暴露，避免运行期才出错
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
+	return cfg, nil
+}
+
+// loadFile 读取 JSON 配置文件并覆盖 cfg 中的对应字段。
+//
+// 实现要点：json.Unmarshal 只会覆盖文件中「出现过的」字段，
+// 未出现的字段保留 Default() 填好的默认值——这正是我们想要的局部覆盖语义。
+// 文件不存在时不报错，交由上层使用默认值。
+func loadFile(cfg *Config, path string) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		// 文件不存在属于正常情况（使用默认值即可），不作为错误向上抛
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("读取配置文件 %s 失败: %w", path, err)
+	}
+
+	// 空文件同样视为「无覆盖」，避免因空文件导致解析错误
+	if len(strings.TrimSpace(string(raw))) == 0 {
+		return nil
+	}
+
+	if err := json.Unmarshal(raw, cfg); err != nil {
+		return fmt.Errorf("解析配置文件 %s 失败（请检查 JSON 语法）: %w", path, err)
+	}
+	return nil
+}
+
+// applyEnv 用环境变量覆盖配置。
+//
+// 命名规则：EnvPrefix + 大写的「结构体名_字段名」，例如：
+//
+//	AQUA_SERVER_LISTEN、AQUA_SERVER_MODE
+//	AQUA_DATABASE_DRIVER、AQUA_DATABASE_DSN
+//	AQUA_LOG_LEVEL、AQUA_LOG_FORMAT
+//
+// 设计说明：只覆盖「非空」的环境变量，空字符串视为「未设置」，
+// 避免容器编排里注入空值意外抹掉默认配置。
+func applyEnv(cfg *Config) {
+	setIfNotEmpty(&cfg.Server.Listen, EnvPrefix+"SERVER_LISTEN")
+	setIfNotEmpty(&cfg.Server.Mode, EnvPrefix+"SERVER_MODE")
+	setIfNotEmpty(&cfg.Database.Driver, EnvPrefix+"DATABASE_DRIVER")
+	setIfNotEmpty(&cfg.Database.DSN, EnvPrefix+"DATABASE_DSN")
+	setIfNotEmpty(&cfg.Log.Level, EnvPrefix+"LOG_LEVEL")
+	setIfNotEmpty(&cfg.Log.Format, EnvPrefix+"LOG_FORMAT")
+}
+
+// setIfNotEmpty 在环境变量存在且非空时，将其值写入 dst 指向的字段。
+func setIfNotEmpty(dst *string, key string) {
+	if v, ok := os.LookupEnv(key); ok && strings.TrimSpace(v) != "" {
+		*dst = v
+	}
+}
+
+// Validate 校验配置取值的合法性。
+//
+// 设计原则：宁可启动失败，也不要带着错误配置运行——
+// 例如监听地址写错却启动成功，会让使用者误以为服务正常。
+// 所有错误信息都明确指出「字段 + 实际值 + 合法取值范围」，便于自助排查。
+func (c *Config) Validate() error {
+	// 监听地址必须包含端口分隔符，否则 net.Listen 会在运行期才报错
+	if c.Server.Listen == "" {
+		return fmt.Errorf("配置错误：server.listen 不能为空")
+	}
+	if !strings.Contains(c.Server.Listen, ":") {
+		return fmt.Errorf("配置错误：server.listen=%q 缺少端口，正确格式如 %s", c.Server.Listen, DefaultListen)
+	}
+	if !oneOf(c.Server.Mode, "debug", "release", "test") {
+		return fmt.Errorf("配置错误：server.mode=%q 非法，可选 debug/release/test", c.Server.Mode)
+	}
+
+	if !oneOf(c.Database.Driver, driverSQLite, driverPostgres, driverMySQL) {
+		return fmt.Errorf("配置错误：database.driver=%q 非法，可选 sqlite/postgres/mysql", c.Database.Driver)
+	}
+	// M1 只实现了 SQLite，提前拦截以免使用者在运行期困惑
+	if c.Database.Driver != driverSQLite {
+		return fmt.Errorf("配置错误：database.driver=%q 暂未实现（当前版本仅支持 sqlite）", c.Database.Driver)
+	}
+	if c.Database.DSN == "" {
+		return fmt.Errorf("配置错误：database.dsn 不能为空")
+	}
+
+	if !oneOf(c.Log.Level, "debug", "info", "warn", "error") {
+		return fmt.Errorf("配置错误：log.level=%q 非法，可选 debug/info/warn/error", c.Log.Level)
+	}
+	if !oneOf(c.Log.Format, "text", "json") {
+		return fmt.Errorf("配置错误：log.format=%q 非法，可选 text/json", c.Log.Format)
+	}
+
+	return nil
+}
+
+// oneOf 判断 v 是否属于候选集合，用于枚举型字段校验。
+func oneOf(v string, allowed ...string) bool {
+	for _, a := range allowed {
+		if v == a {
+			return true
+		}
+	}
+	return false
+}
+
+// SafeDSN 返回脱敏后的 DSN，专供日志输出使用。
+//
+// 安全考虑：PostgreSQL/MySQL 的 DSN 通常形如
+// "postgres://user:password@host/db"，若原样打进日志会泄露密码。
+// 因此日志一律使用本方法，绝不直接打印 Database.DSN。
+func (c *Config) SafeDSN() string {
+	dsn := c.Database.DSN
+	// 仅处理 "scheme://user:pass@host" 形式；SQLite 文件路径不含密码，直接返回
+	at := strings.LastIndex(dsn, "@")
+	if at < 0 {
+		return dsn
+	}
+	schemeEnd := strings.Index(dsn, "://")
+	if schemeEnd < 0 {
+		return dsn
+	}
+	credStart := schemeEnd + len("://")
+	colon := strings.Index(dsn[credStart:at], ":")
+	if colon < 0 {
+		return dsn
+	}
+	// 保留用户名，隐藏密码
+	return dsn[:credStart+colon+1] + "******" + dsn[at:]
+}
