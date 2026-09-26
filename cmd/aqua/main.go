@@ -194,6 +194,10 @@ func run() error {
 	tasks := store.NewTaskRepository(st.DB())
 	orders := store.NewPaymentOrderRepository(st.DB())
 	modelGroups := store.NewModelGroupRepository(st.DB())
+	// 模型实体与渠道级模型映射：把"模型"从渠道上的字符串升级为可维护实体，
+	// 并支持对外名 ↔ 上游名的双向解析（映射解析本身是 model 层的纯函数）。
+	modelMetas := store.NewModelMetaRepository(st.DB())
+	channelModelMappings := store.NewChannelModelMappingRepository(st.DB())
 	redeemCodes := store.NewRedeemCodeRepository(st.DB())
 	// 额度预留台账：鉴权时预扣、响应后结算/退还，堵住并发超支漏洞。
 	quotaReservations := store.NewQuotaRepository(st.DB())
@@ -351,6 +355,9 @@ func run() error {
 		// 模型分组：分组倍率参与计费，也是模型广场的分组来源
 		Groups:  modelGroups,
 		Billing: billing,
+		// 模型实体与渠道级映射：后台维护模型清单 / 映射，删除前做引用统计
+		Models:               modelMetas,
+		ChannelModelMappings: channelModelMappings,
 		// 兑换码：后台批量生成，用户在门户兑换领取额度
 		RedeemCodes: redeemCodes,
 		// 订阅账号：OAuth 提供方配置（后台维护）

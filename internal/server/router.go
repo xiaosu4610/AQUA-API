@@ -154,6 +154,22 @@ func (s *Server) registerRoutes() {
 	admin.PUT("/groups/:id", s.handleUpdateGroup)
 	admin.DELETE("/groups/:id", s.handleDeleteGroup)
 
+	// 模型实体（把"模型"从渠道上的字符串升级为可维护实体）
+	//
+	// 注意路由形态：`/models/:name/references` 只用 GET，与 GET 列表 /models 不冲突；
+	// PUT/DELETE 用的是 `/models/:id`，参数名与 references 的 :name 处于不同
+	// HTTP 方法树上，gin 不会产生参数名冲突。
+	admin.GET("/models", s.handleListModelMetas)
+	admin.POST("/models", s.handleCreateModelMeta)
+	admin.PUT("/models/:id", s.handleUpdateModelMeta)
+	admin.DELETE("/models/:id", s.handleDeleteModelMeta)
+	// 删除前引用统计（只读）：返回有多少令牌/分组/渠道/映射在引用该模型
+	admin.GET("/models/:name/references", s.handleModelMetaReferences)
+
+	// 渠道级模型映射（对外名 ↔ 上游名），整组替换便于界面一次提交
+	admin.GET("/channels/:id/mappings", s.handleListChannelMappings)
+	admin.PUT("/channels/:id/mappings", s.handleReplaceChannelMappings)
+
 	// OAuth 提供方配置（订阅账号池刷新令牌时使用）
 	admin.GET("/oauth-providers", s.handleListOAuthProviders)
 	admin.POST("/oauth-providers", s.handleCreateOAuthProvider)

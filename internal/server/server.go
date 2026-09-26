@@ -62,6 +62,10 @@ type Deps struct {
 	ModelPrices model.ModelPriceRepository
 	// Groups 是模型分组仓储（分组倍率参与计费，也是模型广场的分组来源）。
 	Groups model.ModelGroupRepository
+	// Models 是模型实体仓储（后台维护模型清单，并支撑删除前的引用统计）。
+	Models model.ModelRepository
+	// ChannelModelMappings 是渠道级模型映射仓储（对外名 ↔ 上游名的双向解析来源）。
+	ChannelModelMappings model.ChannelModelMappingRepository
 	// RedeemCodes 是兑换码仓储（后台批量生成/管理，用户在门户兑换领取额度）。
 	RedeemCodes model.RedeemCodeRepository
 	// Billing 用于在改价后清空价格缓存，保证"改完立即生效"。
