@@ -101,6 +101,14 @@ type Channel struct {
 	Status    ChannelStatus // 可用状态
 	CreatedAt time.Time     // 创建时间
 	UpdatedAt time.Time     // 更新时间
+
+	// LastTestAt 是最近一次测活时间；零值表示从未测活。
+	LastTestAt time.Time
+	// LastTestOK 表示最近一次测活是否通过。
+	//
+	// 说明：这是"最近一次"的瞬时结果，不是健康状态本身——
+	// 渠道是否可用要看 Status（自动禁用由健康检查写入）。
+	LastTestOK bool
 }
 
 // Validate 校验渠道的必要字段，供创建与更新时调用。
@@ -195,6 +203,18 @@ type ChannelRepository interface {
 	// List 按条件查询渠道列表，固定按「优先级降序、权重降序、ID 升序」返回，
 	// 该顺序即路由选取候选时的推荐顺序。
 	List(ctx context.Context, q ChannelQuery) ([]*Channel, error)
+
+	// Count 返回符合条件的渠道总数，用于分页。
+	Count(ctx context.Context, q ChannelQuery) (int, error)
+
+	// StatusCounts 按状态分组统计渠道数量，用于仪表盘概览。
+	StatusCounts(ctx context.Context) (map[ChannelStatus]int, error)
+
+	// RecordTestResult 记录一次测活结果（时间与是否通过）。
+	//
+	// 之所以单独一个方法而不复用 Update：测活是高频的后台行为，
+	// 若走 Update 会把整行配置一并写回，存在"用陈旧副本覆盖管理员刚改的配置"的风险。
+	RecordTestResult(ctx context.Context, id uint64, at time.Time, ok bool) error
 
 	// Update 按 ID 更新渠道（不修改创建时间），不存在时返回 ErrChannelNotFound。
 	Update(ctx context.Context, ch *Channel) error

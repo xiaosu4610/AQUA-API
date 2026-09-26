@@ -39,7 +39,7 @@ const (
 )
 
 // tokenColumns 集中定义查询列，顺序必须与 scanToken 的扫描顺序严格一致。
-const tokenColumns = `id, owner_id, name, key_hash, key_enc, status, expires_at, remain_quota, unlimited_quota, used_quota, models, created_at, updated_at`
+const tokenColumns = `id, owner_id, name, key_hash, key_enc, status, expires_at, remain_quota, unlimited_quota, used_quota, models, created_at, updated_at, last_used_at`
 
 // tokenRepository 是 model.TokenRepository 的 SQL 实现，并发安全。
 type tokenRepository struct {
@@ -127,23 +127,12 @@ func (r *tokenRepository) GetByKey(ctx context.Context, key string) (*model.Toke
 
 // List 按条件查询令牌列表，按 ID 升序返回（便于后台稳定分页）。
 func (r *tokenRepository) List(ctx context.Context, q model.TokenQuery) ([]*model.Token, error) {
-	var (
-		conditions []string
-		args       []any
-	)
-	if q.OwnerID != nil {
-		conditions = append(conditions, "owner_id = ?")
-		args = append(args, *q.OwnerID)
-	}
-	if q.Status != nil {
-		conditions = append(conditions, "status = ?")
-		args = append(args, int(*q.Status))
-	}
+	where, args := buildTokenWhere(q)
 
 	var sb strings.Builder
 	sb.WriteString("SELECT " + tokenColumns + " FROM tokens")
-	if len(conditions) > 0 {
-		sb.WriteString(" WHERE " + strings.Join(conditions, " AND "))
+	if where != "" {
+		sb.WriteString(" WHERE " + where)
 	}
 	sb.WriteString(" ORDER BY id ASC")
 
@@ -239,6 +228,81 @@ func (r *tokenRepository) Delete(ctx context.Context, id uint64) error {
 	return nil
 }
 
+// buildTokenWhere 构造令牌查询的 WHERE 子句与参数。
+//
+// 抽成独立函数让列表与计数共用同一筛选逻辑，避免分页总数与实际列表不一致。
+func buildTokenWhere(q model.TokenQuery) (string, []any) {
+	var (
+		conditions []string
+		args       []any
+	)
+	if q.OwnerID != nil {
+		conditions = append(conditions, "owner_id = ?")
+		args = append(args, *q.OwnerID)
+	}
+	if q.Status != nil {
+		conditions = append(conditions, "status = ?")
+		args = append(args, int(*q.Status))
+	}
+	return strings.Join(conditions, " AND "), args
+}
+
+// Count 返回符合条件的令牌总数。
+func (r *tokenRepository) Count(ctx context.Context, q model.TokenQuery) (int, error) {
+	where, args := buildTokenWhere(q)
+
+	sb := strings.Builder{}
+	sb.WriteString("SELECT COUNT(1) FROM tokens")
+	if where != "" {
+		sb.WriteString(" WHERE " + where)
+	}
+
+	var total int
+	if err := r.db.QueryRowContext(ctx, sb.String(), args...).Scan(&total); err != nil {
+		return 0, fmt.Errorf("store: 统计令牌数失败: %w", err)
+	}
+	return total, nil
+}
+
+// StatusCounts 按状态分组统计令牌数量。
+func (r *tokenRepository) StatusCounts(ctx context.Context) (map[model.TokenStatus]int, error) {
+	rows, err := r.db.QueryContext(ctx, "SELECT status, COUNT(1) FROM tokens GROUP BY status")
+	if err != nil {
+		return nil, fmt.Errorf("store: 统计令牌状态失败: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	counts := make(map[model.TokenStatus]int, 4)
+	for rows.Next() {
+		var (
+			status int
+			count  int
+		)
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, fmt.Errorf("store: 读取令牌状态统计失败: %w", err)
+		}
+		counts[model.TokenStatus(status)] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: 遍历令牌状态统计失败: %w", err)
+	}
+	return counts, nil
+}
+
+// RecordUsage 记录令牌最近一次使用时间。
+//
+// 说明：只更新一个字段，避免整行写回造成的并发覆盖。
+func (r *tokenRepository) RecordUsage(ctx context.Context, id uint64, at time.Time) error {
+	_, err := r.db.ExecContext(ctx,
+		"UPDATE tokens SET last_used_at = ? WHERE id = ?", at.Unix(), id)
+	if err != nil {
+		return fmt.Errorf("store: 记录令牌 %d 使用时间失败: %w", id, err)
+	}
+	// 令牌可能已被删除（如用户在被调用期间删除了它），
+	// 此时无记录可更新属于正常情况，不应让转发流程因统计失败而报错。
+	return nil
+}
+
 // scanToken 把一行数据映射为领域对象，并解密 KEY。
 func (r *tokenRepository) scanToken(sc rowScanner) (*model.Token, error) {
 	var (
@@ -255,10 +319,12 @@ func (r *tokenRepository) scanToken(sc rowScanner) (*model.Token, error) {
 		modelsCSV      string
 		createdAt      int64
 		updatedAt      int64
+		lastUsedAt     int64
 	)
 
 	if err := sc.Scan(&id, &ownerID, &name, &keyHash, &keyEnc, &status, &expiresAt,
-		&remainQuota, &unlimitedQuota, &usedQuota, &modelsCSV, &createdAt, &updatedAt); err != nil {
+		&remainQuota, &unlimitedQuota, &usedQuota, &modelsCSV, &createdAt, &updatedAt,
+		&lastUsedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, err
 		}
@@ -283,6 +349,7 @@ func (r *tokenRepository) scanToken(sc rowScanner) (*model.Token, error) {
 		Models:         decodeModels(modelsCSV),
 		CreatedAt:      time.Unix(createdAt, 0),
 		UpdatedAt:      time.Unix(updatedAt, 0),
+		LastUsedAt:     unixToExpiresAt(lastUsedAt), // 复用"0 表示零值时间"的转换
 	}, nil
 }
 

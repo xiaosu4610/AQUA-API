@@ -45,7 +45,7 @@ const (
 // channelColumns 集中定义查询列，避免各处手写列名导致顺序错乱。
 //
 // 注意：列顺序必须与 scanChannel 的 Scan 参数顺序严格一致。
-const channelColumns = `id, name, type, base_url, api_key_enc, models, group_name, priority, weight, status, created_at, updated_at`
+const channelColumns = `id, name, type, base_url, api_key_enc, models, group_name, priority, weight, status, created_at, updated_at, last_test_at, last_test_ok`
 
 // channelRepository 是 model.ChannelRepository 的 SQL 实现。
 //
@@ -120,23 +120,12 @@ func (r *channelRepository) GetByID(ctx context.Context, id uint64) (*model.Chan
 // 上层可直接按序遍历做渠道选择，无需二次排序。
 func (r *channelRepository) List(ctx context.Context, q model.ChannelQuery) ([]*model.Channel, error) {
 	// 动态拼接 WHERE：所有值都通过占位符传入，杜绝 SQL 注入
-	var (
-		conditions []string
-		args       []any
-	)
-	if q.Group != "" {
-		conditions = append(conditions, "group_name = ?")
-		args = append(args, q.Group)
-	}
-	if q.Status != nil {
-		conditions = append(conditions, "status = ?")
-		args = append(args, int(*q.Status))
-	}
+	where, args := buildChannelWhere(q)
 
 	var sb strings.Builder
 	sb.WriteString("SELECT " + channelColumns + " FROM channels")
-	if len(conditions) > 0 {
-		sb.WriteString(" WHERE " + strings.Join(conditions, " AND "))
+	if where != "" {
+		sb.WriteString(" WHERE " + where)
 	}
 	sb.WriteString(" ORDER BY priority DESC, weight DESC, id ASC")
 
@@ -235,6 +224,90 @@ func (r *channelRepository) Delete(ctx context.Context, id uint64) error {
 	return nil
 }
 
+// buildChannelWhere 构造渠道查询的 WHERE 子句与参数。
+//
+// 抽成独立函数是为了让"列表查询"与"计数查询"共用同一份筛选逻辑——
+// 若各写一份，很容易出现"列表按分组过滤、计数忘了过滤"导致分页总页数错误。
+func buildChannelWhere(q model.ChannelQuery) (string, []any) {
+	var (
+		conditions []string
+		args       []any
+	)
+	if q.Group != "" {
+		conditions = append(conditions, "group_name = ?")
+		args = append(args, q.Group)
+	}
+	if q.Status != nil {
+		conditions = append(conditions, "status = ?")
+		args = append(args, int(*q.Status))
+	}
+	return strings.Join(conditions, " AND "), args
+}
+
+// Count 返回符合条件的渠道总数。
+func (r *channelRepository) Count(ctx context.Context, q model.ChannelQuery) (int, error) {
+	where, args := buildChannelWhere(q)
+
+	sb := strings.Builder{}
+	sb.WriteString("SELECT COUNT(1) FROM channels")
+	if where != "" {
+		sb.WriteString(" WHERE " + where)
+	}
+
+	var total int
+	if err := r.db.QueryRowContext(ctx, sb.String(), args...).Scan(&total); err != nil {
+		return 0, fmt.Errorf("store: 统计渠道数失败: %w", err)
+	}
+	return total, nil
+}
+
+// StatusCounts 按状态分组统计渠道数量。
+func (r *channelRepository) StatusCounts(ctx context.Context) (map[model.ChannelStatus]int, error) {
+	rows, err := r.db.QueryContext(ctx, "SELECT status, COUNT(1) FROM channels GROUP BY status")
+	if err != nil {
+		return nil, fmt.Errorf("store: 统计渠道状态失败: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	counts := make(map[model.ChannelStatus]int, 3)
+	for rows.Next() {
+		var (
+			status int
+			count  int
+		)
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, fmt.Errorf("store: 读取渠道状态统计失败: %w", err)
+		}
+		counts[model.ChannelStatus(status)] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: 遍历渠道状态统计失败: %w", err)
+	}
+	return counts, nil
+}
+
+// RecordTestResult 记录一次测活结果。
+//
+// 实现要点：只更新两个字段，不像 Update 那样把整行配置写回——
+// 测活是后台高频行为，若整行写回，会用陈旧副本覆盖管理员刚修改的配置。
+func (r *channelRepository) RecordTestResult(ctx context.Context, id uint64, at time.Time, ok bool) error {
+	res, err := r.db.ExecContext(ctx,
+		"UPDATE channels SET last_test_at = ?, last_test_ok = ? WHERE id = ?",
+		at.Unix(), boolToInt(ok), id)
+	if err != nil {
+		return fmt.Errorf("store: 记录渠道 %d 测活结果失败: %w", id, err)
+	}
+
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: 读取影响行数失败: %w", err)
+	}
+	if affected == 0 {
+		return model.ErrChannelNotFound
+	}
+	return nil
+}
+
 // rowScanner 抽象 *sql.Row 与 *sql.Rows 的共同能力，使扫描逻辑只需写一份。
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -247,22 +320,25 @@ type rowScanner interface {
 //   - 解密失败会包装为明确错误——通常意味着 AQUA_APP_KEY 被更换或数据被篡改。
 func (r *channelRepository) scanChannel(sc rowScanner) (*model.Channel, error) {
 	var (
-		id        uint64
-		name      string
-		channelTy int
-		baseURL   string
-		encoded   string
-		modelsCSV string
-		group     string
-		priority  int
-		weight    int
-		status    int
-		createdAt int64
-		updatedAt int64
+		id         uint64
+		name       string
+		channelTy  int
+		baseURL    string
+		encoded    string
+		modelsCSV  string
+		group      string
+		priority   int
+		weight     int
+		status     int
+		createdAt  int64
+		updatedAt  int64
+		lastTestAt int64
+		lastTestOK int
 	)
 
 	if err := sc.Scan(&id, &name, &channelTy, &baseURL, &encoded, &modelsCSV,
-		&group, &priority, &weight, &status, &createdAt, &updatedAt); err != nil {
+		&group, &priority, &weight, &status, &createdAt, &updatedAt,
+		&lastTestAt, &lastTestOK); err != nil {
 		// sql.ErrNoRows 属于正常控制流，不额外包装，便于调用方用 errors.Is 判断
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, err
@@ -276,18 +352,20 @@ func (r *channelRepository) scanChannel(sc rowScanner) (*model.Channel, error) {
 	}
 
 	return &model.Channel{
-		ID:        id,
-		Name:      name,
-		Type:      channelTy,
-		BaseURL:   baseURL,
-		APIKey:    apiKey,
-		Models:    decodeModels(modelsCSV),
-		Group:     group,
-		Priority:  priority,
-		Weight:    weight,
-		Status:    model.ChannelStatus(status),
-		CreatedAt: time.Unix(createdAt, 0),
-		UpdatedAt: time.Unix(updatedAt, 0),
+		ID:         id,
+		Name:       name,
+		Type:       channelTy,
+		BaseURL:    baseURL,
+		APIKey:     apiKey,
+		Models:     decodeModels(modelsCSV),
+		Group:      group,
+		Priority:   priority,
+		Weight:     weight,
+		Status:     model.ChannelStatus(status),
+		CreatedAt:  time.Unix(createdAt, 0),
+		UpdatedAt:  time.Unix(updatedAt, 0),
+		LastTestAt: unixToExpiresAt(lastTestAt), // 复用"0 表示零值时间"的转换
+		LastTestOK: lastTestOK != 0,
 	}, nil
 }
 

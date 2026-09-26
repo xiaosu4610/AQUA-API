@@ -112,6 +112,11 @@ type Token struct {
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
+
+	// LastUsedAt 是最近一次使用时间；零值表示从未使用。
+	//
+	// 用途：帮助使用者辨认"哪些 key 还在用、哪些可以清理"，也便于发现异常调用。
+	LastUsedAt time.Time
 }
 
 // GenerateTokenKey 生成一个新的令牌 KEY，形如 sk-<48 位十六进制>。
@@ -255,6 +260,17 @@ type TokenRepository interface {
 
 	// List 按条件查询令牌列表，按 ID 升序返回。
 	List(ctx context.Context, q TokenQuery) ([]*Token, error)
+
+	// Count 返回符合条件的令牌总数，用于分页。
+	Count(ctx context.Context, q TokenQuery) (int, error)
+
+	// StatusCounts 按状态分组统计令牌数量，用于仪表盘概览。
+	StatusCounts(ctx context.Context) (map[TokenStatus]int, error)
+
+	// RecordUsage 记录令牌最近一次使用时间。
+	//
+	// 说明：只更新一个字段，避免把整行写回造成并发覆盖。
+	RecordUsage(ctx context.Context, id uint64, at time.Time) error
 
 	// Update 按 ID 更新令牌（不修改创建时间），不存在时返回 ErrTokenNotFound。
 	Update(ctx context.Context, t *Token) error
