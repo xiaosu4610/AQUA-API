@@ -1,0 +1,304 @@
+/*
+ * AQUA-API 全局样式与设计系统。
+ *
+ * 意图（Why）：
+ *   把「深色主题的视觉规则」集中在一处：基础层（底色/滚动条/选区）+
+ *   组件层（按钮/输入/卡片/表格/徽标等的语义类）。
+ *   各 .vue 只使用语义类名（.btn .card .data-table），
+ *   保证 11 个页面在表格、表单这两个核心交互上完全一致。
+ *
+ * 流转（Flow）：
+ *   tailwind 指令 → PostCSS 编译 → 注入所有页面
+ *   main.ts 首先 import './style.css'，确保先于组件样式生效
+ *
+ * 扩展（Extend）：
+ *   新增语义类请放进 @layer components，避免用裸 @apply 生成无序样式；
+ *   需要新色板时先改 tailwind.config.js 的 theme.extend.colors。
+ */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    color-scheme: dark;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-ink-950 text-ink-100 antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    @apply bg-brand-500/30 text-white;
+  }
+
+  /* 细窄滚动条：管理后台表格横向滚动频繁，默认滚动条过于笨重 */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #26324a transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    @apply rounded-full border-[3px] border-solid border-transparent bg-ink-700 bg-clip-content;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: #33415a;
+    background-clip: content-box;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  /* 表单控件在深色下的自动填充样式修正（Chrome 会强制白底） */
+  input:-webkit-autofill,
+  input:-webkit-autofill:focus {
+    -webkit-text-fill-color: #e6ebf2;
+    -webkit-box-shadow: 0 0 0 1000px #0d151f inset;
+    transition: background-color 9999s ease-out 0s;
+  }
+
+  :focus-visible {
+    @apply outline-none ring-2 ring-brand-500/40;
+  }
+}
+
+@layer components {
+  /* ── 容器 ─────────────────────────────────────────────── */
+  .card {
+    @apply rounded-xl border border-ink-800 bg-ink-900/50 shadow-panel;
+  }
+
+  .card-pad {
+    @apply p-5;
+  }
+
+  .card-head {
+    @apply flex items-center justify-between gap-3 border-b border-ink-800 px-5 py-4;
+  }
+
+  .page-title {
+    @apply text-lg font-semibold text-white;
+  }
+
+  .page-desc {
+    @apply mt-1 text-sm text-ink-300;
+  }
+
+  .section-title {
+    @apply text-sm font-semibold text-ink-100;
+  }
+
+  /* ── 按钮 ─────────────────────────────────────────────── */
+  .btn {
+    @apply inline-flex select-none items-center justify-center gap-1.5 whitespace-nowrap rounded-lg
+      px-3.5 py-2 text-sm font-medium transition-all duration-150
+      disabled:cursor-not-allowed disabled:opacity-45;
+  }
+
+  .btn-primary {
+    @apply bg-brand-400 text-ink-950 hover:bg-brand-300 active:bg-brand-500;
+  }
+
+  .btn-secondary {
+    @apply border border-ink-700 bg-ink-800 text-ink-100 hover:border-ink-600 hover:bg-ink-750;
+  }
+
+  .btn-ghost {
+    @apply text-ink-300 hover:bg-ink-800 hover:text-ink-100;
+  }
+
+  .btn-danger {
+    @apply border border-red-500/25 bg-red-500/10 text-red-300 hover:bg-red-500/20 hover:text-red-200;
+  }
+
+  .btn-sm {
+    @apply gap-1 rounded-md px-2.5 py-1.5 text-xs;
+  }
+
+  .btn-icon {
+    @apply h-8 w-8 rounded-md px-0 py-0;
+  }
+
+  /* 表格操作列：图标按钮统一尺寸，避免行高抖动 */
+  .btn-row {
+    @apply h-7 w-7 rounded-md border border-transparent text-ink-300
+      hover:border-ink-700 hover:bg-ink-800 hover:text-ink-100
+      disabled:cursor-not-allowed disabled:opacity-40;
+  }
+
+  /* ── 表单 ─────────────────────────────────────────────── */
+  .label {
+    @apply mb-1.5 flex items-center gap-1 text-xs font-medium text-ink-300;
+  }
+
+  .input {
+    @apply w-full rounded-lg border border-ink-700 bg-ink-900 px-3 py-2 text-sm text-ink-100
+      transition placeholder:text-ink-500
+      focus:border-brand-500/60 focus:bg-ink-950 focus:ring-2 focus:ring-brand-500/15;
+  }
+
+  .input-mono {
+    @apply font-mono text-[13px] tracking-tight;
+  }
+
+  .input-invalid {
+    @apply border-red-500/50 focus:border-red-500/70 focus:ring-red-500/15;
+  }
+
+  .hint {
+    @apply mt-1 text-xs leading-relaxed text-ink-400;
+  }
+
+  .field-error {
+    @apply mt-1 text-xs text-red-400;
+  }
+
+  .checkbox {
+    @apply h-4 w-4 shrink-0 cursor-pointer rounded border-ink-600 bg-ink-900 text-brand-500
+      focus:ring-2 focus:ring-brand-500/25 focus:ring-offset-0;
+  }
+
+  /* ── 表格（本项目核心交互，密度与对齐重点打磨）────────── */
+  .table-wrap {
+    @apply overflow-x-auto rounded-xl border border-ink-800 bg-ink-900/40;
+  }
+
+  .data-table {
+    @apply w-full border-collapse text-left text-sm;
+  }
+
+  .data-table thead th {
+    @apply whitespace-nowrap border-b border-ink-800 bg-ink-850/80 px-4 py-2.5
+      text-xs font-medium tracking-wide text-ink-300;
+  }
+
+  .data-table tbody td {
+    @apply border-b border-ink-850/80 px-4 py-2.5 align-middle text-ink-100;
+  }
+
+  .data-table tbody tr:last-child td {
+    @apply border-b-0;
+  }
+
+  .data-table tbody tr {
+    @apply transition-colors duration-100;
+  }
+
+  .data-table tbody tr:hover {
+    @apply bg-ink-850/50;
+  }
+
+  .data-table .cell-num {
+    @apply text-right font-mono text-[13px] tabular-nums;
+  }
+
+  .data-table .cell-muted {
+    @apply text-xs text-ink-400;
+  }
+
+  .data-table .cell-actions {
+    @apply w-px whitespace-nowrap text-right;
+  }
+
+  /* ── 徽标与标签 ───────────────────────────────────────── */
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium ring-1 ring-inset;
+  }
+
+  .badge-ok {
+    @apply bg-emerald-500/10 text-emerald-300 ring-emerald-500/25;
+  }
+
+  .badge-off {
+    @apply bg-ink-800 text-ink-300 ring-ink-700;
+  }
+
+  .badge-warn {
+    @apply bg-amber-500/10 text-amber-300 ring-amber-500/25;
+  }
+
+  .badge-err {
+    @apply bg-red-500/10 text-red-300 ring-red-500/25;
+  }
+
+  .badge-info {
+    @apply bg-brand-500/10 text-brand-300 ring-brand-500/25;
+  }
+
+  .chip {
+    @apply inline-flex items-center rounded-md border border-ink-700 bg-ink-850 px-2 py-0.5
+      font-mono text-xs text-ink-200;
+  }
+
+  .dot {
+    @apply inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-current;
+  }
+
+  /* ── 代码块 ───────────────────────────────────────────── */
+  .code-block {
+    @apply relative overflow-hidden rounded-xl border border-ink-800 bg-ink-950;
+  }
+
+  .code-block pre {
+    @apply overflow-x-auto px-4 py-3.5 font-mono text-[13px] leading-relaxed text-ink-100;
+  }
+
+  /* ── 页面级布局 ───────────────────────────────────────── */
+  .page {
+    @apply mx-auto w-full max-w-[1400px] px-5 py-6 lg:px-8 lg:py-8;
+  }
+
+  .page-head {
+    @apply mb-6 flex flex-wrap items-end justify-between gap-4;
+  }
+
+  .filter-bar {
+    @apply flex flex-wrap items-end gap-3 rounded-xl border border-ink-800 bg-ink-900/40 p-3.5;
+  }
+
+  .toolbar {
+    @apply flex flex-wrap items-center gap-2;
+  }
+
+  /* 侧边栏导航项 */
+  .nav-item {
+    @apply flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium text-ink-300
+      transition-colors hover:bg-ink-850 hover:text-ink-100;
+  }
+
+  .nav-item-active {
+    @apply bg-brand-500/10 text-brand-300 hover:bg-brand-500/15 hover:text-brand-200;
+  }
+
+  /* 表格骨架屏（加载态用，避免布局跳动） */
+  .skeleton {
+    @apply animate-pulse rounded bg-ink-800;
+  }
+}
+
+@layer utilities {
+  /* 网格背景：落地页 hero 的几何底纹，纯 CSS 实现，不使用占位图片 */
+  .bg-grid {
+    background-image: linear-gradient(to right, rgba(148, 163, 184, 0.07) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(148, 163, 184, 0.07) 1px, transparent 1px);
+    background-size: 44px 44px;
+  }
+
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+}
