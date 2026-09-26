@@ -347,7 +347,7 @@ const isEmpty = computed(() => !loading.value && !error.value && tokens.value.le
 
                   <button
                     type="button"
-                    class="btn btn-row text-ink-400 hover:text-red-300"
+                    class="btn btn-row text-ink-400 hover:text-red-700"
                     title="删除"
                     :disabled="busyId === token.id"
                     @click="removeToken(token)"
@@ -383,7 +383,7 @@ const isEmpty = computed(() => !loading.value && !error.value && tokens.value.le
     >
       <div class="space-y-5">
         <div>
-          <label class="label" for="token-owner">归属用户 <span class="text-red-400">*</span></label>
+          <label class="label" for="token-owner">归属用户 <span class="text-red-600">*</span></label>
           <select
             id="token-owner"
             v-model="ownerUserId"
@@ -406,7 +406,7 @@ const isEmpty = computed(() => !loading.value && !error.value && tokens.value.le
 
       <p
         v-if="createError"
-        class="mt-4 flex items-start gap-2 rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-2 text-xs leading-relaxed text-red-200"
+        class="mt-4 flex items-start gap-2 rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-2 text-xs leading-relaxed text-red-800"
       >
         <AppIcon name="alert" :size="14" class="mt-0.5 shrink-0" />
         {{ createError }}
@@ -417,7 +417,7 @@ const isEmpty = computed(() => !loading.value && !error.value && tokens.value.le
         <button type="button" class="btn btn-primary" :disabled="creating" @click="submitCreate">
           <span
             v-if="creating"
-            class="h-4 w-4 animate-spin rounded-full border-2 border-ink-950/40 border-t-ink-950"
+            class="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white"
             aria-hidden="true"
           />
           <AppIcon v-else name="plus" :size="16" />
@@ -445,7 +445,7 @@ const isEmpty = computed(() => !loading.value && !error.value && tokens.value.le
 
         <div class="grid gap-5 sm:grid-cols-2">
           <div>
-            <label class="label" for="edit-token-name">名称 <span class="text-red-400">*</span></label>
+            <label class="label" for="edit-token-name">名称 <span class="text-red-600">*</span></label>
             <input id="edit-token-name" v-model="editForm.name" class="input" type="text" maxlength="64" />
           </div>
           <div>

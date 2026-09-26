@@ -19,9 +19,9 @@ const { items, dismiss } = useToastQueue()
 
 /** 各类型的图标与配色（用 ring 描边而非纯色填充，避免提示条过于抢眼） */
 const KIND_STYLE: Record<ToastKind, { icon: 'check' | 'alert' | 'info'; class: string }> = {
-  success: { icon: 'check', class: 'text-emerald-300 ring-emerald-500/25' },
-  error: { icon: 'alert', class: 'text-red-300 ring-red-500/25' },
-  info: { icon: 'info', class: 'text-brand-300 ring-brand-500/25' },
+  success: { icon: 'check', class: 'text-emerald-700 ring-emerald-500/25' },
+  error: { icon: 'alert', class: 'text-red-700 ring-red-500/25' },
+  info: { icon: 'info', class: 'text-brand-700 ring-brand-500/25' },
 }
 </script>
 

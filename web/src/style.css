@@ -2,10 +2,19 @@
  * AQUA-API 全局样式与设计系统。
  *
  * 意图（Why）：
- *   把「深色主题的视觉规则」集中在一处：基础层（底色/滚动条/选区）+
+ *   把「亮色主题的视觉规则」集中在一处：基础层（底色/滚动条/选区）+
  *   组件层（按钮/输入/卡片/表格/徽标等的语义类）。
  *   各 .vue 只使用语义类名（.btn .card .data-table），
  *   保证 11 个页面在表格、表单这两个核心交互上完全一致。
+ *
+ * 主题取向：透明亮色。
+ *   页面底色是极浅冷调，卡片/顶栏使用「白色半透明 + 背景模糊」形成通透的
+ *   玻璃质感，而不是纯色白底块；层次依靠极浅的边框与轻柔的投影区分。
+ *
+ * 关于 ink 色阶（改色前必读）：
+ *   约定 ink-950 最接近页面底色、ink-50 与底色对比最强
+ *   （亮色主题下 950 最浅、50 最深，与 Tailwind 默认方向相反）。
+ *   因此本文件里 bg-ink-950 是页面底、text-ink-50 是最深文字，属于预期用法。
  *
  * 流转（Flow）：
  *   tailwind 指令 → PostCSS 编译 → 注入所有页面
@@ -22,7 +31,7 @@
 
 @layer base {
   html {
-    color-scheme: dark;
+    color-scheme: light;
     scroll-behavior: smooth;
   }
 
@@ -32,13 +41,13 @@
   }
 
   ::selection {
-    @apply bg-brand-500/30 text-white;
+    @apply bg-brand-500/25 text-brand-900;
   }
 
   /* 细窄滚动条：管理后台表格横向滚动频繁，默认滚动条过于笨重 */
   * {
     scrollbar-width: thin;
-    scrollbar-color: #26324a transparent;
+    scrollbar-color: #cbd6e4 transparent;
   }
 
   *::-webkit-scrollbar {
@@ -51,7 +60,7 @@
   }
 
   *::-webkit-scrollbar-thumb:hover {
-    background-color: #33415a;
+    background-color: #b8c4d4;
     background-clip: content-box;
   }
 
@@ -59,11 +68,13 @@
     background: transparent;
   }
 
-  /* 表单控件在深色下的自动填充样式修正（Chrome 会强制白底） */
+  /* 表单控件在浅色下的自动填充样式修正。
+     Chrome 的自动填充会强行覆盖底色，若不处理会在玻璃质感的表单里
+     出现一块突兀的淡黄色底，破坏整体观感。 */
   input:-webkit-autofill,
   input:-webkit-autofill:focus {
-    -webkit-text-fill-color: #e6ebf2;
-    -webkit-box-shadow: 0 0 0 1000px #0d151f inset;
+    -webkit-text-fill-color: #1e293b;
+    -webkit-box-shadow: 0 0 0 1000px #ffffff inset;
     transition: background-color 9999s ease-out 0s;
   }
 
@@ -74,8 +85,10 @@
 
 @layer components {
   /* ── 容器 ─────────────────────────────────────────────── */
+  /* 卡片：白色半透明 + 背景模糊。半透明让底层页面的极浅冷调透出来，
+     形成"透明亮色"的通透感，而不是一块呆板的白板。 */
   .card {
-    @apply rounded-xl border border-ink-800 bg-ink-900/50 shadow-panel;
+    @apply rounded-xl border border-ink-800/70 bg-white/70 shadow-panel backdrop-blur-xl;
   }
 
   .card-pad {
@@ -83,11 +96,11 @@
   }
 
   .card-head {
-    @apply flex items-center justify-between gap-3 border-b border-ink-800 px-5 py-4;
+    @apply flex items-center justify-between gap-3 border-b border-ink-800/60 px-5 py-4;
   }
 
   .page-title {
-    @apply text-lg font-semibold text-white;
+    @apply text-lg font-semibold text-ink-50;
   }
 
   .page-desc {
@@ -105,20 +118,23 @@
       disabled:cursor-not-allowed disabled:opacity-45;
   }
 
+  /* 主按钮：实底青 + 白字。
+     为什么不用更浅的 brand-400 配深字：浅青底配深字在亮色页面里
+     会显得"发灰、不够醒目"，主操作按钮需要在浅色环境中依然跳出来。 */
   .btn-primary {
-    @apply bg-brand-400 text-ink-950 hover:bg-brand-300 active:bg-brand-500;
+    @apply bg-brand-600 text-white shadow-sm hover:bg-brand-700 active:bg-brand-800;
   }
 
   .btn-secondary {
-    @apply border border-ink-700 bg-ink-800 text-ink-100 hover:border-ink-600 hover:bg-ink-750;
+    @apply border border-ink-700 bg-white/70 text-ink-100 hover:border-ink-600 hover:bg-white;
   }
 
   .btn-ghost {
-    @apply text-ink-300 hover:bg-ink-800 hover:text-ink-100;
+    @apply text-ink-300 hover:bg-ink-850 hover:text-ink-100;
   }
 
   .btn-danger {
-    @apply border border-red-500/25 bg-red-500/10 text-red-300 hover:bg-red-500/20 hover:text-red-200;
+    @apply border border-red-500/25 bg-red-500/10 text-red-700 hover:bg-red-500/20 hover:text-red-800;
   }
 
   .btn-sm {
@@ -131,8 +147,8 @@
 
   /* 表格操作列：图标按钮统一尺寸，避免行高抖动 */
   .btn-row {
-    @apply h-7 w-7 rounded-md border border-transparent text-ink-300
-      hover:border-ink-700 hover:bg-ink-800 hover:text-ink-100
+    @apply h-7 w-7 rounded-md border border-transparent text-ink-400
+      hover:border-ink-700 hover:bg-ink-850 hover:text-ink-100
       disabled:cursor-not-allowed disabled:opacity-40;
   }
 
@@ -141,10 +157,12 @@
     @apply mb-1.5 flex items-center gap-1 text-xs font-medium text-ink-300;
   }
 
+  /* 输入框：默认用比卡片略深的底色（页面底色），聚焦后变成纯白，
+     形成"被点亮"的反馈；这比改边框颜色更容易被用户察觉。 */
   .input {
-    @apply w-full rounded-lg border border-ink-700 bg-ink-900 px-3 py-2 text-sm text-ink-100
+    @apply w-full rounded-lg border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-ink-100
       transition placeholder:text-ink-500
-      focus:border-brand-500/60 focus:bg-ink-950 focus:ring-2 focus:ring-brand-500/15;
+      focus:border-brand-500/70 focus:bg-ink-900 focus:ring-2 focus:ring-brand-500/15;
   }
 
   .input-mono {
@@ -160,17 +178,17 @@
   }
 
   .field-error {
-    @apply mt-1 text-xs text-red-400;
+    @apply mt-1 text-xs text-red-600;
   }
 
   .checkbox {
-    @apply h-4 w-4 shrink-0 cursor-pointer rounded border-ink-600 bg-ink-900 text-brand-500
+    @apply h-4 w-4 shrink-0 cursor-pointer rounded border-ink-600 bg-white text-brand-600
       focus:ring-2 focus:ring-brand-500/25 focus:ring-offset-0;
   }
 
   /* ── 表格（本项目核心交互，密度与对齐重点打磨）────────── */
   .table-wrap {
-    @apply overflow-x-auto rounded-xl border border-ink-800 bg-ink-900/40;
+    @apply overflow-x-auto rounded-xl border border-ink-800/70 bg-white/70 backdrop-blur-xl;
   }
 
   .data-table {
@@ -178,12 +196,12 @@
   }
 
   .data-table thead th {
-    @apply whitespace-nowrap border-b border-ink-800 bg-ink-850/80 px-4 py-2.5
+    @apply whitespace-nowrap border-b border-ink-800/70 bg-ink-850/70 px-4 py-2.5
       text-xs font-medium tracking-wide text-ink-300;
   }
 
   .data-table tbody td {
-    @apply border-b border-ink-850/80 px-4 py-2.5 align-middle text-ink-100;
+    @apply border-b border-ink-800/50 px-4 py-2.5 align-middle text-ink-100;
   }
 
   .data-table tbody tr:last-child td {
@@ -195,7 +213,7 @@
   }
 
   .data-table tbody tr:hover {
-    @apply bg-ink-850/50;
+    @apply bg-brand-500/5;
   }
 
   .data-table .cell-num {
@@ -216,7 +234,7 @@
   }
 
   .badge-ok {
-    @apply bg-emerald-500/10 text-emerald-300 ring-emerald-500/25;
+    @apply bg-emerald-500/10 text-emerald-700 ring-emerald-500/25;
   }
 
   .badge-off {
@@ -224,15 +242,15 @@
   }
 
   .badge-warn {
-    @apply bg-amber-500/10 text-amber-300 ring-amber-500/25;
+    @apply bg-amber-500/10 text-amber-700 ring-amber-500/25;
   }
 
   .badge-err {
-    @apply bg-red-500/10 text-red-300 ring-red-500/25;
+    @apply bg-red-500/10 text-red-700 ring-red-500/25;
   }
 
   .badge-info {
-    @apply bg-brand-500/10 text-brand-300 ring-brand-500/25;
+    @apply bg-brand-500/10 text-brand-700 ring-brand-500/25;
   }
 
   .chip {
@@ -245,8 +263,9 @@
   }
 
   /* ── 代码块 ───────────────────────────────────────────── */
+  /* 用页面底色而非纯白：让代码块与卡片形成微弱但可辨的层次 */
   .code-block {
-    @apply relative overflow-hidden rounded-xl border border-ink-800 bg-ink-950;
+    @apply relative overflow-hidden rounded-xl border border-ink-800/70 bg-ink-950;
   }
 
   .code-block pre {
@@ -263,7 +282,7 @@
   }
 
   .filter-bar {
-    @apply flex flex-wrap items-end gap-3 rounded-xl border border-ink-800 bg-ink-900/40 p-3.5;
+    @apply flex flex-wrap items-end gap-3 rounded-xl border border-ink-800/70 bg-white/70 p-3.5 backdrop-blur-xl;
   }
 
   .toolbar {
@@ -277,7 +296,7 @@
   }
 
   .nav-item-active {
-    @apply bg-brand-500/10 text-brand-300 hover:bg-brand-500/15 hover:text-brand-200;
+    @apply bg-brand-500/10 text-brand-700 hover:bg-brand-500/15 hover:text-brand-800;
   }
 
   /* 表格骨架屏（加载态用，避免布局跳动） */
@@ -287,10 +306,11 @@
 }
 
 @layer utilities {
-  /* 网格背景：落地页 hero 的几何底纹，纯 CSS 实现，不使用占位图片 */
+  /* 网格背景：落地页 hero 的几何底纹，纯 CSS 实现，不使用占位图片。
+     亮色下的线条要更淡，否则会显得像表格线而不是底纹。 */
   .bg-grid {
-    background-image: linear-gradient(to right, rgba(148, 163, 184, 0.07) 1px, transparent 1px),
-      linear-gradient(to bottom, rgba(148, 163, 184, 0.07) 1px, transparent 1px);
+    background-image: linear-gradient(to right, rgba(15, 23, 42, 0.05) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(15, 23, 42, 0.05) 1px, transparent 1px);
     background-size: 44px 44px;
   }
 

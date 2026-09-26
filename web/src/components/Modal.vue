@@ -81,7 +81,7 @@ onBeforeUnmount(() => {
         :aria-label="title"
       >
         <div
-          class="fixed inset-0 bg-ink-950/80 backdrop-blur-[2px]"
+          class="fixed inset-0 bg-ink-50/35 backdrop-blur-[2px]"
           @click="closeOnBackdrop && emit('close')"
         />
 
@@ -91,7 +91,7 @@ onBeforeUnmount(() => {
         >
           <header class="flex items-start justify-between gap-4 border-b border-ink-800 px-5 py-4">
             <div class="min-w-0">
-              <h2 class="text-base font-semibold text-white">{{ title }}</h2>
+              <h2 class="text-base font-semibold text-ink-50">{{ title }}</h2>
               <p v-if="subtitle" class="mt-1 text-xs leading-relaxed text-ink-400">{{ subtitle }}</p>
             </div>
             <button

@@ -48,8 +48,8 @@ const baseUrl = computed(() => `${window.location.origin}/v1`)
     <div class="space-y-4">
       <!-- 风险提示：用醒目的警示色，避免用户直接点关闭 -->
       <div class="flex gap-3 rounded-xl border border-amber-500/25 bg-amber-500/10 px-4 py-3">
-        <AppIcon name="alert" :size="18" class="mt-0.5 text-amber-300" />
-        <p class="text-sm leading-relaxed text-amber-100">
+        <AppIcon name="alert" :size="18" class="mt-0.5 text-amber-700" />
+        <p class="text-sm leading-relaxed text-amber-800">
           明文密钥<strong class="font-semibold">不会再显示</strong>，请立刻复制并妥善保存。
           若已丢失，只能删除该令牌后重新创建。
         </p>

@@ -250,7 +250,7 @@ const hasModelData = computed(() => (usage.value?.by_model ?? []).length > 0)
             :key="option"
             type="button"
             class="rounded-md px-2.5 py-1 text-xs font-medium transition-colors"
-            :class="days === option ? 'bg-brand-500/15 text-brand-200' : 'text-ink-400 hover:text-ink-200'"
+            :class="days === option ? 'bg-brand-500/15 text-brand-700' : 'text-ink-400 hover:text-ink-200'"
             @click="selectDays(option)"
           >
             {{ option }} 天
@@ -260,8 +260,8 @@ const hasModelData = computed(() => (usage.value?.by_model ?? []).length > 0)
 
       <div class="card-pad">
         <div v-if="usageError" class="flex flex-wrap items-center gap-3 rounded-xl border border-red-500/25 bg-red-500/10 px-4 py-3">
-          <AppIcon name="alert" :size="16" class="text-red-300" />
-          <p class="flex-1 text-sm text-red-200">{{ usageError }}</p>
+          <AppIcon name="alert" :size="16" class="text-red-700" />
+          <p class="flex-1 text-sm text-red-800">{{ usageError }}</p>
           <button type="button" class="btn btn-secondary btn-sm" @click="loadUsage">
             <AppIcon name="refresh" :size="14" />
             重试
@@ -285,7 +285,7 @@ const hasModelData = computed(() => (usage.value?.by_model ?? []).length > 0)
           </div>
         </div>
         <div class="card-pad">
-          <div v-if="usageError" class="text-sm text-red-300">{{ usageError }}</div>
+          <div v-if="usageError" class="text-sm text-red-700">{{ usageError }}</div>
           <div v-else-if="usageLoading" class="flex h-[280px] items-center justify-center text-sm text-ink-400">
             正在加载…
           </div>

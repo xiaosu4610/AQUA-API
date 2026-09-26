@@ -98,7 +98,7 @@ function onUnlimitedChange(event: Event): void {
   <div class="space-y-5">
     <!-- 名称：用于在日志里区分调用来源，故为必填 -->
     <div>
-      <label class="label" for="token-name">令牌名称 <span class="text-red-400">*</span></label>
+      <label class="label" for="token-name">令牌名称 <span class="text-red-600">*</span></label>
       <input
         id="token-name"
         class="input"
@@ -183,8 +183,8 @@ function onUnlimitedChange(event: Event): void {
           v-for="model in modelSuggestions"
           :key="model"
           type="button"
-          class="chip transition hover:border-brand-500/40 hover:text-brand-200"
-          :class="selectedModels.includes(model) ? 'border-brand-500/50 text-brand-200' : ''"
+          class="chip transition hover:border-brand-500/40 hover:text-brand-700"
+          :class="selectedModels.includes(model) ? 'border-brand-500/50 text-brand-700' : ''"
           @click="addModel(model)"
         >
           <AppIcon v-if="selectedModels.includes(model)" name="check" :size="12" class="mr-1" />

@@ -76,7 +76,7 @@ async function handleSignOut(): Promise<void> {
     <!-- 窄屏遮罩 -->
     <div
       v-if="sidebarOpen"
-      class="fixed inset-0 z-30 bg-ink-950/70 backdrop-blur-[2px] lg:hidden"
+      class="fixed inset-0 z-30 bg-ink-50/30 backdrop-blur-[2px] lg:hidden"
       @click="sidebarOpen = false"
     />
 
@@ -90,7 +90,7 @@ async function handleSignOut(): Promise<void> {
       <RouterLink to="/" class="flex items-center gap-2.5 border-b border-ink-800 px-4 py-4">
         <img src="/favicon.ico" alt="" class="h-8 w-8 rounded-lg" />
         <span class="min-w-0">
-          <span class="block truncate text-sm font-semibold text-white">{{ site.siteName }}</span>
+          <span class="block truncate text-sm font-semibold text-ink-50">{{ site.siteName }}</span>
           <span class="block text-[11px] text-ink-400">{{ variantLabel }}</span>
         </span>
       </RouterLink>
@@ -124,7 +124,7 @@ async function handleSignOut(): Promise<void> {
       <!-- 用户区 -->
       <div class="border-t border-ink-800 p-3">
         <div class="flex items-center gap-2.5 rounded-lg bg-ink-850/70 px-3 py-2.5">
-          <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand-500/15 text-sm font-semibold text-brand-200">
+          <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand-500/15 text-sm font-semibold text-brand-700">
             {{ avatarText }}
           </span>
           <span class="min-w-0 flex-1">
@@ -142,7 +142,7 @@ async function handleSignOut(): Promise<void> {
     <!-- 主内容区 -->
     <div class="lg:pl-60">
       <header
-        class="sticky top-0 z-20 flex items-center gap-3 border-b border-ink-800 bg-ink-950/85 px-4 py-3 backdrop-blur lg:px-8"
+        class="sticky top-0 z-20 flex items-center gap-3 border-b border-ink-800 bg-white/70 px-4 py-3 backdrop-blur lg:px-8"
       >
         <button
           type="button"

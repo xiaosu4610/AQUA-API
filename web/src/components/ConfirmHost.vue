@@ -31,7 +31,7 @@ const state = useConfirmState()
     <div class="flex gap-3">
       <span
         class="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-ink-850 ring-1 ring-inset"
-        :class="state.request.danger ? 'text-red-300 ring-red-500/25' : 'text-brand-300 ring-brand-500/25'"
+        :class="state.request.danger ? 'text-red-700 ring-red-500/25' : 'text-brand-700 ring-brand-500/25'"
       >
         <AppIcon :name="state.request.danger ? 'alert' : 'info'" :size="18" />
       </span>

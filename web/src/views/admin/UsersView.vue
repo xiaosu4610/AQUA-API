@@ -344,7 +344,7 @@ const isEmpty = computed(() => !loading.value && !error.value && users.value.len
 
                   <button
                     type="button"
-                    class="btn btn-row text-ink-400 hover:text-red-300"
+                    class="btn btn-row text-ink-400 hover:text-red-700"
                     title="删除"
                     :disabled="busyId === user.id"
                     @click="removeUser(user)"
@@ -381,11 +381,11 @@ const isEmpty = computed(() => !loading.value && !error.value && users.value.len
       <div class="space-y-5">
         <div class="grid gap-5 sm:grid-cols-2">
           <div>
-            <label class="label" for="user-username">用户名 <span class="text-red-400">*</span></label>
+            <label class="label" for="user-username">用户名 <span class="text-red-600">*</span></label>
             <input id="user-username" v-model="createForm.username" class="input" type="text" placeholder="唯一用户名" />
           </div>
           <div>
-            <label class="label" for="user-password">初始密码 <span class="text-red-400">*</span></label>
+            <label class="label" for="user-password">初始密码 <span class="text-red-600">*</span></label>
             <input
               id="user-password"
               v-model="createForm.password"
@@ -432,7 +432,7 @@ const isEmpty = computed(() => !loading.value && !error.value && users.value.len
         <button type="button" class="btn btn-primary" :disabled="creating" @click="submitCreate">
           <span
             v-if="creating"
-            class="h-4 w-4 animate-spin rounded-full border-2 border-ink-950/40 border-t-ink-950"
+            class="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white"
             aria-hidden="true"
           />
           <AppIcon v-else name="plus" :size="16" />

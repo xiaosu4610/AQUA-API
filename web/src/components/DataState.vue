@@ -90,7 +90,7 @@ const panelClass = computed(() => [
 
       <!-- 错误态：展示后端返回的可读信息 + 重试入口 -->
       <template v-else-if="error">
-        <span class="flex h-10 w-10 items-center justify-center rounded-xl bg-ink-850 text-red-300 ring-1 ring-inset ring-red-500/25">
+        <span class="flex h-10 w-10 items-center justify-center rounded-xl bg-ink-850 text-red-700 ring-1 ring-inset ring-red-500/25">
           <AppIcon name="alert" :size="20" />
         </span>
         <p class="max-w-md text-sm leading-relaxed text-ink-200">{{ error }}</p>

@@ -87,7 +87,7 @@ function reloadSite(): void {
     <header class="relative mx-auto flex w-full max-w-6xl items-center justify-between px-5 py-5 lg:px-8">
       <RouterLink to="/" class="flex items-center gap-2.5">
         <img src="/favicon.ico" alt="" class="h-7 w-7 rounded-lg" />
-        <span class="text-sm font-semibold text-white">{{ site.siteName }}</span>
+        <span class="text-sm font-semibold text-ink-50">{{ site.siteName }}</span>
       </RouterLink>
       <RouterLink to="/" class="btn btn-ghost btn-sm">
         <AppIcon name="chevron-left" :size="14" />
@@ -100,16 +100,16 @@ function reloadSite(): void {
         <!-- 站点信息异常提示：登录本身不受影响 -->
         <div
           v-if="site.error"
-          class="mb-4 flex items-center gap-2 rounded-xl border border-amber-500/25 bg-amber-500/10 px-3.5 py-2.5 text-xs text-amber-100"
+          class="mb-4 flex items-center gap-2 rounded-xl border border-amber-500/25 bg-amber-500/10 px-3.5 py-2.5 text-xs text-amber-800"
         >
-          <AppIcon name="alert" :size="15" class="text-amber-300" />
+          <AppIcon name="alert" :size="15" class="text-amber-700" />
           <span class="flex-1">站点信息加载失败，登录仍可继续。</span>
-          <button type="button" class="btn btn-ghost btn-sm text-amber-200" @click="reloadSite">重试</button>
+          <button type="button" class="btn btn-ghost btn-sm text-amber-800" @click="reloadSite">重试</button>
         </div>
 
         <div class="card card-pad shadow-pop">
           <div>
-            <h1 class="text-xl font-semibold tracking-tight text-white">登录 {{ site.siteName }}</h1>
+            <h1 class="text-xl font-semibold tracking-tight text-ink-50">登录 {{ site.siteName }}</h1>
             <p class="mt-1.5 text-sm text-ink-400">使用账号密码登录，管理你的访问令牌与调用记录。</p>
           </div>
 
@@ -153,7 +153,7 @@ function reloadSite(): void {
             <!-- 错误态：贴在按钮上方，视线自然落点 -->
             <p
               v-if="errorMessage"
-              class="flex items-start gap-2 rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-2 text-xs leading-relaxed text-red-200"
+              class="flex items-start gap-2 rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-2 text-xs leading-relaxed text-red-800"
             >
               <AppIcon name="alert" :size="14" class="mt-0.5 shrink-0" />
               {{ errorMessage }}
@@ -162,7 +162,7 @@ function reloadSite(): void {
             <button type="submit" class="btn btn-primary w-full" :disabled="submitting">
               <span
                 v-if="submitting"
-                class="h-4 w-4 animate-spin rounded-full border-2 border-ink-950/40 border-t-ink-950"
+                class="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white"
                 aria-hidden="true"
               />
               <AppIcon v-else name="lock" :size="16" />
@@ -176,7 +176,7 @@ function reloadSite(): void {
             </template>
             <template v-else-if="site.registrationEnabled">
               还没有账号？
-              <RouterLink to="/register" class="font-medium text-brand-300 transition-colors hover:text-brand-200">
+              <RouterLink to="/register" class="font-medium text-brand-700 transition-colors hover:text-brand-700">
                 立即注册
               </RouterLink>
             </template>

@@ -131,7 +131,7 @@ function isOk(log: UsageLog): boolean {
                   {{ log.status_code || '—' }}
                 </span>
                 <!-- 失败原因优先用 title 提示，避免长错误信息破坏表格密度 -->
-                <span v-if="log.error" class="text-red-400" :title="log.error">
+                <span v-if="log.error" class="text-red-600" :title="log.error">
                   <AppIcon name="alert" :size="14" />
                 </span>
                 <span v-if="!isOk(log) && !log.error" class="text-ink-500">失败</span>

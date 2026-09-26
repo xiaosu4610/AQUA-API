@@ -4,13 +4,15 @@
   意图：给 Vue 应用一个挂载点，并声明品牌图标与基础 meta。
   流转：浏览器请求 / → 后端（go:embed）返回本文件 → 加载 /assets/*.js 启动应用。
   扩展：新增全局 meta（如统计脚本）请在此处追加，勿在前端代码里动态注入。
+  主题：站点采用透明亮色主题，因此 html 不带 dark 类，
+        theme-color 取页面底色的浅冷调，移动端地址栏与页面融为一体。
 -->
-<html lang="zh-CN" class="dark">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" href="/favicon.ico" />
-    <meta name="theme-color" content="#080d14" />
+    <meta name="theme-color" content="#f5f8fc" />
     <meta
       name="description"
       content="AQUA-API 是自托管的 LLM API 网关：统一上游渠道与下游协议，负责路由、计费与运营。"

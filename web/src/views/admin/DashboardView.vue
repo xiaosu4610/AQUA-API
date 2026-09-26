@@ -179,7 +179,7 @@ const hasTopModels = computed(() => (data.value?.top_models ?? []).length > 0)
     <!-- 整页错误态：本页所有数据同源，重试一次即可恢复 -->
     <div v-if="error && !loading" class="card card-pad">
       <div class="flex flex-col items-center justify-center gap-3 py-10 text-center">
-        <span class="flex h-11 w-11 items-center justify-center rounded-xl bg-ink-850 text-red-300 ring-1 ring-inset ring-red-500/25">
+        <span class="flex h-11 w-11 items-center justify-center rounded-xl bg-ink-850 text-red-700 ring-1 ring-inset ring-red-500/25">
           <AppIcon name="alert" :size="20" />
         </span>
         <p class="text-sm text-ink-200">{{ error }}</p>
@@ -203,21 +203,21 @@ const hasTopModels = computed(() => (data.value?.top_models ?? []).length > 0)
 
         <template v-else>
           <StatCard label="渠道" :value="channelTotal" :hint="channelHint" icon="server" tone="brand">
-            <RouterLink to="/admin/channels" class="inline-flex items-center gap-1 text-xs text-brand-300 hover:text-brand-200">
+            <RouterLink to="/admin/channels" class="inline-flex items-center gap-1 text-xs text-brand-700 hover:text-brand-700">
               渠道管理
               <AppIcon name="chevron-right" :size="12" />
             </RouterLink>
           </StatCard>
 
           <StatCard label="用户" :value="userTotal" :hint="userHint" icon="users" tone="ok">
-            <RouterLink to="/admin/users" class="inline-flex items-center gap-1 text-xs text-brand-300 hover:text-brand-200">
+            <RouterLink to="/admin/users" class="inline-flex items-center gap-1 text-xs text-brand-700 hover:text-brand-700">
               用户管理
               <AppIcon name="chevron-right" :size="12" />
             </RouterLink>
           </StatCard>
 
           <StatCard label="访问令牌" :value="tokenTotal" :hint="tokenHint" icon="key" tone="mute">
-            <RouterLink to="/admin/tokens" class="inline-flex items-center gap-1 text-xs text-brand-300 hover:text-brand-200">
+            <RouterLink to="/admin/tokens" class="inline-flex items-center gap-1 text-xs text-brand-700 hover:text-brand-700">
               令牌管理
               <AppIcon name="chevron-right" :size="12" />
             </RouterLink>

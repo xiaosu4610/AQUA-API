@@ -140,11 +140,11 @@ const consoleTarget = computed(() => (auth.isAdmin ? '/admin' : '/console'))
 <template>
   <div class="min-h-screen bg-ink-950">
     <!-- ── 顶部导航 ───────────────────────────────────────── -->
-    <header class="sticky top-0 z-30 border-b border-ink-800/80 bg-ink-950/85 backdrop-blur">
+    <header class="sticky top-0 z-30 border-b border-ink-800/80 bg-white/70 backdrop-blur">
       <div class="mx-auto flex max-w-6xl items-center gap-4 px-5 py-3.5 lg:px-8">
         <RouterLink to="/" class="flex items-center gap-2.5">
           <img src="/favicon.ico" alt="" class="h-8 w-8 rounded-lg" />
-          <span class="text-sm font-semibold tracking-tight text-white">{{ site.siteName }}</span>
+          <span class="text-sm font-semibold tracking-tight text-ink-50">{{ site.siteName }}</span>
         </RouterLink>
 
         <nav class="ml-4 hidden items-center gap-1 md:flex">
@@ -196,7 +196,7 @@ const consoleTarget = computed(() => (auth.isAdmin ? '/admin' : '/console'))
               <span v-if="site.models.length" class="chip">{{ site.models.length }} 个模型在线</span>
             </div>
 
-            <h1 class="mt-6 text-balance text-4xl font-semibold leading-tight tracking-tight text-white lg:text-5xl">
+            <h1 class="mt-6 text-balance text-4xl font-semibold leading-tight tracking-tight text-ink-50 lg:text-5xl">
               一个入口，接管你所有的
               <span class="bg-gradient-to-r from-brand-300 to-brand-500 bg-clip-text text-transparent">大模型调用</span>
             </h1>
@@ -207,15 +207,15 @@ const consoleTarget = computed(() => (auth.isAdmin ? '/admin' : '/console'))
 
             <ul class="mt-6 flex flex-wrap gap-x-5 gap-y-2 text-sm text-ink-300">
               <li class="flex items-center gap-1.5">
-                <AppIcon name="check" :size="15" class="text-brand-400" />
+                <AppIcon name="check" :size="15" class="text-brand-600" />
                 兼容 OpenAI 接口
               </li>
               <li class="flex items-center gap-1.5">
-                <AppIcon name="check" :size="15" class="text-brand-400" />
+                <AppIcon name="check" :size="15" class="text-brand-600" />
                 令牌级额度控制
               </li>
               <li class="flex items-center gap-1.5">
-                <AppIcon name="check" :size="15" class="text-brand-400" />
+                <AppIcon name="check" :size="15" class="text-brand-600" />
                 逐次调用留痕
               </li>
             </ul>
@@ -261,7 +261,7 @@ const consoleTarget = computed(() => (auth.isAdmin ? '/admin' : '/console'))
             </div>
 
             <div class="mt-4 flex items-center gap-3 rounded-xl border border-ink-800 bg-ink-900/50 px-4 py-3">
-              <AppIcon name="lock" :size="16" class="text-brand-300" />
+              <AppIcon name="lock" :size="16" class="text-brand-700" />
               <p class="text-xs leading-relaxed text-ink-400">
                 访问令牌仅创建时明文展示一次；服务端只保存摘要，可随时吊销。
               </p>
@@ -273,8 +273,8 @@ const consoleTarget = computed(() => (auth.isAdmin ? '/admin' : '/console'))
       <!-- ── 站点信息异常时的提示（不阻断页面）───────────────── -->
       <div v-if="site.error" class="mx-auto max-w-6xl px-5 pt-6 lg:px-8">
         <div class="flex flex-wrap items-center gap-3 rounded-xl border border-amber-500/25 bg-amber-500/10 px-4 py-3">
-          <AppIcon name="alert" :size="16" class="text-amber-300" />
-          <p class="flex-1 text-sm text-amber-100">站点信息加载失败：{{ site.error }}</p>
+          <AppIcon name="alert" :size="16" class="text-amber-700" />
+          <p class="flex-1 text-sm text-amber-800">站点信息加载失败：{{ site.error }}</p>
           <button type="button" class="btn btn-secondary btn-sm" @click="site.load(true)">
             <AppIcon name="refresh" :size="14" />
             重试
@@ -285,8 +285,8 @@ const consoleTarget = computed(() => (auth.isAdmin ? '/admin' : '/console'))
       <!-- ── 核心特性 ─────────────────────────────────────── -->
       <section id="features" class="mx-auto max-w-6xl scroll-mt-20 px-5 py-16 lg:px-8 lg:py-20">
         <div class="max-w-2xl">
-          <p class="text-xs font-medium uppercase tracking-widest text-brand-400">核心特性</p>
-          <h2 class="mt-3 text-2xl font-semibold tracking-tight text-white lg:text-3xl">
+          <p class="text-xs font-medium uppercase tracking-widest text-brand-600">核心特性</p>
+          <h2 class="mt-3 text-2xl font-semibold tracking-tight text-ink-50 lg:text-3xl">
             该管的都管住，该接的照旧接
           </h2>
           <p class="mt-3 text-sm leading-relaxed text-ink-300">
@@ -301,10 +301,10 @@ const consoleTarget = computed(() => (auth.isAdmin ? '/admin' : '/console'))
             :key="feature.title"
             class="card card-pad transition-colors duration-200 hover:border-ink-700"
           >
-            <span class="flex h-10 w-10 items-center justify-center rounded-xl bg-brand-500/10 text-brand-300 ring-1 ring-inset ring-brand-500/20">
+            <span class="flex h-10 w-10 items-center justify-center rounded-xl bg-brand-500/10 text-brand-700 ring-1 ring-inset ring-brand-500/20">
               <AppIcon :name="feature.icon" :size="19" />
             </span>
-            <h3 class="mt-4 text-sm font-semibold text-white">{{ feature.title }}</h3>
+            <h3 class="mt-4 text-sm font-semibold text-ink-50">{{ feature.title }}</h3>
             <p class="mt-2 text-sm leading-relaxed text-ink-400">{{ feature.desc }}</p>
           </div>
         </div>
@@ -315,8 +315,8 @@ const consoleTarget = computed(() => (auth.isAdmin ? '/admin' : '/console'))
         <div class="mx-auto max-w-6xl px-5 py-16 lg:px-8 lg:py-20">
           <div class="flex flex-wrap items-end justify-between gap-4">
             <div>
-              <p class="text-xs font-medium uppercase tracking-widest text-brand-400">可用模型</p>
-              <h2 class="mt-3 text-2xl font-semibold tracking-tight text-white">当前对外提供的模型</h2>
+              <p class="text-xs font-medium uppercase tracking-widest text-brand-600">可用模型</p>
+              <h2 class="mt-3 text-2xl font-semibold tracking-tight text-ink-50">当前对外提供的模型</h2>
               <p class="mt-2 text-sm text-ink-400">
                 来自所有已启用渠道声明模型的并集，随渠道配置变化实时更新。
               </p>
@@ -355,7 +355,7 @@ const consoleTarget = computed(() => (auth.isAdmin ? '/admin' : '/console'))
               :key="model"
               class="flex items-center gap-2.5 rounded-xl border border-ink-800 bg-ink-900/50 px-3.5 py-3 transition-colors hover:border-brand-500/30"
             >
-              <AppIcon name="layers" :size="16" class="text-brand-400/80" />
+              <AppIcon name="layers" :size="16" class="text-brand-600/80" />
               <span class="truncate font-mono text-[13px] text-ink-100" :title="model">{{ model }}</span>
             </div>
           </div>
@@ -366,12 +366,12 @@ const consoleTarget = computed(() => (auth.isAdmin ? '/admin' : '/console'))
       <section id="quickstart" class="mx-auto max-w-6xl scroll-mt-20 px-5 py-16 lg:px-8 lg:py-20">
         <div class="grid gap-10 lg:grid-cols-[0.9fr_1.1fr]">
           <div>
-            <p class="text-xs font-medium uppercase tracking-widest text-brand-400">快速接入</p>
-            <h2 class="mt-3 text-2xl font-semibold tracking-tight text-white lg:text-3xl">三步开始调用</h2>
+            <p class="text-xs font-medium uppercase tracking-widest text-brand-600">快速接入</p>
+            <h2 class="mt-3 text-2xl font-semibold tracking-tight text-ink-50 lg:text-3xl">三步开始调用</h2>
 
             <ol class="mt-8 space-y-6">
               <li class="flex gap-4">
-                <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-brand-500/10 font-mono text-xs text-brand-300 ring-1 ring-inset ring-brand-500/20">
+                <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-brand-500/10 font-mono text-xs text-brand-700 ring-1 ring-inset ring-brand-500/20">
                   1
                 </span>
                 <div>
@@ -383,7 +383,7 @@ const consoleTarget = computed(() => (auth.isAdmin ? '/admin' : '/console'))
                 </div>
               </li>
               <li class="flex gap-4">
-                <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-brand-500/10 font-mono text-xs text-brand-300 ring-1 ring-inset ring-brand-500/20">
+                <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-brand-500/10 font-mono text-xs text-brand-700 ring-1 ring-inset ring-brand-500/20">
                   2
                 </span>
                 <div>
@@ -395,7 +395,7 @@ const consoleTarget = computed(() => (auth.isAdmin ? '/admin' : '/console'))
                 </div>
               </li>
               <li class="flex gap-4">
-                <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-brand-500/10 font-mono text-xs text-brand-300 ring-1 ring-inset ring-brand-500/20">
+                <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-brand-500/10 font-mono text-xs text-brand-700 ring-1 ring-inset ring-brand-500/20">
                   3
                 </span>
                 <div>
@@ -430,7 +430,7 @@ const consoleTarget = computed(() => (auth.isAdmin ? '/admin' : '/console'))
                   class="rounded-md px-2.5 py-1 text-xs font-medium transition-colors"
                   :class="
                     activeSample === sample.key
-                      ? 'bg-brand-500/15 text-brand-200'
+                      ? 'bg-brand-500/15 text-brand-700'
                       : 'text-ink-400 hover:bg-ink-850 hover:text-ink-200'
                   "
                   @click="activeSample = sample.key"
@@ -449,7 +449,7 @@ const consoleTarget = computed(() => (auth.isAdmin ? '/admin' : '/console'))
       <section class="border-t border-ink-800/70 bg-ink-900/30">
         <div class="mx-auto flex max-w-6xl flex-col items-start gap-6 px-5 py-14 lg:flex-row lg:items-center lg:justify-between lg:px-8">
           <div>
-            <h2 class="text-xl font-semibold tracking-tight text-white">准备好把模型调用收拢到一个入口了吗？</h2>
+            <h2 class="text-xl font-semibold tracking-tight text-ink-50">准备好把模型调用收拢到一个入口了吗？</h2>
             <p class="mt-2 text-sm text-ink-400">
               {{ site.registrationEnabled ? '注册即可获得账号，登录后创建你的第一个访问令牌。' : '当前站点未开放自助注册，请联系管理员开通账号。' }}
             </p>

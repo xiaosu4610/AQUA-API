@@ -33,10 +33,10 @@ withDefaults(
 
 /** 色调 → 样式（图标底色 + 图标色） */
 const TONE_CLASS: Record<string, string> = {
-  brand: 'bg-brand-500/10 text-brand-300 ring-brand-500/20',
-  ok: 'bg-emerald-500/10 text-emerald-300 ring-emerald-500/20',
-  warn: 'bg-amber-500/10 text-amber-300 ring-amber-500/20',
-  err: 'bg-red-500/10 text-red-300 ring-red-500/20',
+  brand: 'bg-brand-500/10 text-brand-700 ring-brand-500/20',
+  ok: 'bg-emerald-500/10 text-emerald-700 ring-emerald-500/20',
+  warn: 'bg-amber-500/10 text-amber-700 ring-amber-500/20',
+  err: 'bg-red-500/10 text-red-700 ring-red-500/20',
   mute: 'bg-ink-800 text-ink-300 ring-ink-700',
 }
 </script>
@@ -46,7 +46,7 @@ const TONE_CLASS: Record<string, string> = {
     <div class="flex items-start justify-between gap-3">
       <div class="min-w-0">
         <p class="text-xs font-medium text-ink-400">{{ label }}</p>
-        <p class="mt-2 truncate text-2xl font-semibold tracking-tight text-white tabular-nums" :title="value">
+        <p class="mt-2 truncate text-2xl font-semibold tracking-tight text-ink-50 tabular-nums" :title="value">
           {{ value }}
         </p>
       </div>

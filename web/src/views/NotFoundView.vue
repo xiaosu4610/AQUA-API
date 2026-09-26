@@ -29,7 +29,7 @@ const auth = useAuthStore()
         <AppIcon name="search" :size="22" />
       </span>
       <p class="mt-6 font-mono text-5xl font-semibold tracking-tight text-ink-700">404</p>
-      <h1 class="mt-3 text-lg font-semibold text-white">页面不存在</h1>
+      <h1 class="mt-3 text-lg font-semibold text-ink-50">页面不存在</h1>
       <p class="mt-2 text-sm leading-relaxed text-ink-400">
         你访问的地址可能已被移除或输入有误。可以从下面的入口继续。
       </p>

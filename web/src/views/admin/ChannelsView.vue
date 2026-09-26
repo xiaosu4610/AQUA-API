@@ -344,7 +344,7 @@ const isEmpty = computed(() => !loading.value && !error.value && channels.value.
               <td class="font-medium text-ink-100">
                 <span class="flex items-center gap-2">
                   {{ channel.name }}
-                  <span v-if="channel.last_test_ok === false" class="text-amber-300" title="上次测活失败">
+                  <span v-if="channel.last_test_ok === false" class="text-amber-700" title="上次测活失败">
                     <AppIcon name="alert" :size="14" />
                   </span>
                 </span>
@@ -424,7 +424,7 @@ const isEmpty = computed(() => !loading.value && !error.value && channels.value.
 
                   <button
                     type="button"
-                    class="btn btn-row text-ink-400 hover:text-red-300"
+                    class="btn btn-row text-ink-400 hover:text-red-700"
                     title="删除"
                     :disabled="busyId === channel.id"
                     @click="removeChannel(channel)"
@@ -458,13 +458,13 @@ const isEmpty = computed(() => !loading.value && !error.value && channels.value.
     >
       <div class="space-y-5">
         <div>
-          <label class="label" for="channel-name">渠道名称 <span class="text-red-400">*</span></label>
+          <label class="label" for="channel-name">渠道名称 <span class="text-red-600">*</span></label>
           <input id="channel-name" v-model="form.name" class="input" type="text" placeholder="例如：OpenAI 官方" />
         </div>
 
         <div class="grid gap-5 sm:grid-cols-2">
           <div>
-            <label class="label" for="channel-type">渠道类型 <span class="text-red-400">*</span></label>
+            <label class="label" for="channel-type">渠道类型 <span class="text-red-600">*</span></label>
             <input
               id="channel-type"
               v-model.number="form.type"
@@ -487,7 +487,7 @@ const isEmpty = computed(() => !loading.value && !error.value && channels.value.
         </div>
 
         <div>
-          <label class="label" for="channel-base-url">Base URL <span class="text-red-400">*</span></label>
+          <label class="label" for="channel-base-url">Base URL <span class="text-red-600">*</span></label>
           <input
             id="channel-base-url"
             v-model="form.base_url"
@@ -501,7 +501,7 @@ const isEmpty = computed(() => !loading.value && !error.value && channels.value.
         <div>
           <label class="label" for="channel-key">
             上游密钥
-            <span v-if="!editing" class="text-red-400">*</span>
+            <span v-if="!editing" class="text-red-600">*</span>
           </label>
           <input
             id="channel-key"
@@ -533,7 +533,7 @@ const isEmpty = computed(() => !loading.value && !error.value && channels.value.
               v-for="model in site.models.slice(0, 8)"
               :key="model"
               type="button"
-              class="chip transition hover:border-brand-500/40 hover:text-brand-200"
+              class="chip transition hover:border-brand-500/40 hover:text-brand-700"
               @click="
                 form.modelText = parseModelList(form.modelText).includes(model)
                   ? form.modelText
@@ -570,7 +570,7 @@ const isEmpty = computed(() => !loading.value && !error.value && channels.value.
 
         <p
           v-if="formError"
-          class="flex items-start gap-2 rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-2 text-xs leading-relaxed text-red-200"
+          class="flex items-start gap-2 rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-2 text-xs leading-relaxed text-red-800"
         >
           <AppIcon name="alert" :size="14" class="mt-0.5 shrink-0" />
           {{ formError }}
@@ -582,7 +582,7 @@ const isEmpty = computed(() => !loading.value && !error.value && channels.value.
         <button type="button" class="btn btn-primary" :disabled="saving" @click="submitForm">
           <span
             v-if="saving"
-            class="h-4 w-4 animate-spin rounded-full border-2 border-ink-950/40 border-t-ink-950"
+            class="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white"
             aria-hidden="true"
           />
           <AppIcon v-else name="check" :size="16" />
