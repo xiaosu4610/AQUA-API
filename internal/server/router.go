@@ -42,6 +42,16 @@ func (s *Server) registerRoutes() {
 	// 站点信息：落地页与登录页靠它渲染站点名称、注册开关与可用模型
 	api.GET("/status", s.handleSiteStatus)
 
+	// 充值参数（无需登录）：登录页/落地页需要提前知道"是否开放充值、汇率多少"。
+	// 只暴露非敏感参数，不含任何密钥或后台配置细节。
+	api.GET("/payment/public", s.handlePublicPaymentInfo)
+
+	// 支付平台异步回调：必须公开（第三方服务器无法携带我们的会话），
+	// 其安全性完全由通道适配器的验签保证（见 internal/payment）。
+	api.POST("/payments/:method/notify", s.handlePaymentNotify)
+	// 少数支付平台用 GET 回调
+	api.GET("/payments/:method/notify", s.handlePaymentNotify)
+
 	// 登录与注册叠加频率限制。
 	//
 	// 为什么单独给这两个接口限流：口令校验（bcrypt）是刻意昂贵的操作，
@@ -74,6 +84,11 @@ func (s *Server) registerRoutes() {
 	portal.GET("/logs", s.handleMyLogs)
 	// 异步任务（用户只能看自己的）
 	portal.GET("/tasks", s.handleMyListTasks)
+
+	// ── 充值（用户自己的订单）────────────────────────────────────
+	portal.POST("/orders", s.handleCreateOrder)
+	portal.GET("/orders", s.handleMyListOrders)
+	portal.GET("/orders/:tradeNo", s.handleMyGetOrder)
 
 	// ── 管理后台（需管理员）──────────────────────────────────────
 	admin := authed.Group("/admin")
@@ -132,6 +147,12 @@ func (s *Server) registerRoutes() {
 	admin.POST("/tasks/:ref/cancel", s.handleAdminCancelTask)
 	// 已注册的上游任务适配器（供任务表单提示可选 provider）
 	admin.GET("/task-providers", s.handleTaskProviders)
+
+	// 充值订单管理（人工确认入账 / 关单 / 退款）
+	admin.GET("/orders", s.handleAdminListOrders)
+	admin.POST("/orders/:tradeNo/mark-paid", s.handleAdminMarkOrderPaid)
+	admin.POST("/orders/:tradeNo/close", s.handleAdminCloseOrder)
+	admin.POST("/orders/:tradeNo/refund", s.handleAdminRefundOrder)
 
 	// ── 模型 API（访问令牌鉴权）──────────────────────────────────
 	//

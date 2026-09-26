@@ -76,6 +76,7 @@ type Config struct {
 	Log      LogConfig      `json:"log"`      // 日志相关
 	SMTP     SMTPConfig     `json:"smtp"`     // 邮件发送相关（口令仅来自环境变量）
 	Security SecurityConfig `json:"security"` // 安全相关（密钥仅来自环境变量）
+	Payment  PaymentConfig  `json:"payment"`  // 支付通道相关（密钥仅来自环境变量）
 }
 
 // ServerConfig 描述 HTTP 服务的监听与运行模式。
@@ -152,6 +153,25 @@ type SecurityConfig struct {
 	// 重要提醒：主密钥一旦变更，已加密的渠道密钥将【无法解密】。
 	// 因此必须妥善备份并保持稳定；必要时请按"新增密钥版本 + 保留旧密钥"的方式轮换。
 	AppKey string `json:"-"`
+}
+
+// PaymentConfig 描述支付通道的密钥。
+//
+// 安全约束（与 AppKey / SMTP.Password 一致）：全部字段 json tag 为 "-"，
+// 【不允许】从配置文件读取，只能由环境变量注入。理由：
+// 支付密钥一旦泄露等于直接资损，绝不能出现在可被复制、备份、误提交的文件里。
+//
+// 非密钥的支付参数（网关地址、商户号、兑换比例、启用哪些通道）
+// 全部存放在 settings 表，由管理员在后台修改并即时生效——
+// 这类参数变化频率低但需要频繁调整，硬编码或重启生效都会让运营很难受。
+type PaymentConfig struct {
+	// EPayKey 是易支付协议的商户密钥（用于 MD5 签名），来自 AQUA_EPAY_KEY。
+	EPayKey string `json:"-"`
+	// StripeSecretKey 是 Stripe 的 Secret Key（sk_...），来自 AQUA_STRIPE_SECRET_KEY。
+	StripeSecretKey string `json:"-"`
+	// StripeWebhookSecret 是 Stripe Webhook 签名密钥（whsec_...），
+	// 来自 AQUA_STRIPE_WEBHOOK_SECRET。用于校验回调确实来自 Stripe。
+	StripeWebhookSecret string `json:"-"`
 }
 
 // Default 返回一份带完整默认值的配置。
@@ -264,6 +284,12 @@ func applyEnv(cfg *Config) {
 	setIfNotEmpty(&cfg.SMTP.Password, EnvPrefix+"SMTP_PASSWORD")
 	// 安全类字段只允许来自环境变量（其 json tag 为 "-"，无法从文件读取）
 	setIfNotEmpty(&cfg.Security.AppKey, EnvPrefix+"APP_KEY")
+	// 支付通道密钥：同样只允许来自环境变量。
+	// 未配置时对应通道会被视为"未启用"，而不是启动失败——
+	// 不存在支付通道的自用部署不该被支付配置卡住。
+	setIfNotEmpty(&cfg.Payment.EPayKey, EnvPrefix+"EPAY_KEY")
+	setIfNotEmpty(&cfg.Payment.StripeSecretKey, EnvPrefix+"STRIPE_SECRET_KEY")
+	setIfNotEmpty(&cfg.Payment.StripeWebhookSecret, EnvPrefix+"STRIPE_WEBHOOK_SECRET")
 }
 
 // setIfNotEmptyInt 是 setIfNotEmpty 的整数版本：解析失败时保留原值。

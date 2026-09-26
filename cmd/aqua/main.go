@@ -51,6 +51,7 @@ import (
 	"gitee.com/xiaosu4610/aqua-api/internal/crypto"
 	"gitee.com/xiaosu4610/aqua-api/internal/mailer"
 	"gitee.com/xiaosu4610/aqua-api/internal/model"
+	"gitee.com/xiaosu4610/aqua-api/internal/payment"
 	"gitee.com/xiaosu4610/aqua-api/internal/relay"
 	"gitee.com/xiaosu4610/aqua-api/internal/server"
 	"gitee.com/xiaosu4610/aqua-api/internal/store"
@@ -173,6 +174,7 @@ func run() error {
 	modelPrices := store.NewModelPriceRepository(st.DB())
 	oauthProviders := store.NewOAuthProviderRepository(st.DB(), cipher)
 	tasks := store.NewTaskRepository(st.DB())
+	orders := store.NewPaymentOrderRepository(st.DB())
 
 	// 启动时清理过期会话：会话表随登录次数持续增长，不清理会无限膨胀。
 	// 清理失败不阻断启动（这只是维护动作，不影响核心功能）。
@@ -187,6 +189,45 @@ func run() error {
 		logger.Warn("清理过期邮箱验证码失败", "error", err)
 	} else if cleaned > 0 {
 		logger.Info("已清理过期邮箱验证码", "count", cleaned)
+	}
+
+	// ── 支付 / 充值 ─────────────────────────────────────────────
+	// 支付通道注册表：各通道的运营参数（网关地址、商户号、启用列表）从设置表实时读取，
+	// 密钥只从环境变量读取。这样"改配置"与"改密钥"两条路径彻底分离：
+	// 前者管理员在后台随时改且立即生效，后者只能由运维改环境变量（避免密钥落库）。
+	paymentRegistry := payment.NewRegistry(payment.Options{
+		Secrets: cfg.Payment,
+		Settings: func(ctx context.Context) (model.PaymentSettings, error) {
+			// 每次调用都重新读库：管理员在后台改完网关地址应立刻生效，
+			// 而不是等到重启。
+			loaded, err := model.LoadSiteSettings(ctx, settings)
+			if err != nil {
+				return model.PaymentSettings{}, err
+			}
+			return loaded.Payment, nil
+		},
+	})
+
+	// 启动补偿：处理"已支付但未入账"的订单。
+	// 这类订单只会出现在"标记支付成功"与"入账"之间的极端中断（进程被杀、断电），
+	// 数量应为 0；一旦出现必须补上，否则就是用户付了钱没到账。
+	if pending, err := orders.ListPaidUncredited(ctx, 50); err != nil {
+		logger.Warn("查询未入账订单失败", "error", err)
+	} else {
+		for _, order := range pending {
+			if credited, err := orders.CreditOrder(ctx, order.TradeNo, time.Now()); err != nil {
+				logger.Error("补入账失败，需人工处理", "trade_no", order.TradeNo, "error", err)
+			} else if credited {
+				logger.Warn("已补入账未到账订单", "trade_no", order.TradeNo, "quota", order.Quota)
+			}
+		}
+	}
+
+	// 启动时关闭超时未支付订单：避免"待支付"订单无限堆积，让对账失去意义。
+	if closed, err := orders.CloseExpired(ctx, time.Now()); err != nil {
+		logger.Warn("关闭超时订单失败", "error", err)
+	} else if closed > 0 {
+		logger.Info("已关闭超时未支付订单", "count", closed)
 	}
 
 	// ── 邮件发送器 ──────────────────────────────────────────────
@@ -273,6 +314,9 @@ func run() error {
 		// 异步任务：仓储（查询）+ 编排服务（提交/轮询/取消）
 		Tasks:       tasks,
 		TaskService: taskService,
+		// 充值：订单仓储 + 支付通道注册表
+		Orders:  orders,
+		Payment: paymentRegistry,
 		// 注册邮箱验证码：仓储 + 发信通道
 		EmailCodes: emailCodes,
 		Mailer:     mailerSender,

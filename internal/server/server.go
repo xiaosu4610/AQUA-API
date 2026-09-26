@@ -34,6 +34,7 @@ import (
 	"gitee.com/xiaosu4610/aqua-api/internal/config"
 	"gitee.com/xiaosu4610/aqua-api/internal/mailer"
 	"gitee.com/xiaosu4610/aqua-api/internal/model"
+	"gitee.com/xiaosu4610/aqua-api/internal/payment"
 	"gitee.com/xiaosu4610/aqua-api/internal/relay"
 	"gitee.com/xiaosu4610/aqua-api/internal/server/middleware"
 	"gitee.com/xiaosu4610/aqua-api/internal/store"
@@ -72,6 +73,11 @@ type Deps struct {
 	// "选渠道 → 扣费 → 提交上游 → 落库"的业务流程；
 	// 前者用于纯查询场景（后台列表），后者用于需要副作用的操作。
 	TaskService *relay.TaskService
+
+	// Orders 是充值订单仓储（下单、回调入账、后台管理）。
+	Orders model.PaymentOrderRepository
+	// Payment 是支付通道注册表（按通道名取适配器做下单与验签）。
+	Payment *payment.Registry
 
 	// EmailCodes 是注册邮箱验证码仓储（由 main 注入；验证码相关接口依赖它）。
 	EmailCodes model.EmailCodeRepository

@@ -243,6 +243,16 @@ type UserRepository interface {
 	// 说明：采用「增量更新」而非"读取-修改-写回"，避免并发请求互相覆盖。
 	AddUsedQuota(ctx context.Context, id uint64, delta int64) error
 
+	// AddQuota 累加用户【总额度】（充值入账时使用），并返回累加后的总额度。
+	//
+	// 为什么需要它而不是复用 Update：充值入账与"用户编辑资料"是两条路径，
+	// 后者会把整行写回，存在"用陈旧副本覆盖刚入账额度"的风险。
+	// 增量更新还天然支持"同一秒到账多笔订单"。
+	//
+	// 特殊约定：若该用户为不限额度（quota = -1），则【不做任何修改】并返回
+	// QuotaUnlimited —— 给"不限"加数字没有意义，反而会把它变成有限额度。
+	AddQuota(ctx context.Context, id uint64, delta int64) (int64, error)
+
 	// CountAdmins 返回管理员数量。
 	//
 	// 用途：删除/降级最后一个管理员会让系统无人可管理，需据此拒绝该操作。

@@ -1111,7 +1111,63 @@ func (s *Server) handleGetSettings(c *gin.Context) {
 		// 当前是否具备发信能力，避免开启后用户全部收不到验证码。
 		"email_service_ready": s.deps.Mailer != nil && s.deps.Mailer.Configured(),
 		"email_from":          mailerFromAddress(s.deps.Mailer),
+
+		// 充值 / 支付参数（非密钥，可在此修改并即时生效）
+		"payment": toPaymentSettingsDTO(settings.Payment),
+		// 各支付通道的密钥是否已通过环境变量就绪。
+		// 只暴露布尔值，绝不回传密钥本身——密钥一旦出过服务端就等于泄露。
+		"payment_secrets": gin.H{
+			model.PaymentMethodEPay: s.deps.Config.Payment.EPayKey != "",
+			model.PaymentMethodStripe: s.deps.Config.Payment.StripeSecretKey != "" &&
+				s.deps.Config.Payment.StripeWebhookSecret != "",
+			model.PaymentMethodManual: true,
+		},
 	})
+}
+
+// paymentSettingsDTO 是支付运营参数的对外表示。
+type paymentSettingsDTO struct {
+	Enabled         bool     `json:"enabled"`
+	Methods         []string `json:"methods"`
+	ExchangeRate    int64    `json:"exchange_rate"`
+	Currency        string   `json:"currency"`
+	MinCents        int64    `json:"min_cents"`
+	MaxCents        int64    `json:"max_cents"`
+	OrderTTLMinutes int      `json:"order_ttl_minutes"`
+	NotifyBase      string   `json:"notify_base"`
+	EPayGateway     string   `json:"epay_gateway"`
+	EPayPID         string   `json:"epay_pid"`
+	EPayTypes       []string `json:"epay_types"`
+	StripeNote      string   `json:"stripe_note"`
+}
+
+// toPaymentSettingsDTO 把支付设置转为对外 DTO。
+func toPaymentSettingsDTO(settings model.PaymentSettings) paymentSettingsDTO {
+	return paymentSettingsDTO{
+		Enabled:         settings.Enabled,
+		Methods:         nonNilStrings(settings.Methods),
+		ExchangeRate:    settings.ExchangeRate,
+		Currency:        settings.Currency,
+		MinCents:        settings.MinCents,
+		MaxCents:        settings.MaxCents,
+		OrderTTLMinutes: settings.OrderTTLMinutes,
+		NotifyBase:      settings.NotifyBase,
+		EPayGateway:     settings.EPayGateway,
+		EPayPID:         settings.EPayPID,
+		EPayTypes:       nonNilStrings(settings.EPayTypes),
+		StripeNote:      settings.StripeNote,
+	}
+}
+
+// nonNilStrings 保证 JSON 序列化出 [] 而不是 null。
+//
+// 前端对数组做 .length / .map 时，null 会导致渲染报错，
+// 因此在边界上统一成空数组。
+func nonNilStrings(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
 }
 
 // mailerFromAddress 返回发件人地址用于界面展示；未配置时返回空字符串。
@@ -1135,6 +1191,9 @@ type settingsUpdateRequest struct {
 	RegistrationRequireEmailCode *bool   `json:"registration_require_email_code"`
 	DefaultUserQuota             *int64  `json:"default_user_quota"`
 	DefaultGroup                 *string `json:"default_group"`
+
+	// 支付 / 充值参数（整体替换，见下方处理逻辑）
+	Payment *paymentSettingsDTO `json:"payment"`
 }
 
 // handleUpdateSettings 更新系统设置。
@@ -1184,6 +1243,15 @@ func (s *Server) handleUpdateSettings(c *gin.Context) {
 	if req.DefaultGroup != nil && strings.TrimSpace(*req.DefaultGroup) != "" {
 		current.DefaultGroup = strings.TrimSpace(*req.DefaultGroup)
 	}
+	if req.Payment != nil {
+		updated, err := mergePaymentSettings(current.Payment, req.Payment)
+		if err != nil {
+			oai.WriteError(c.Writer, http.StatusBadRequest, err.Error(),
+				oai.TypeInvalidRequest, "invalid_payment_settings")
+			return
+		}
+		current.Payment = updated
+	}
 
 	if err := s.deps.Settings.SetMany(ctx, current.ToMap()); err != nil {
 		s.respondInternalError(c, "保存系统设置失败")
@@ -1191,6 +1259,78 @@ func (s *Server) handleUpdateSettings(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// mergePaymentSettings 校验并合并支付设置。
+//
+// 为什么不直接赋值：支付参数写错会造成真实资损
+// （例如兑换比例填成 0 会让所有充值都不到账，填成 100000 会让 1 元换到十万额度），
+// 因此必须在保存前拦住明显非法的取值。
+func mergePaymentSettings(current model.PaymentSettings, req *paymentSettingsDTO) (model.PaymentSettings, error) {
+	updated := current
+
+	updated.Enabled = req.Enabled
+	// 通道白名单：只接受已知通道名，避免把拼写错误当成"已启用"
+	if req.Methods != nil {
+		methods := make([]string, 0, len(req.Methods))
+		for _, method := range req.Methods {
+			trimmed := strings.TrimSpace(method)
+			switch trimmed {
+			case model.PaymentMethodEPay, model.PaymentMethodStripe, model.PaymentMethodManual:
+				methods = append(methods, trimmed)
+			case "":
+				// 忽略空项
+			default:
+				return updated, fmt.Errorf("不支持的支付通道 %q（可选 epay / stripe / manual）", trimmed)
+			}
+		}
+		updated.Methods = methods
+	}
+
+	if req.ExchangeRate > 0 {
+		updated.ExchangeRate = req.ExchangeRate
+	} else if req.Enabled {
+		// 只在"启用充值"时强校验：关闭状态下留 0 也不会造成资损
+		return updated, fmt.Errorf("兑换比例必须大于 0（表示 1 元可兑换多少额度）")
+	}
+
+	if strings.TrimSpace(req.Currency) != "" {
+		updated.Currency = strings.TrimSpace(req.Currency)
+	}
+	if req.MinCents >= 0 {
+		updated.MinCents = req.MinCents
+	}
+	if req.MaxCents < 0 {
+		return updated, fmt.Errorf("单笔最大金额不能为负数")
+	}
+	updated.MaxCents = req.MaxCents
+	if updated.MaxCents > 0 && updated.MaxCents < updated.MinCents {
+		return updated, fmt.Errorf("单笔最大金额不能小于最小金额")
+	}
+
+	if req.OrderTTLMinutes > 0 {
+		updated.OrderTTLMinutes = req.OrderTTLMinutes
+	} else if req.Enabled {
+		return updated, fmt.Errorf("订单有效期必须大于 0 分钟")
+	}
+
+	updated.NotifyBase = strings.TrimRight(strings.TrimSpace(req.NotifyBase), "/")
+	updated.EPayGateway = strings.TrimRight(strings.TrimSpace(req.EPayGateway), "/")
+	updated.EPayPID = strings.TrimSpace(req.EPayPID)
+	if req.EPayTypes != nil {
+		updated.EPayTypes = req.EPayTypes
+	}
+	updated.StripeNote = strings.TrimSpace(req.StripeNote)
+
+	// 启用某通道却没把必要参数填全时直接拒绝：
+	// 否则用户会看到一个"能下单却付不了款"的充值页，这是最令人困惑的故障。
+	if updated.Enabled && updated.MethodEnabled(model.PaymentMethodEPay) {
+		if updated.EPayGateway == "" || updated.EPayPID == "" {
+			return updated, fmt.Errorf("启用易支付需要填写网关地址与商户号（PID）")
+		}
+	}
+
+	return updated, nil
 }
 
 // ---------------------------------------------------------------------------

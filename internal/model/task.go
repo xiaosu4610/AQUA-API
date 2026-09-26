@@ -111,7 +111,7 @@ var ErrTaskAlreadyFinished = errors.New("model: 任务已结束")
 
 // Task 表示一个异步任务。
 type Task struct {
-	ID     uint64 // 主键（内部使用）
+	ID      uint64 // 主键（内部使用）
 	TaskRef string // 对外任务号
 	UserID  uint64 // 归属用户
 	TokenID uint64 // 使用的访问令牌
@@ -136,8 +136,8 @@ type Task struct {
 	// Quota 是实际扣减的额度。
 	Quota int64
 
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	CreatedAt time.Time
+	UpdatedAt time.Time
 	// FinishedAt 为进入终态的时间；零值表示尚未结束。
 	FinishedAt time.Time
 }

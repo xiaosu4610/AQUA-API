@@ -86,11 +86,11 @@ const (
 
 // TaskRequest 是一次任务提交的入参（已从 HTTP 请求体解析出来）。
 type TaskRequest struct {
-	Kind   model.TaskKind  // 任务类别
-	Model  string          // 模型/动作名
-	Prompt string          // 提示词
-	Params map[string]any  // 其余原始参数（原样交给上游适配器）
-	Count  int64           // 份数（影响按次计费）
+	Kind   model.TaskKind // 任务类别
+	Model  string         // 模型/动作名
+	Prompt string         // 提示词
+	Params map[string]any // 其余原始参数（原样交给上游适配器）
+	Count  int64          // 份数（影响按次计费）
 	// Provider 指定上游适配器名；为空时按类别自动选择。
 	//
 	// 之所以允许显式指定：一个部署里可能同时接了 Midjourney 代理与

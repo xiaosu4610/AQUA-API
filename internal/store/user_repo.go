@@ -238,6 +238,34 @@ func (r *userRepository) AddUsedQuota(ctx context.Context, id uint64, delta int6
 	return nil
 }
 
+// AddQuota 累加用户总额度（充值入账），并返回累加后的总额度。
+//
+// 实现要点：
+//  1. 单条 SQL 自增，避免"读-改-写"在并发入账时互相覆盖；
+//  2. quota = -1 表示不限额度，此时不做任何修改——
+//     给"不限"加数字会把它变成有限额度，属于最不该发生的资损。
+//
+// 返回值语义：返回累加后的总额度；不限额度时返回 QuotaUnlimited。
+func (r *userRepository) AddQuota(ctx context.Context, id uint64, delta int64) (int64, error) {
+	if _, err := r.db.ExecContext(ctx, `
+		UPDATE users SET
+			quota = quota + ?,
+			updated_at = ?
+		WHERE id = ? AND quota != ?`,
+		delta, time.Now().Unix(), id, model.QuotaUnlimited); err != nil {
+		return 0, fmt.Errorf("store: 累加用户 %d 额度失败: %w", id, err)
+	}
+
+	var quota int64
+	if err := r.db.QueryRowContext(ctx, "SELECT quota FROM users WHERE id = ?", id).Scan(&quota); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, model.ErrUserNotFound
+		}
+		return 0, fmt.Errorf("store: 读取用户 %d 额度失败: %w", id, err)
+	}
+	return quota, nil
+}
+
 // CountAdmins 返回管理员数量。
 func (r *userRepository) CountAdmins(ctx context.Context) (int, error) {
 	var total int
