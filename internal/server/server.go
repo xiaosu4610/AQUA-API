@@ -45,15 +45,17 @@ import (
 // 这样后续新增依赖（如缓存、计费）时，调用方无需修改函数签名。
 // 所有字段均为必需项，缺失会在启动或首次请求时立即暴露（而非静默降级）。
 type Deps struct {
-	Config    *config.Config           // 运行配置（监听地址、模式等）
-	Store     *store.Store             // 数据库（健康检查需要探测其连通性）
-	Channels  model.ChannelRepository  // 渠道仓储（上游凭证，供路由与管理使用）
-	Tokens    model.TokenRepository    // 访问令牌仓储（下游凭证，供模型接口鉴权）
-	Users     model.UserRepository     // 用户仓储
-	Sessions  model.SessionRepository  // 登录会话仓储
-	UsageLogs model.UsageLogRepository // 调用日志仓储（用量统计）
-	Settings  model.SettingRepository  // 系统设置仓储
-	Relay     *relay.Relay             // 转发引擎（模型 API 的核心处理器）
+	Config   *config.Config          // 运行配置（监听地址、模式等）
+	Store    *store.Store            // 数据库（健康检查需要探测其连通性）
+	Channels model.ChannelRepository // 渠道仓储（上游凭证，供路由与管理使用）
+	// ChannelKeys 是渠道密钥池仓储：一个渠道可挂多把上游密钥并轮询使用。
+	ChannelKeys model.ChannelKeyRepository
+	Tokens      model.TokenRepository    // 访问令牌仓储（下游凭证，供模型接口鉴权）
+	Users       model.UserRepository     // 用户仓储
+	Sessions    model.SessionRepository  // 登录会话仓储
+	UsageLogs   model.UsageLogRepository // 调用日志仓储（用量统计）
+	Settings    model.SettingRepository  // 系统设置仓储
+	Relay       *relay.Relay             // 转发引擎（模型 API 的核心处理器）
 
 	// EmailCodes 是注册邮箱验证码仓储（由 main 注入；验证码相关接口依赖它）。
 	EmailCodes model.EmailCodeRepository

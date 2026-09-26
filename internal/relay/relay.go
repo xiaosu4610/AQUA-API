@@ -68,12 +68,19 @@ type Options struct {
 	// 注意它与"整个请求超时"不同：流式响应可能持续数分钟，
 	// 我们只限制"上游多久没开始响应"，而不是"响应多久必须结束"。
 	ResponseHeaderTimeout time.Duration
-	// MaxAttempts 是单次请求最多尝试的渠道数（含首次）。<=0 时使用 defaultMaxAttempts。
+	// MaxAttempts 是单次请求最多尝试的次数（含首次）。
+	//
+	// 说明：这里计的是"总尝试预算"，密钥级重试与渠道级重试共用同一预算——
+	// 这样最坏延迟可预期（不会因为"渠道内换密钥 × 渠道间切换"而相乘放大）。
+	// 池内失效密钥由自动摘除机制在数次请求后逐步清理，无需靠单次请求穷举。
+	// <=0 时使用 defaultMaxAttempts。
 	MaxAttempts int
 	// UsageLogs 为调用日志仓储；为 nil 时不记录用量（便于单元测试）。
 	UsageLogs model.UsageLogRepository
 	// Tokens 为访问令牌仓储，用于更新令牌的最近使用时间；可为 nil。
 	Tokens model.TokenRepository
+	// Keys 为渠道密钥池仓储；为 nil 时退化为"每渠道单密钥"模式（便于单元测试）。
+	Keys model.ChannelKeyRepository
 }
 
 // Relay 是转发引擎，持有渠道仓储与上游 HTTP 客户端。
@@ -88,6 +95,8 @@ type Relay struct {
 	// usageLogs / tokens 用于转发后记录用量与令牌使用时间，两者均可为 nil。
 	usageLogs model.UsageLogRepository
 	tokens    model.TokenRepository
+	// keys 为渠道密钥池仓储（可选）。为 nil 时行为退化为单密钥。
+	keys model.ChannelKeyRepository
 }
 
 // New 创建转发引擎。
@@ -120,6 +129,7 @@ func New(channels model.ChannelRepository, opts Options) *Relay {
 		maxAttempts: maxAttempts,
 		usageLogs:   opts.UsageLogs,
 		tokens:      opts.Tokens,
+		keys:        opts.Keys,
 		client: &http.Client{
 			Transport: &http.Transport{
 				// 走系统代理环境变量：便于在受限网络中经代理访问上游

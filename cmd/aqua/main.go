@@ -163,6 +163,7 @@ func run() error {
 
 	// ── 仓储层装配 ──────────────────────────────────────────────
 	channels := store.NewChannelRepository(st.DB(), cipher)
+	channelKeys := store.NewChannelKeyRepository(st.DB(), cipher)
 	tokens := store.NewTokenRepository(st.DB(), cipher)
 	users := store.NewUserRepository(st.DB())
 	sessions := store.NewSessionRepository(st.DB())
@@ -229,18 +230,21 @@ func run() error {
 	relayEngine := relay.New(channels, relay.Options{
 		UsageLogs: usageLogs,
 		Tokens:    tokens,
+		// 渠道密钥池：让一个渠道可以挂多把上游密钥并轮询使用
+		Keys: channelKeys,
 	})
 
 	srv := server.New(server.Deps{
-		Config:    cfg,
-		Store:     st,
-		Channels:  channels,
-		Tokens:    tokens,
-		Users:     users,
-		Sessions:  sessions,
-		UsageLogs: usageLogs,
-		Settings:  settings,
-		Relay:     relayEngine,
+		Config:      cfg,
+		Store:       st,
+		Channels:    channels,
+		ChannelKeys: channelKeys,
+		Tokens:      tokens,
+		Users:       users,
+		Sessions:    sessions,
+		UsageLogs:   usageLogs,
+		Settings:    settings,
+		Relay:       relayEngine,
 		// 注册邮箱验证码：仓储 + 发信通道
 		EmailCodes: emailCodes,
 		Mailer:     mailerSender,
