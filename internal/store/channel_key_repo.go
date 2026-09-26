@@ -33,7 +33,8 @@ import (
 )
 
 // channelKeyColumns 集中定义查询列，顺序必须与 scanChannelKey 的扫描顺序严格一致。
-const channelKeyColumns = `id, channel_id, key_enc, label, status, fail_count, last_used_at, last_error, created_at`
+const channelKeyColumns = `id, channel_id, kind, key_enc, label, status, fail_count, last_used_at, last_error, created_at, ` +
+	`refresh_token_enc, access_token_enc, expires_at, account_hint, provider`
 
 // channelKeyRepository 是 model.ChannelKeyRepository 的 SQL 实现，并发安全。
 type channelKeyRepository struct {
@@ -48,124 +49,221 @@ func NewChannelKeyRepository(db *sql.DB, cipher *crypto.Cipher) model.ChannelKey
 	return &channelKeyRepository{db: db, cipher: cipher}
 }
 
-// ReplaceAll 用给定集合整体替换密钥池（差集增删，幂等）。
+// ReplaceAll 用给定 API Key 集合替换渠道的 api_key 类型凭据。
 //
-// 实现要点：所有增删在【单个事务】内完成。若不加事务，删一半失败会留下
-// "旧密钥已删、新密钥没进来"的空池状态，渠道会瞬间不可用。
+// 实现委托给 ReplaceCredentials：两类凭据的差集增删逻辑完全一致，
+// 只是类型不同。这样避免同一套逻辑存在两份、日后改一处漏一处。
 func (r *channelKeyRepository) ReplaceAll(ctx context.Context, channelID uint64, keys, labels []string) (int, int, error) {
-	if channelID == 0 {
-		return 0, 0, errors.New("store: 替换密钥池时渠道 ID 不能为 0")
-	}
-
-	// 目标集合：摘要 → 索引（用于取回对应的备注）
-	desired := make(map[string]string, len(keys))
-	for i, k := range keys {
-		k = strings.TrimSpace(k)
-		if k == "" {
-			continue
-		}
+	inputs := make([]model.CredentialInput, 0, len(keys))
+	for i, key := range keys {
 		label := ""
 		if i < len(labels) {
 			label = strings.TrimSpace(labels[i])
 		}
-		hash := crypto.SHA256Hex(k)
+		inputs = append(inputs, model.CredentialInput{
+			Kind:   model.CredentialKindAPIKey,
+			APIKey: key,
+			Label:  label,
+		})
+	}
+	return r.ReplaceCredentials(ctx, channelID, inputs)
+}
+
+// ReplaceCredentials 用给定凭据集合整体替换渠道的凭据池（差集增删，幂等）。
+//
+// 实现要点：
+//  1. 所有增删在【单个事务】内完成。若不加事务，删一半失败会留下
+//     "旧凭据已删、新凭据没进来"的空池状态，渠道会瞬间不可用；
+//  2. 只增删「输入中出现的类型」的凭据，其他类型保持不变。
+//     例如导入 API Key 时不会误删该渠道已有的 OAuth 订阅账号；
+//     反之亦然。若一股脑全删，管理员只想补一批 Key 却把订阅账号清空，
+//     会造成难以察觉的线上故障；
+//  3. 去重标识统一存在 key_hash 列：api_key 用密钥摘要，
+//     oauth 用 refresh_token 摘要（它才是账号的长期唯一标识）。
+func (r *channelKeyRepository) ReplaceCredentials(ctx context.Context, channelID uint64, inputs []model.CredentialInput) (int, int, error) {
+	if channelID == 0 {
+		return 0, 0, errors.New("store: 替换凭据池时渠道 ID 不能为 0")
+	}
+
+	desired := make(map[string]model.CredentialInput, len(inputs))
+	touchedKinds := make(map[model.CredentialKind]struct{}, 2)
+	for _, input := range inputs {
+		if err := input.Validate(); err != nil {
+			return 0, 0, fmt.Errorf("store: 凭据非法: %w", err)
+		}
+		touchedKinds[input.Kind] = struct{}{}
+		hash := input.IdentityHash(crypto.SHA256Hex)
 		if _, dup := desired[hash]; dup {
 			continue
 		}
-		desired[hash] = label
+		desired[hash] = input
 	}
 
-	// 现有摘要集合（只查摘要，不解密：解密整池密钥毫无必要且更慢）
-	existing, err := r.listHashes(ctx, channelID)
+	existing, err := r.listHashByKind(ctx, channelID)
 	if err != nil {
 		return 0, 0, err
 	}
 
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, 0, fmt.Errorf("store: 开启密钥池事务失败: %w", err)
+		return 0, 0, fmt.Errorf("store: 开启凭据池事务失败: %w", err)
 	}
 	// 失败时回滚；成功后 Commit，此调用变为无操作
 	defer func() { _ = tx.Rollback() }()
 
-	// 1) 删除不在目标集合中的密钥
+	// 1) 删除：仅限"本次涉及的类型"中不再出现的凭据
 	removed := 0
-	for hash := range existing {
-		if _, keep := desired[hash]; keep {
-			continue
+	for kind := range touchedKinds {
+		for hash := range existing[kind] {
+			if _, keep := desired[hash]; keep {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx,
+				"DELETE FROM channel_keys WHERE channel_id = ? AND kind = ? AND key_hash = ?",
+				channelID, string(kind), hash); err != nil {
+				return 0, 0, fmt.Errorf("store: 删除陈旧凭据失败: %w", err)
+			}
+			removed++
 		}
-		if _, err := tx.ExecContext(ctx,
-			"DELETE FROM channel_keys WHERE channel_id = ? AND key_hash = ?", channelID, hash); err != nil {
-			return 0, 0, fmt.Errorf("store: 删除陈旧密钥失败: %w", err)
-		}
-		removed++
 	}
 
-	// 2) 新增目标集合中缺失的密钥
+	// 2) 新增目标集合中缺失的凭据
 	now := time.Now().Unix()
 	added := 0
-	for hash, label := range desired {
-		if _, ok := existing[hash]; ok {
+	for hash, input := range desired {
+		if _, ok := existing[input.Kind][hash]; ok {
 			continue // 已存在：保留其状态与失败统计，不重置
 		}
-		// 从目标集合反查明文：desired 只存了 hash → label，故这里需要另一张表
-		plain := keyPlaintext(keys, hash)
-		if plain == "" {
-			continue
-		}
-		encrypted, err := r.cipher.Encrypt(plain)
+
+		keyEnc, err := r.encryptField(input.APIKey)
 		if err != nil {
-			return 0, 0, fmt.Errorf("store: 加密密钥失败: %w", err)
+			return 0, 0, err
 		}
+		refreshEnc, err := r.encryptField(input.RefreshToken)
+		if err != nil {
+			return 0, 0, err
+		}
+		accessEnc, err := r.encryptField(input.AccessToken)
+		if err != nil {
+			return 0, 0, err
+		}
+
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO channel_keys (channel_id, key_enc, key_hash, label, status, fail_count, last_used_at, last_error, created_at)
-			VALUES (?, ?, ?, ?, ?, 0, 0, '', ?)`,
-			channelID, encrypted, hash, label, int(model.ChannelKeyStatusEnabled), now); err != nil {
-			return 0, 0, fmt.Errorf("store: 新增密钥失败: %w", err)
+			INSERT INTO channel_keys
+				(channel_id, kind, key_enc, key_hash, label, status, fail_count, last_used_at, last_error,
+				 created_at, refresh_token_enc, access_token_enc, expires_at, account_hint, provider)
+			VALUES (?, ?, ?, ?, ?, ?, 0, 0, '', ?, ?, ?, ?, ?, ?)`,
+			channelID, string(input.Kind), keyEnc, hash, strings.TrimSpace(input.Label),
+			int(model.ChannelKeyStatusEnabled), now,
+			refreshEnc, accessEnc, unixOrZero(input.ExpiresAt),
+			strings.TrimSpace(input.AccountHint), strings.TrimSpace(input.Provider)); err != nil {
+			return 0, 0, fmt.Errorf("store: 新增凭据失败: %w", err)
 		}
 		added++
 	}
 
 	if err := tx.Commit(); err != nil {
-		return 0, 0, fmt.Errorf("store: 提交密钥池变更失败: %w", err)
+		return 0, 0, fmt.Errorf("store: 提交凭据池变更失败: %w", err)
 	}
 	return added, removed, nil
 }
 
-// keyPlaintext 在原始密钥列表中按摘要反查明文。
+// UpdateTokens 回写刷新后的 OAuth 令牌。
 //
-// 为什么用线性查找：ReplaceAll 是低频后台操作（导入/编辑时触发），
-// 而这里的规模是几百条，线性扫描的开销可忽略；相比之下额外维护一张
-// "hash → 明文"的映射会让代码多一份状态、多一处出错可能。
-func keyPlaintext(keys []string, hash string) string {
-	for _, k := range keys {
-		k = strings.TrimSpace(k)
-		if k != "" && crypto.SHA256Hex(k) == hash {
-			return k
-		}
+// 三个细节：
+//  1. refreshToken 为空时保留原值——部分平台刷新后不回传新 refresh_token，
+//     若按空值写入，等于永久丢失该账号；
+//  2. 刷新成功即把失败计数清零：能刷出令牌说明该账号本身是好的，
+//     之前的失败多半是令牌过期所致，不该继续累计；
+//  3. 空 accessToken 视为非法（调用方应当只在刷新成功时回写）。
+func (r *channelKeyRepository) UpdateTokens(ctx context.Context, id uint64, accessToken string, expiresAt time.Time, refreshToken string) error {
+	if strings.TrimSpace(accessToken) == "" {
+		return errors.New("store: 回写的 access_token 不能为空")
 	}
-	return ""
+
+	accessEnc, err := r.encryptField(accessToken)
+	if err != nil {
+		return err
+	}
+
+	var res sql.Result
+	if strings.TrimSpace(refreshToken) != "" {
+		refreshEnc, encErr := r.encryptField(refreshToken)
+		if encErr != nil {
+			return encErr
+		}
+		res, err = r.db.ExecContext(ctx, `
+			UPDATE channel_keys SET
+				access_token_enc = ?, expires_at = ?, refresh_token_enc = ?,
+				fail_count = 0, last_error = ''
+			WHERE id = ?`,
+			accessEnc, unixOrZero(expiresAt), refreshEnc, id)
+	} else {
+		res, err = r.db.ExecContext(ctx, `
+			UPDATE channel_keys SET
+				access_token_enc = ?, expires_at = ?,
+				fail_count = 0, last_error = ''
+			WHERE id = ?`,
+			accessEnc, unixOrZero(expiresAt), id)
+	}
+	if err != nil {
+		return fmt.Errorf("store: 回写令牌失败: %w", err)
+	}
+
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: 读取影响行数失败: %w", err)
+	}
+	if affected == 0 {
+		return model.ErrChannelKeyNotFound
+	}
+	return nil
 }
 
-// listHashes 返回某渠道已有密钥的摘要集合。
-func (r *channelKeyRepository) listHashes(ctx context.Context, channelID uint64) (map[string]struct{}, error) {
-	rows, err := r.db.QueryContext(ctx,
-		"SELECT key_hash FROM channel_keys WHERE channel_id = ?", channelID)
+// encryptField 加密单个字段；空值返回空串（数据库里"未使用"就是空串）。
+func (r *channelKeyRepository) encryptField(plain string) (string, error) {
+	if strings.TrimSpace(plain) == "" {
+		return "", nil
+	}
+	encrypted, err := r.cipher.Encrypt(plain)
 	if err != nil {
-		return nil, fmt.Errorf("store: 查询已有密钥摘要失败: %w", err)
+		return "", fmt.Errorf("store: 加密凭据字段失败: %w", err)
+	}
+	return encrypted, nil
+}
+
+// listHashByKind 返回某渠道已有凭据的摘要集合，按类型分组。
+//
+// 分组的必要性：替换时要"只动本次涉及的类型"，
+// 因此必须先知道每一类里已有哪些凭据。
+func (r *channelKeyRepository) listHashByKind(ctx context.Context, channelID uint64) (map[model.CredentialKind]map[string]struct{}, error) {
+	rows, err := r.db.QueryContext(ctx,
+		"SELECT kind, key_hash FROM channel_keys WHERE channel_id = ?", channelID)
+	if err != nil {
+		return nil, fmt.Errorf("store: 查询已有凭据摘要失败: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	result := make(map[string]struct{})
+	result := make(map[model.CredentialKind]map[string]struct{}, 2)
 	for rows.Next() {
-		var hash string
-		if err := rows.Scan(&hash); err != nil {
-			return nil, fmt.Errorf("store: 读取密钥摘要失败: %w", err)
+		var (
+			kind string
+			hash string
+		)
+		if err := rows.Scan(&kind, &hash); err != nil {
+			return nil, fmt.Errorf("store: 读取凭据摘要失败: %w", err)
 		}
-		result[hash] = struct{}{}
+		credentialKind := model.CredentialKind(kind)
+		if !credentialKind.IsValid() {
+			credentialKind = model.CredentialKindAPIKey
+		}
+		if result[credentialKind] == nil {
+			result[credentialKind] = make(map[string]struct{})
+		}
+		result[credentialKind][hash] = struct{}{}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: 遍历密钥摘要失败: %w", err)
+		return nil, fmt.Errorf("store: 遍历凭据摘要失败: %w", err)
 	}
 	return result, nil
 }
@@ -334,42 +432,85 @@ func (r *channelKeyRepository) UpdateStatus(ctx context.Context, id uint64, stat
 	return nil
 }
 
-// scanChannelKey 把一行数据映射为密钥对象，并完成解密。
+// scanChannelKey 把一行数据映射为凭据对象，并完成解密。
 func (r *channelKeyRepository) scanChannelKey(sc rowScanner) (*model.ChannelKey, error) {
 	var (
-		id         uint64
-		channelID  uint64
-		encoded    string
-		label      string
-		status     int
-		failCount  int
-		lastUsedAt int64
-		lastError  string
-		createdAt  int64
+		id           uint64
+		channelID    uint64
+		kind         string
+		encryptedKey string
+		label        string
+		status       int
+		failCount    int
+		lastUsedAt   int64
+		lastError    string
+		createdAt    int64
+		refreshEnc   string
+		accessEnc    string
+		expiresAt    int64
+		accountHint  string
+		provider     string
 	)
 
-	if err := sc.Scan(&id, &channelID, &encoded, &label, &status,
-		&failCount, &lastUsedAt, &lastError, &createdAt); err != nil {
+	if err := sc.Scan(&id, &channelID, &kind, &encryptedKey, &label, &status,
+		&failCount, &lastUsedAt, &lastError, &createdAt,
+		&refreshEnc, &accessEnc, &expiresAt, &accountHint, &provider); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, err
 		}
-		return nil, fmt.Errorf("store: 读取密钥字段失败: %w", err)
+		return nil, fmt.Errorf("store: 读取凭据字段失败: %w", err)
 	}
 
-	plain, err := r.cipher.Decrypt(encoded)
+	credentialKind := model.CredentialKind(kind)
+	if !credentialKind.IsValid() {
+		// 数据库里出现未知类型：不阻断读取（管理员仍应能在界面上看到这条异常数据），
+		// 但按 api_key 处理并保留原始 kind 字符串用于排查
+		credentialKind = model.CredentialKindAPIKey
+	}
+
+	plainKey, err := r.decryptField(encryptedKey, id, "密钥")
 	if err != nil {
-		return nil, fmt.Errorf("store: 解密密钥 %d 失败（AQUA_APP_KEY 是否变更？）: %w", id, err)
+		return nil, err
+	}
+	refreshToken, err := r.decryptField(refreshEnc, id, "refresh_token")
+	if err != nil {
+		return nil, err
+	}
+	accessToken, err := r.decryptField(accessEnc, id, "access_token")
+	if err != nil {
+		return nil, err
 	}
 
 	return &model.ChannelKey{
-		ID:         id,
-		ChannelID:  channelID,
-		Key:        plain,
-		Label:      label,
-		Status:     model.ChannelKeyStatus(status),
-		FailCount:  failCount,
-		LastUsedAt: unixToExpiresAt(lastUsedAt),
-		LastError:  lastError,
-		CreatedAt:  time.Unix(createdAt, 0),
+		ID:           id,
+		ChannelID:    channelID,
+		Kind:         credentialKind,
+		Key:          plainKey,
+		Label:        label,
+		Status:       model.ChannelKeyStatus(status),
+		FailCount:    failCount,
+		RefreshToken: refreshToken,
+		AccessToken:  accessToken,
+		ExpiresAt:    unixToExpiresAt(expiresAt),
+		AccountHint:  accountHint,
+		Provider:     provider,
+		LastUsedAt:   unixToExpiresAt(lastUsedAt),
+		LastError:    lastError,
+		CreatedAt:    time.Unix(createdAt, 0),
 	}, nil
+}
+
+// decryptField 解密单个字段。
+//
+// 空字符串直接返回空：数据库里未使用的字段是空串，对它调用解密会报错，
+// 而"空"本身是合法状态（例如 api_key 类型的凭据没有 refresh_token）。
+func (r *channelKeyRepository) decryptField(encoded string, id uint64, fieldName string) (string, error) {
+	if encoded == "" {
+		return "", nil
+	}
+	plain, err := r.cipher.Decrypt(encoded)
+	if err != nil {
+		return "", fmt.Errorf("store: 解密凭据 %d 的 %s 失败（AQUA_APP_KEY 是否变更？）: %w", id, fieldName, err)
+	}
+	return plain, nil
 }

@@ -81,6 +81,8 @@ type Options struct {
 	Tokens model.TokenRepository
 	// Keys 为渠道密钥池仓储；为 nil 时退化为"每渠道单密钥"模式（便于单元测试）。
 	Keys model.ChannelKeyRepository
+	// OAuth 为订阅账号令牌刷新器；为 nil 时 OAuth 凭据不会被自动刷新。
+	OAuth *OAuthRefresher
 	// Billing 为计费组件；为 nil 时只记录用量而不扣减额度。
 	Billing *Billing
 }
@@ -101,6 +103,8 @@ type Relay struct {
 	keys model.ChannelKeyRepository
 	// billing 为计费组件（可选）。为 nil 时不扣费，仅记录用量。
 	billing *Billing
+	// oauth 为订阅账号令牌刷新器（可选）。为 nil 时 OAuth 凭据不刷新。
+	oauth *OAuthRefresher
 }
 
 // New 创建转发引擎。
@@ -135,6 +139,7 @@ func New(channels model.ChannelRepository, opts Options) *Relay {
 		tokens:      opts.Tokens,
 		keys:        opts.Keys,
 		billing:     opts.Billing,
+		oauth:       opts.OAuth,
 		client: &http.Client{
 			Transport: &http.Transport{
 				// 走系统代理环境变量：便于在受限网络中经代理访问上游

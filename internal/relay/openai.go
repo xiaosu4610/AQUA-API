@@ -198,35 +198,63 @@ func (r *Relay) forwardWithFallback(w http.ResponseWriter, req *http.Request, mo
 		oai.TypeServer, oai.CodeUpstreamRequestFailed)
 }
 
-// resolveChatKey 为一次转发解析出要使用的上游密钥。
+// resolveChatKey 为一次转发解析出要使用的上游凭据。
 //
-// 返回：密钥明文、密钥池内 ID（单密钥模式为 0）、是否解析成功、同渠道是否还有备用密钥。
+// 返回：凭据值（API Key 或 OAuth access_token）、池内 ID（单密钥模式为 0）、
+// 是否解析成功、同渠道是否还有备用凭据。
 //
-// 三种情形：
-//  1. 渠道配置了密钥池 → 从"启用且本次未用过"的密钥中随机挑一把；
-//  2. 渠道没有密钥池（历史数据） → 使用渠道自带的单密钥，保持向后兼容；
-//  3. 池内密钥本次已全部试过或全部被摘除 → 返回 ok=false，让上层换渠道。
+// 四种情形：
+//  1. 渠道配置了凭据池 → 从"启用且本次未用过"的凭据中随机挑一条；
+//  2. 挑中的是 OAuth 凭据且即将过期 → 先刷新再使用；
+//  3. 渠道没有凭据池（历史数据） → 使用渠道自带的单密钥，保持向后兼容；
+//  4. 池内凭据本次已全部试过或全部被摘除 → 返回 ok=false，让上层换渠道。
 //
-// 容错：密钥池查询失败时不阻断转发，而是退回单密钥——
+// 容错：凭据池查询失败时不阻断转发，而是退回单密钥——
 // 统计能力不应该成为转发链路上的单点故障。
 func (r *Relay) resolveChatKey(ctx context.Context, ch *model.Channel, used map[uint64]struct{}) (string, uint64, bool, bool) {
 	if r.keys != nil {
 		if pool, err := r.keys.ListUsable(ctx, ch.ID); err == nil && len(pool) > 0 {
-			available := make([]*model.ChannelKey, 0, len(pool))
-			for _, k := range pool {
-				if _, dup := used[k.ID]; dup {
+			// 循环而非单次挑选：OAuth 凭据可能因刷新失败而不可用，
+			// 此时应换池内下一条，而不是让整个请求失败。
+			for attempt := 0; attempt < maxCredentialAttempts; attempt++ {
+				available := make([]*model.ChannelKey, 0, len(pool))
+				for _, k := range pool {
+					if _, dup := used[k.ID]; dup {
+						continue
+					}
+					available = append(available, k)
+				}
+				if len(available) == 0 {
+					return "", 0, false, false
+				}
+
+				picked := model.PickKey(available)
+				// 记录使用时间：失败不影响本次转发（这是展示性数据，不是控制流）
+				_ = r.keys.MarkUsed(ctx, picked.ID, time.Now())
+
+				value := picked.CredentialValue()
+				if r.oauth != nil && picked.NeedsRefresh(time.Now()) {
+					fresh, err := r.oauth.EnsureFresh(ctx, picked)
+					if err != nil {
+						// 刷新失败：计入连续失败（达阈值会被自动摘除），
+						// 标记为本次已用过并换下一条凭据
+						_ = r.keys.MarkFailure(ctx, picked.ID, truncateReason("刷新令牌失败: "+err.Error()))
+						used[picked.ID] = struct{}{}
+						continue
+					}
+					value = fresh
+				}
+
+				if strings.TrimSpace(value) == "" {
+					// 凭据内容为空（配置错误）：跳过并计一次失败，
+					// 否则它会一直占着池子却永远发不出请求
+					_ = r.keys.MarkFailure(ctx, picked.ID, "凭据内容为空")
+					used[picked.ID] = struct{}{}
 					continue
 				}
-				available = append(available, k)
+				return value, picked.ID, true, len(available) > 1
 			}
-			if len(available) == 0 {
-				return "", 0, false, false
-			}
-
-			picked := model.PickKey(available)
-			// 记录使用时间：失败不影响本次转发（这是展示性数据，不是控制流）
-			_ = r.keys.MarkUsed(ctx, picked.ID, time.Now())
-			return picked.Key, picked.ID, true, len(available) > 1
+			return "", 0, false, false
 		}
 	}
 
@@ -234,6 +262,22 @@ func (r *Relay) resolveChatKey(ctx context.Context, ch *model.Channel, used map[
 		return "", 0, false, false
 	}
 	return ch.APIKey, 0, true, false
+}
+
+// maxCredentialAttempts 是单次请求内最多尝试的凭据条数。
+//
+// 取 3：既能在"个别 OAuth 账号刷新失败"时快速换到可用凭据，
+// 又不会因为池里存在大量坏凭据而让单个请求长时间打转
+// （每个坏凭据都要等一次刷新超时，代价不低）。
+const maxCredentialAttempts = 3
+
+// truncateReason 截断失败原因，避免超长错误信息撑大数据库字段。
+func truncateReason(reason string) string {
+	const maxLength = 200
+	if len(reason) <= maxLength {
+		return reason
+	}
+	return reason[:maxLength]
 }
 
 // hasOtherChannel 判断"放弃当前渠道后"是否还有其他候选渠道。

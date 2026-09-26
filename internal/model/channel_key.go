@@ -82,14 +82,55 @@ func (s ChannelKeyStatus) IsValid() bool {
 	}
 }
 
-// ChannelKey 表示渠道下的一把上游密钥。
+// CredentialKind 表示凭据类型。
+//
+// 两类凭据的调度语义完全一致（池内轮询、失败摘除、记录最近使用），
+// 差别只在"取出来之后要不要先刷新"：
+//   - api_key：长期有效，取出即可用；
+//   - oauth  ：access_token 短期有效，过期前需用 refresh_token 刷新。
+type CredentialKind string
+
+const (
+	// CredentialKindAPIKey 静态 API Key。
+	CredentialKindAPIKey CredentialKind = "api_key"
+	// CredentialKindOAuth 订阅账号的 OAuth 凭据（含 refresh_token）。
+	CredentialKindOAuth CredentialKind = "oauth"
+)
+
+// IsValid 判断凭据类型是否合法。
+func (k CredentialKind) IsValid() bool {
+	return k == CredentialKindAPIKey || k == CredentialKindOAuth
+}
+
+// refreshAheadSeconds 是"提前刷新"的窗口。
+//
+// 为什么要提前：若等到 access_token 真正过期才刷新，那么"过期瞬间进来的请求"
+// 会先失败一次（拿 401 才发现要刷新），用户会看到偶发报错。
+// 提前 60 秒刷新可以把这类失败窗口完全消除，代价只是偶尔多刷一次。
+const refreshAheadSeconds = 60
+
+// ChannelKey 表示渠道下的一条凭据（API Key 或 OAuth 账号）。
 type ChannelKey struct {
 	ID        uint64           // 主键
 	ChannelID uint64           // 归属渠道
-	Key       string           // 密钥明文【仅内存】
+	Kind      CredentialKind   // 凭据类型
+	Key       string           // api_key 明文【仅内存】；oauth 类型下为空
 	Label     string           // 备注（便于人工定位，如"池 #001"）
 	Status    ChannelKeyStatus // 可用状态
 	FailCount int              // 连续失败次数（成功即清零）
+
+	// 以下字段仅 OAuth 类型使用。
+	//
+	// RefreshToken / AccessToken 均为明文，仅在内存中流转，落库由仓储加密。
+	RefreshToken string
+	AccessToken  string
+	// ExpiresAt 是 access_token 的过期时间（零值表示未知）。
+	ExpiresAt time.Time
+	// AccountHint 是账号标识（如邮箱），用于管理员辨认"这是谁的账号"。
+	AccountHint string
+	// Provider 是关联的 OAuth 提供方名字（对应 oauth_providers.name）。
+	Provider string
+
 	// LastUsedAt 为最近被选中使用的时间；零值表示从未使用。
 	LastUsedAt time.Time
 	// LastError 为最近一次失败原因（已脱敏，只记状态码与简短描述）。
@@ -97,25 +138,73 @@ type ChannelKey struct {
 	CreatedAt time.Time
 }
 
-// IsUsable 判断该密钥当前是否可参与轮询。
+// IsUsable 判断该凭据当前是否可参与轮询。
 func (k *ChannelKey) IsUsable() bool {
 	return k.Status == ChannelKeyStatusEnabled
 }
 
-// Masked 返回脱敏后的密钥，供界面与日志展示。
+// IsOAuth 判断是否为 OAuth 凭据。
+func (k *ChannelKey) IsOAuth() bool {
+	return k.Kind == CredentialKindOAuth
+}
+
+// NeedsRefresh 判断 OAuth 凭据是否需要在本次使用前刷新。
+//
+// 判定规则：
+//   - 非 OAuth 凭据永不刷新；
+//   - access_token 为空 → 必须刷新；
+//   - 剩余有效期不足 refreshAheadSeconds → 提前刷新。
+func (k *ChannelKey) NeedsRefresh(now time.Time) bool {
+	if !k.IsOAuth() {
+		return false
+	}
+	if strings.TrimSpace(k.AccessToken) == "" {
+		return true
+	}
+	if k.ExpiresAt.IsZero() {
+		// 过期时间未知：保守起见按"需要刷新"处理，
+		// 否则一旦令牌已失效就会持续 401（而池内其他凭据被白白浪费）
+		return true
+	}
+	return now.Add(refreshAheadSeconds * time.Second).After(k.ExpiresAt)
+}
+
+// CredentialValue 返回"当前可直接用于上游鉴权"的凭据值。
+//
+// api_key 型返回 Key；oauth 型返回 AccessToken。
+// 这样转发链路无需区分类型，统一取一个字符串即可。
+func (k *ChannelKey) CredentialValue() string {
+	if k.IsOAuth() {
+		return k.AccessToken
+	}
+	return k.Key
+}
+
+// Masked 返回脱敏后的凭据，供界面与日志展示。
 //
 // 脱敏规则：保留前 8 位与后 4 位。相比渠道密钥多留 2 位前缀，
 // 是因为密钥池里往往有几百把同前缀（如 nvapi-）的密钥，
 // 只保留 6 位前缀在界面上几乎无法区分。
+//
+// OAuth 凭据返回"账号标识 + 类型"而不是令牌片段：
+// 令牌片段对管理员没有任何辨识价值，而账号标识能立刻告诉他是谁。
 func (k *ChannelKey) Masked() string {
-	const (
-		keepPrefix = 8
-		keepSuffix = 4
-	)
+	if k.IsOAuth() {
+		hint := strings.TrimSpace(k.AccountHint)
+		if hint == "" {
+			hint = "未命名账号"
+		}
+		return "[OAuth] " + hint
+	}
+
 	key := k.Key
 	if key == "" {
 		return ""
 	}
+	const (
+		keepPrefix = 8
+		keepSuffix = 4
+	)
 	if len(key) <= keepPrefix+keepSuffix {
 		return strings.Repeat("*", len(key))
 	}
@@ -139,6 +228,85 @@ func (s KeyPoolSummary) Available() int {
 	return s.Enabled
 }
 
+// CredentialInput 描述一条待导入的凭据。
+//
+// 支持两种形态：
+//   - API Key：填 APIKey；
+//   - OAuth  ：填 RefreshToken（可选同时给 AccessToken 与 ExpiresAt）。
+//
+// 之所以用"一个结构体装两类"，而不是两个方法：导入路径（后台表单、批量粘贴、
+// CLI）对两类凭据的处理流程完全一致，分成两个方法只会让调用点多一层判断。
+type CredentialInput struct {
+	Kind         CredentialKind // 必填：api_key / oauth
+	APIKey       string         // kind=api_key 时必填
+	RefreshToken string         // kind=oauth 时必填
+	AccessToken  string         // 可选：导入时若已持有访问令牌则一并保存，省一次刷新
+	ExpiresAt    time.Time      // 可选：access_token 的过期时间
+	AccountHint  string         // 可选：账号标识（邮箱等）
+	Provider     string         // kind=oauth 时建议填写：关联的 OAuth 提供方
+	Label        string         // 可选：备注
+}
+
+// IdentityHash 返回该凭据的去重标识。
+//
+// 规则：API Key 用密钥本身，OAuth 用 refresh_token——
+// 因为 refresh_token 才是账号的长期唯一标识（access_token 每次刷新都变）。
+func (c CredentialInput) IdentityHash(sha256Hex func(string) string) string {
+	if c.Kind == CredentialKindOAuth {
+		return sha256Hex(strings.TrimSpace(c.RefreshToken))
+	}
+	return sha256Hex(strings.TrimSpace(c.APIKey))
+}
+
+// Validate 校验凭据是否可用。
+func (c CredentialInput) Validate() error {
+	if !c.Kind.IsValid() {
+		return fmt.Errorf("凭据类型非法: %q", c.Kind)
+	}
+	switch c.Kind {
+	case CredentialKindAPIKey:
+		if strings.TrimSpace(c.APIKey) == "" {
+			return errors.New("API Key 不能为空")
+		}
+	case CredentialKindOAuth:
+		if strings.TrimSpace(c.RefreshToken) == "" {
+			return errors.New("OAuth 凭据必须提供 refresh_token")
+		}
+	}
+	return nil
+}
+
+// ParseCredentialList 解析批量粘贴的 OAuth 凭据文本。
+//
+// 输入格式（与密钥批量导入保持一致，降低使用者的记忆负担）：
+//
+//	每行一条：refresh_token [账号标识]
+//	支持空格、制表符或逗号分隔；
+//	以 # 开头的行视为注释；空行忽略；重复项自动去重。
+//
+// provider 会写入每条凭据，便于刷新时找到对应的 OAuth 提供方配置。
+func ParseCredentialList(raw, provider string) []CredentialInput {
+	tokens, labels := ParseKeyList(raw)
+
+	inputs := make([]CredentialInput, 0, len(tokens))
+	for i, token := range tokens {
+		label := ""
+		if i < len(labels) {
+			label = labels[i]
+		}
+		inputs = append(inputs, CredentialInput{
+			Kind:         CredentialKindOAuth,
+			RefreshToken: token,
+			// 备注同时也是账号标识：使用者粘贴时写的通常就是账号邮箱，
+			// 直接当作 AccountHint 可以让池列表立刻可读，省去手工再填一遍。
+			AccountHint: label,
+			Label:       label,
+			Provider:    provider,
+		})
+	}
+	return inputs
+}
+
 // ChannelKeyRepository 定义密钥池的持久化操作。
 //
 // 约定：所有方法的实现都必须保证密钥落库加密、读取解密；
@@ -153,6 +321,20 @@ type ChannelKeyRepository interface {
 	// labels 与 keys 一一对应（可为 nil，此时备注留空）。
 	// 返回 added（新增数）、removed（删除数）。
 	ReplaceAll(ctx context.Context, channelID uint64, keys, labels []string) (added, removed int, err error)
+
+	// ReplaceCredentials 用给定凭据集合整体替换某渠道的凭据池。
+	//
+	// 与 ReplaceAll 的关系：ReplaceAll 是"纯 API Key 池"的便捷入口，
+	// 本方法支持两类凭据混装（API Key + OAuth 订阅账号）。
+	// 去重标识：api_key 用密钥摘要，oauth 用 refresh_token 摘要
+	// （refresh_token 是 OAuth 凭据的长期唯一标识）。
+	ReplaceCredentials(ctx context.Context, channelID uint64, inputs []CredentialInput) (added, removed int, err error)
+
+	// UpdateTokens 回写刷新后的 OAuth 令牌。
+	//
+	// refreshToken 为空时保留原值：部分平台的刷新响应不回传新的 refresh_token，
+	// 此时不应把它清空（清空等于永久丢失该账号）。
+	UpdateTokens(ctx context.Context, id uint64, accessToken string, expiresAt time.Time, refreshToken string) error
 
 	// ListByChannel 列出某渠道的全部密钥（含已摘除），按 ID 升序。
 	ListByChannel(ctx context.Context, channelID uint64) ([]*ChannelKey, error)
