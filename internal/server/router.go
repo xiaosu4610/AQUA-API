@@ -1,0 +1,40 @@
+// 本文件集中注册所有 HTTP 路由。
+//
+// 意图（Why）：
+//
+//	把「有哪些接口、分别挂在什么路径」集中在一处，便于通读与审计。
+//	处理器实现分散在各业务文件，但路由表只有一个入口。
+//
+// 流转（Flow）：
+//
+//	server.New() → registerRoutes() → engine 持有全部路由
+//
+// 扩展（Extend）：
+//
+//	新增接口时在这里加一行，并保持「按用途分组 + 组内按路径排序」的组织方式，
+//	便于快速判断某接口是否已存在。管理类接口应挂到独立分组下（如 /api）。
+package server
+
+// registerRoutes 注册全部路由。
+//
+// 命名约定（后续里程碑沿用）：
+//   - /healthz、/readyz   ：运维探活，无需鉴权
+//   - /v1/...             ：面向客户端的模型 API，需令牌鉴权
+//   - /api/...            ：管理后台接口，需管理员鉴权
+func (s *Server) registerRoutes() {
+	r := s.engine
+
+	// ── 运维与探活 ──────────────────────────────────────────────
+	r.GET("/", s.handleRoot)           // 服务信息（名称/版本），便于人工确认服务是否正常
+	r.GET("/healthz", s.handleHealthz) // 健康检查：含数据库连通性探测
+
+	// ── 模型 API（M2 起启用）────────────────────────────────────
+	// v1 := r.Group("/v1")
+	// v1.Use(middleware.TokenAuth(s.deps.Channels))
+	// v1.POST("/chat/completions", s.handleChatCompletions)
+
+	// ── 管理接口（M5 起启用）────────────────────────────────────
+	// api := r.Group("/api")
+	// api.Use(middleware.AdminAuth())
+	// api.GET("/channels", s.handleListChannels)
+}

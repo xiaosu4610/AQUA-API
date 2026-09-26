@@ -1,0 +1,134 @@
+// Package server 提供 HTTP 服务层：路由注册、中间件装配与请求处理。
+//
+// 意图（Why）：
+//
+//	作为进程对外的唯一入口，负责把 HTTP 请求翻译成对内部能力的调用。
+//	本包刻意保持"薄"：只做协议转换与参数校验，业务逻辑放在 model / relay 中，
+//	避免 HTTP 细节渗透到核心域。
+//
+// 流转（Flow）：
+//
+//	cmd/aqua/main.go
+//	  └─ server.New(Deps{Config, Store, Channels})   装配 gin 引擎与路由
+//	       └─ server.Run(ctx)                         启动监听，ctx 取消后优雅关闭
+//	            └─ 处理器（health.go 等）调用 model / store 完成实际工作
+//
+// 扩展（Extend）：
+//
+//	新增接口：
+//	  1) 在 router.go 的 registerRoutes 中注册路径；
+//	  2) 新建处理器文件（如 channel.go），方法挂在 *Server 上；
+//	  3) 若需要新依赖（缓存、relay 等），在 Deps 中添加字段并在 main 中注入。
+//	新增中间件：在 New 中通过 engine.Use(...) 装配，注意中间件顺序（先恢复，后日志）。
+package server
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"time"
+
+	"github.com/gin-gonic/gin"
+
+	"gitee.com/xiaosu4610/aqua-api/internal/config"
+	"gitee.com/xiaosu4610/aqua-api/internal/model"
+	"gitee.com/xiaosu4610/aqua-api/internal/store"
+)
+
+// Deps 汇总服务运行所需的外部依赖，由 main 装配后注入。
+//
+// 设计说明：用结构体聚合依赖，而非把依赖作为多个参数传递——
+// 这样后续新增依赖（如 relay 引擎、缓存）时，调用方无需修改函数签名。
+type Deps struct {
+	Config   *config.Config          // 运行配置（监听地址、模式等）
+	Store    *store.Store            // 数据库（健康检查需要探测其连通性）
+	Channels model.ChannelRepository // 渠道仓储（M2 起供管理接口与路由使用）
+}
+
+// Server 是 HTTP 服务的运行时载体。
+type Server struct {
+	deps       Deps
+	engine     *gin.Engine
+	httpServer *http.Server
+	startedAt  time.Time // 记录启动时刻，用于健康检查上报运行时长
+}
+
+// New 创建并装配 HTTP 服务（不启动监听，便于测试直接取用 Handler）。
+func New(deps Deps) *Server {
+	// 按配置切换 gin 运行模式：release 下不输出路由调试信息，降低日志噪音与信息暴露
+	gin.SetMode(toGinMode(deps.Config.Server.Mode))
+
+	// 使用 gin.New() 而非 gin.Default()：
+	// Default 会自带 Logger + Recovery，但我们希望显式控制中间件及其顺序。
+	engine := gin.New()
+	// Recovery 必须最先装配：保证后续任何 panic 都不会导致进程退出
+	engine.Use(gin.Recovery())
+	// 访问日志（M1 先用 gin 默认实现；结构化日志与请求 ID 将在后续里程碑替换）
+	engine.Use(gin.Logger())
+
+	s := &Server{
+		deps:      deps,
+		engine:    engine,
+		startedAt: time.Now(),
+	}
+	s.registerRoutes()
+
+	s.httpServer = &http.Server{
+		Addr:    deps.Config.Server.Listen,
+		Handler: engine,
+
+		// ReadHeaderTimeout 用于防御 Slowloris 类攻击（攻击者缓慢发送请求头占满连接）。
+		ReadHeaderTimeout: 10 * time.Second,
+
+		// 刻意【不设置】ReadTimeout / WriteTimeout：
+		// 大模型接口以 SSE 流式返回，单次响应可能持续数分钟（长回答、思考模型）。
+		// 若设置 WriteTimeout，连接会在生成中途被强制掐断，客户端表现为"回答写到一半断掉"。
+		// 因此超时控制交由：上游请求超时 + 业务层总时长上限 + 反向代理超时 共同负责。
+	}
+
+	return s
+}
+
+// Handler 返回 HTTP 处理器，供测试（httptest）或自定义监听方式使用。
+func (s *Server) Handler() http.Handler {
+	return s.engine
+}
+
+// Run 启动监听并阻塞，直到 ctx 被取消或监听出错。
+//
+// 优雅关闭的意义：网关可能正有流式请求在传输，直接杀进程会让客户端拿到截断的响应；
+// 先停止接受新连接、等待在途请求完成（最多 10 秒）能显著改善升级/重启体验。
+func (s *Server) Run(ctx context.Context) error {
+	errCh := make(chan error, 1)
+
+	go func() {
+		if err := s.httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+	}()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+		// 收到取消信号：给在途请求 10 秒完成时间
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return s.httpServer.Shutdown(shutdownCtx)
+	}
+}
+
+// toGinMode 把配置中的运行模式翻译为 gin 的常量。
+//
+// 说明：配置层已校验取值合法性，因此这里只需处理 debug 与 test 两种情况，
+// 其余一律按 release 处理（生产环境优先保证不外泄调试信息）。
+func toGinMode(mode string) string {
+	switch mode {
+	case "debug":
+		return gin.DebugMode
+	case "test":
+		return gin.TestMode
+	default:
+		return gin.ReleaseMode
+	}
+}
