@@ -35,6 +35,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -55,6 +56,14 @@ const (
 	driverSQLite     = "sqlite"         // M1 阶段仅实现该驱动
 	driverPostgres   = "postgres"       // 预留（M5+ 生产推荐）
 	driverMySQL      = "mysql"          // 预留
+
+	// 邮件发送（注册验证码）相关默认值。
+	//
+	// 默认指向阿里云邮件推送的 SSL 端口：显式使用 465 而非 25，
+	// 因为云厂商普遍封禁 25 端口的出站连接，用 25 会出现"配置看起来正确但永远发不出信"。
+	DefaultSMTPHost     = "smtpdm.aliyun.com" // 默认 SMTP 服务器
+	DefaultSMTPPort     = 465                 // 默认端口（SSL）
+	DefaultSMTPFromName = "AQUA-API"          // 默认发件人显示名
 )
 
 // Config 是程序运行所需的全部配置。
@@ -65,6 +74,7 @@ type Config struct {
 	Server   ServerConfig   `json:"server"`   // HTTP 服务相关
 	Database DatabaseConfig `json:"database"` // 数据库相关
 	Log      LogConfig      `json:"log"`      // 日志相关
+	SMTP     SMTPConfig     `json:"smtp"`     // 邮件发送相关（口令仅来自环境变量）
 	Security SecurityConfig `json:"security"` // 安全相关（密钥仅来自环境变量）
 }
 
@@ -94,6 +104,38 @@ type LogConfig struct {
 	Level string `json:"level"`
 	// Format 取值 text / json。json 便于日志采集系统解析。
 	Format string `json:"format"`
+}
+
+// SMTPConfig 描述出站邮件（注册验证码等）的发送参数。
+//
+// 安全约束（重要）：Password 的 json tag 为 "-"，即【不允许】从配置文件读取，
+// 只能由环境变量 AQUA_SMTP_PASSWORD 注入。理由与 AppKey 相同——
+// 配置文件模板极易被复制、备份甚至误提交，口令一旦落入文件就等同于泄露。
+type SMTPConfig struct {
+	// Host 是 SMTP 服务器地址，如 smtpdm.aliyun.com。
+	Host string `json:"host"`
+	// Port 是 SMTP 端口。465 为 SSL 直连（推荐），587 为 STARTTLS。
+	// 不建议用 25：云厂商普遍封禁其出站连接。
+	Port int `json:"port"`
+	// Username 是 SMTP 登录账号（阿里云邮件推送为发信地址本身）。
+	Username string `json:"username"`
+	// From 是发件人地址，必须与 Username 同域且已在服务商处验证。
+	From string `json:"from"`
+	// FromName 是收件人看到的发件人显示名。
+	FromName string `json:"from_name"`
+	// Password 是 SMTP 登录口令，仅由环境变量注入。
+	Password string `json:"-"`
+}
+
+// Configured 判断邮件发送能力是否可用。
+//
+// 用途：未配置时注册验证码流程应给出明确指引，而不是在发信时报一个底层网络错误。
+// 判定为「可用」需同时具备账号、口令与发件地址三项。
+func (s SMTPConfig) Configured() bool {
+	return strings.TrimSpace(s.Host) != "" &&
+		strings.TrimSpace(s.Username) != "" &&
+		strings.TrimSpace(s.Password) != "" &&
+		strings.TrimSpace(s.From) != ""
 }
 
 // SecurityConfig 描述安全相关配置。
@@ -129,6 +171,13 @@ func Default() *Config {
 		Log: LogConfig{
 			Level:  DefaultLogLevel,
 			Format: DefaultLogFormat,
+		},
+		SMTP: SMTPConfig{
+			Host:     DefaultSMTPHost,
+			Port:     DefaultSMTPPort,
+			FromName: DefaultSMTPFromName,
+			// Username / From / Password 不提供默认值：
+			// 它们与具体账号绑定，填错地址比留空更难排查。
 		},
 		// Security 刻意不提供默认值：加密主密钥必须由使用者显式提供，
 		// 若给出固定默认值等于"所有人都用同一把钥匙"，比没有加密更危险。
@@ -206,8 +255,31 @@ func applyEnv(cfg *Config) {
 	setIfNotEmpty(&cfg.Database.DSN, EnvPrefix+"DATABASE_DSN")
 	setIfNotEmpty(&cfg.Log.Level, EnvPrefix+"LOG_LEVEL")
 	setIfNotEmpty(&cfg.Log.Format, EnvPrefix+"LOG_FORMAT")
+	setIfNotEmpty(&cfg.SMTP.Host, EnvPrefix+"SMTP_HOST")
+	setIfNotEmptyInt(&cfg.SMTP.Port, EnvPrefix+"SMTP_PORT")
+	setIfNotEmpty(&cfg.SMTP.Username, EnvPrefix+"SMTP_USERNAME")
+	setIfNotEmpty(&cfg.SMTP.From, EnvPrefix+"SMTP_FROM")
+	setIfNotEmpty(&cfg.SMTP.FromName, EnvPrefix+"SMTP_FROM_NAME")
+	// 邮件口令与安全类字段一样，只允许来自环境变量（json tag 为 "-"）
+	setIfNotEmpty(&cfg.SMTP.Password, EnvPrefix+"SMTP_PASSWORD")
 	// 安全类字段只允许来自环境变量（其 json tag 为 "-"，无法从文件读取）
 	setIfNotEmpty(&cfg.Security.AppKey, EnvPrefix+"APP_KEY")
+}
+
+// setIfNotEmptyInt 是 setIfNotEmpty 的整数版本：解析失败时保留原值。
+//
+// 刻意不报错：配置项由运维手工注入，写错一个端口号就导致进程无法启动，
+// 会让"改错配置 → 服务起不来 → 无从下手"变成常见故障；保留默认值并继续启动更友好。
+func setIfNotEmptyInt(dst *int, key string) {
+	v, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(v) == "" {
+		return
+	}
+	parsed, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil {
+		return
+	}
+	*dst = parsed
 }
 
 // setIfNotEmpty 在环境变量存在且非空时，将其值写入 dst 指向的字段。
@@ -250,6 +322,20 @@ func (c *Config) Validate() error {
 	}
 	if !oneOf(c.Log.Format, "text", "json") {
 		return fmt.Errorf("配置错误：log.format=%q 非法，可选 text/json", c.Log.Format)
+	}
+
+	// SMTP 校验策略：只校验「填了就一定要合法」，不强制必须填。
+	// 理由：不发邮件的部署（如仅用令牌调用）不应被邮件配置卡住启动；
+	// 是否真正需要邮件能力由站点开关（注册验证码）在运行期决定。
+	if c.SMTP.Port < 0 || c.SMTP.Port > 65535 {
+		return fmt.Errorf("配置错误：smtp.port=%d 非法，合法范围 1-65535", c.SMTP.Port)
+	}
+	if c.SMTP.Host != "" && c.SMTP.Port == 0 {
+		return fmt.Errorf("配置错误：已设置 smtp.host 但未设置 smtp.port")
+	}
+	if (c.SMTP.Username != "" || c.SMTP.Password != "") && !c.SMTP.Configured() {
+		return fmt.Errorf("配置错误：SMTP 配置不完整，需同时提供 host/port/username/password/from" +
+			"（口令只能通过环境变量 " + EnvPrefix + "SMTP_PASSWORD 注入）")
 	}
 
 	// 加密主密钥必须存在：没有它无法解密已存的渠道密钥，也无法安全新增渠道
