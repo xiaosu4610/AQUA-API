@@ -125,6 +125,9 @@ func TestTokenAuth_账号额度耗尽_应被拒绝(t *testing.T) {
 	}{
 		{name: "额度已用尽", quota: 100, used: 100, wantCode: http.StatusTooManyRequests},
 		{name: "额度为零", quota: 0, used: 0, wantCode: http.StatusTooManyRequests},
+		// 已用超过总额度时剩余为负。这是真实存在过的漏洞：
+		// 旧实现只判「剩余 == 0」，负剩余会被判为"还有额度"而放行。
+		{name: "额度已超额", quota: 100, used: 150, wantCode: http.StatusTooManyRequests},
 		{name: "额度充足", quota: 100, used: 50, wantCode: http.StatusOK},
 		{name: "不限额度", quota: model.QuotaUnlimited, used: 999999, wantCode: http.StatusOK},
 	}

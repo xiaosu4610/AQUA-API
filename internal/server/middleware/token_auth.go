@@ -25,6 +25,7 @@ package middleware
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -103,7 +104,12 @@ func TokenAuth(tokens model.TokenRepository, users model.UserRepository) gin.Han
 		// 若干个令牌来绕过总量限制——限额就形同虚设。
 		//
 		// 额度语义：QuotaUnlimited(-1) 表示不限；其余情况下剩余 = 总额度 - 已用。
-		// 新用户默认额度为 0（需管理员分配），因此此处会拒绝其调用，这是预期行为。
+		//
+		// 两个容易写错的地方（都曾真实踩过）：
+		//  1) 必须显式排除「不限额度」：它的 RemainingQuota() 返回 -1，
+		//     若直接拿去比较大小，会把所有不限额度的账号全部拦死；
+		//  2) 判定要用 <= 0 而不是 == 0：已用超过总额度时剩余为负数，
+		//     只判 0 会把"已经超额"的账号放行。
 		if users != nil && token.OwnerID > 0 {
 			owner, err := users.GetByID(c.Request.Context(), token.OwnerID)
 			if err != nil {
@@ -123,9 +129,13 @@ func TokenAuth(tokens model.TokenRepository, users model.UserRepository) gin.Han
 					"账号已被禁用", oai.TypePermission, oai.CodeTokenDisabled)
 				return
 			}
-			if owner.RemainingQuota() == 0 {
+			if owner.Quota != model.QuotaUnlimited && owner.RemainingQuota() <= 0 {
+				// 报错里带上具体数值：使用者转述给站长时，"额度 0 / 已用 0"
+				// 一眼就能定位到是"默认额度没配"，而不是"上游限流"。
 				abortWithError(c, http.StatusTooManyRequests,
-					"账号额度已用尽，请联系管理员", oai.TypeRateLimit, oai.CodeInsufficientQuota)
+					fmt.Sprintf("账号额度已用尽（额度 %d，已用 %d），请联系管理员调整额度",
+						owner.Quota, owner.UsedQuota),
+					oai.TypeRateLimit, oai.CodeInsufficientQuota)
 				return
 			}
 		}
