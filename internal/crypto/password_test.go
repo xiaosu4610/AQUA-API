@@ -114,18 +114,23 @@ func TestHashPassword_SupportsUnicode(t *testing.T) {
 }
 
 // TestHashPassword_LengthValidation 验证口令长度规则。
+//
+// 现行规则：只要非空且不超过技术上限（1024 字节）即通过——
+// 不限制最小长度，也不限制字符类型。
 func TestHashPassword_LengthValidation(t *testing.T) {
 	cases := []struct {
 		name    string
 		input   string
 		wantErr bool
 	}{
-		{name: "过短（7 字节）", input: "1234567", wantErr: true},
 		{name: "空口令", input: "", wantErr: true},
+		{name: "单字符（数字）", input: "1", wantErr: false},
+		{name: "单字符（中文）", input: "水", wantErr: false},
+		{name: "极短（3 位）", input: "abc", wantErr: false},
 		{name: "恰好 8 字节", input: "12345678", wantErr: false},
 		{name: "常规长度", input: "a-reasonable-password", wantErr: false},
-		{name: "过长（257 字节）", input: strings.Repeat("a", 257), wantErr: true},
-		{name: "恰好 256 字节", input: strings.Repeat("a", 256), wantErr: false},
+		{name: "恰好上限（1024 字节）", input: strings.Repeat("a", 1024), wantErr: false},
+		{name: "超过上限（1025 字节）", input: strings.Repeat("a", 1025), wantErr: true},
 	}
 
 	for _, tc := range cases {
@@ -138,6 +143,37 @@ func TestHashPassword_LengthValidation(t *testing.T) {
 				t.Errorf("期望通过，实际报错: %v", err)
 			}
 		})
+	}
+}
+
+// TestPassword_任意字符类型_均可哈希并校验通过 验证"支持任何类型密码"。
+//
+// 这是产品明确要求的能力：中文、空格、各类特殊符号、emoji 都必须能被接受，
+// 且哈希后能被正确校验（即使用者真的能用这个口令登录）。
+func TestPassword_任意字符类型_均可哈希并校验通过(t *testing.T) {
+	passwords := []string{
+		"1", // 极短
+		"水", // 单个中文
+		"我的密码就是这一句话别猜了",                // 纯中文短语
+		"  p@ss w#rd!￥%…&*（）<>?/\\|  ", // 含空格与各类特殊符号
+		"🔐💧🌊",                          // emoji
+		"pass\tword\nwith\nnewlines",   // 含控制字符
+		"ｆｕｌｌｗｉｄｔｈ　全角",                 // 全角字符
+	}
+
+	for _, pw := range passwords {
+		hashed, err := HashPassword(pw)
+		if err != nil {
+			t.Errorf("口令 %q 应被接受，实际报错: %v", pw, err)
+			continue
+		}
+		if !VerifyPassword(pw, hashed) {
+			t.Errorf("口令 %q 哈希后无法通过校验", pw)
+		}
+		// 反向验证：改一个字符即应失败
+		if VerifyPassword(pw+"x", hashed) {
+			t.Errorf("口令 %q 的哈希对错误口令也放行了", pw)
+		}
 	}
 }
 

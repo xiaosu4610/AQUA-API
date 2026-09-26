@@ -29,7 +29,16 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
+
+// maxUsernameRunes 是用户名允许的最大字符数。
+//
+// 说明：用户名下限已取消（1 个字符即可注册），此处仅保留上限——
+// 超长用户名会撑爆后台列表与登录框，也会放大唯一索引体积。
+// 刻意使用「字符数」而非字节数：中文用户名按字节算是 3 倍，
+// 用字节数限制会让"看起来一样长"的中英文名得到不同待遇。
+const maxUsernameRunes = 64
 
 // 领域错误。
 var (
@@ -154,8 +163,18 @@ func (u *User) Validate() error {
 	if strings.TrimSpace(u.Username) == "" {
 		return errors.New("用户名不能为空")
 	}
-	if len(u.Username) < 3 || len(u.Username) > 32 {
-		return fmt.Errorf("用户名长度需在 3-32 个字符之间，当前 %d", len(u.Username))
+	// 用户名【不再限制最小长度】：1 个字符也允许。
+	//
+	// 为什么取消下限：用户名只是标识符，真正的鉴权依据是口令；
+	// 强制"至少 3 个字符"既挡不住攻击者（他们用随机长串），
+	// 又会让想用简短昵称（如"水""A"）的正常用户被拒。
+	// 唯一性由数据库唯一索引保证，与长度无关。
+	//
+	// 仍保留上限的原因与取值：超长用户名会撑爆列表界面、放大唯一索引，
+	// 也便于构造超长请求；按【字符数】限制在 64 以内，
+	// 用字符数而非字节数是为了让中文用户名不被按 3 倍字节误判。
+	if count := utf8.RuneCountInString(u.Username); count > maxUsernameRunes {
+		return fmt.Errorf("用户名最多 %d 个字符，当前 %d", maxUsernameRunes, count)
 	}
 	if u.PasswordHash == "" {
 		return errors.New("口令哈希不能为空（请勿直接构造用户对象，应通过服务层创建）")

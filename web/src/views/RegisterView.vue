@@ -51,8 +51,13 @@ let countdownTimer: number | undefined
 /** 与后端保持一致的最小邮箱校验；真正的可用性由"能否收到验证码"验证。 */
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
-/** 契约要求密码至少 8 位；这里同时校验两次输入一致，减少无谓的请求 */
-const passwordRule = computed(() => password.value.length >= 8)
+/**
+ * 口令校验：只要求"填了且两次一致"。
+ *
+ * 刻意不做最小长度与字符类型限制——站点允许任意口令（1 位、纯中文、
+ * 含空格或特殊符号都可以）。规则由后端统一裁决，前端只拦明显无意义的输入，
+ * 避免出现"前端拒绝但后端允许"的割裂。
+ */
 const passwordMismatch = computed(() => Boolean(confirmPassword.value) && password.value !== confirmPassword.value)
 
 /** 邮箱验证码是否为必填（由后台开关控制） */
@@ -111,12 +116,9 @@ async function handleSubmit(): Promise<void> {
     errorMessage.value = '请输入用户名'
     return
   }
-  if (username.value.trim().length < 3) {
-    errorMessage.value = '用户名至少 3 个字符'
-    return
-  }
-  if (!passwordRule.value) {
-    errorMessage.value = '密码至少 8 位'
+  // 用户名不再要求最小长度（1 个字符即可），只拦"全空白"
+  if (!password.value) {
+    errorMessage.value = '请输入密码'
     return
   }
   if (password.value !== confirmPassword.value) {
@@ -230,7 +232,7 @@ async function handleSubmit(): Promise<void> {
                 class="input"
                 type="text"
                 autocomplete="username"
-                placeholder="3 个字符以上，建议使用英文或数字"
+                placeholder="任意长度，中英文、符号均可"
                 :disabled="submitting"
               />
             </div>
@@ -244,7 +246,7 @@ async function handleSubmit(): Promise<void> {
                   class="input pr-10"
                   :type="showPassword ? 'text' : 'password'"
                   autocomplete="new-password"
-                  placeholder="至少 8 位"
+                  placeholder="任意长度与字符，中文、符号均可"
                   :disabled="submitting"
                 />
                 <button
@@ -256,8 +258,8 @@ async function handleSubmit(): Promise<void> {
                   <AppIcon :name="showPassword ? 'eye-off' : 'eye'" :size="16" />
                 </button>
               </div>
-              <p class="hint" :class="password && !passwordRule ? 'text-amber-700' : ''">
-                密码长度至少 8 位。
+              <p class="hint">
+                支持任意长度与字符：中文、空格、特殊符号均可，无需符合任何复杂度规则。
               </p>
             </div>
 

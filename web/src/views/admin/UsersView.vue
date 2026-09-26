@@ -103,8 +103,8 @@ async function submitCreate(): Promise<void> {
     createError.value = '请填写用户名'
     return
   }
-  if (createForm.value.password.length < 8) {
-    createError.value = '密码至少 8 位'
+  if (!createForm.value.password) {
+    createError.value = '请填写初始密码'
     return
   }
 
@@ -392,7 +392,7 @@ const isEmpty = computed(() => !loading.value && !error.value && users.value.len
               class="input"
               type="password"
               autocomplete="new-password"
-              placeholder="至少 8 位"
+              placeholder="任意长度与字符"
             />
           </div>
         </div>
