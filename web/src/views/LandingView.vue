@@ -198,7 +198,8 @@ const consoleTarget = computed(() => (auth.isAdmin ? '/admin' : '/console'))
 
             <h1 class="mt-6 text-balance text-4xl font-semibold leading-tight tracking-tight text-ink-50 lg:text-5xl">
               一个入口，接管你所有的
-              <span class="bg-gradient-to-r from-brand-300 to-brand-500 bg-clip-text text-transparent">大模型调用</span>
+              <!-- 渐变文字：亮色主题下必须用较深的品牌色，否则在浅底上几乎不可见 -->
+              <span class="bg-gradient-to-r from-brand-600 to-brand-800 bg-clip-text text-transparent">大模型调用</span>
             </h1>
 
             <p class="mt-5 max-w-xl text-base leading-relaxed text-ink-300">

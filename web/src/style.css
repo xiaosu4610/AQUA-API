@@ -187,8 +187,27 @@
   }
 
   /* ── 表格（本项目核心交互，密度与对齐重点打磨）────────── */
+  /* 数据表在窄屏下必然超出视口（管理后台列多），因此容器负责横向滚动。
+     额外做两件事：
+       1) 触屏惯性滚动，否则手机上滑动生硬；
+       2) 触屏设备上操作按钮放大到 36px，28px 在手指下太难点中。 */
   .table-wrap {
     @apply overflow-x-auto rounded-xl border border-ink-800/70 bg-white/70 backdrop-blur-xl;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* 触屏设备（无精确指针）的可用性增强。
+     用 hover:none 而不是屏幕宽度判断：平板同样是触屏，
+     按宽度判断会漏掉"横屏平板"这种又宽又靠手指操作的场景。 */
+  @media (hover: none) {
+    .btn-row {
+      @apply h-9 w-9;
+    }
+
+    /* 输入框在触屏上加大纵向内边距：手指点选更容易命中 */
+    .input {
+      @apply py-2.5;
+    }
   }
 
   .data-table {

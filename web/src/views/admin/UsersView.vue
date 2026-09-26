@@ -266,6 +266,8 @@ const isEmpty = computed(() => !loading.value && !error.value && users.value.len
       </div>
     </div>
 
+    <p class="mb-2 text-xs text-ink-400 lg:hidden">表格列较多，可左右滑动查看完整内容。</p>
+
     <div class="table-wrap">
       <table class="data-table min-w-[1080px]">
         <thead>
