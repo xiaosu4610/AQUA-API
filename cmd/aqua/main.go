@@ -10,7 +10,7 @@
 // 流转（Flow）：
 //
 //	main()
-//	  ├─ 解析命令行参数（-config / -version / -gen-key）
+//	  ├─ 解析命令行参数（-config / -version / -gen-key 等）
 //	  ├─ config.Load(path)                 加载并按「默认值→文件→环境变量」合并配置
 //	  ├─ setupLogger(cfg)                  初始化结构化日志（slog）
 //	  ├─ store.Open + store.Migrate        建立数据库连接并执行结构迁移
@@ -19,6 +19,9 @@
 //	  ├─ relay.New                         转发引擎
 //	  ├─ server.New                        装配 HTTP 路由与中间件
 //	  └─ server.Run(ctx)                   启动监听，收到退出信号后优雅关闭
+//
+//	子命令（执行后立即退出，用于运维）：
+//	  -version / -gen-key / -create-token / -init-admin / -reset-password
 //
 // 扩展（Extend）：
 //
@@ -78,6 +81,8 @@ func run() error {
 		genKey      = flag.Bool("gen-key", false, "生成一个加密主密钥（AQUA_APP_KEY）后退出")
 		createToken = flag.String("create-token", "", "创建一个访问令牌（取值为令牌名称）后退出")
 		initAdmin   = flag.String("init-admin", "", "创建一个管理员账号（取值为用户名），随机密码仅打印一次后退出")
+		resetPwUser = flag.String("reset-password", "", "重置指定用户（取值为用户名）的密码后退出")
+		resetPwNew  = flag.String("new-password", "", "配合 -reset-password：指定新密码；留空则随机生成并打印一次")
 	)
 	flag.Parse()
 
@@ -200,6 +205,16 @@ func run() error {
 	// （渠道配不了、令牌发不出去）。密码随机生成并只打印一次，避免使用弱口令。
 	if *initAdmin != "" {
 		return createAdminAndPrint(ctx, users, *initAdmin)
+	}
+
+	// 子命令：重置用户密码。
+	//
+	// 为什么需要独立入口：管理员忘记密码时若没有它，就只能手工改数据库，
+	// 而本项目口令哈希带 SHA-256 预处理（见 crypto.HashPassword），
+	// 手工构造几乎必然算错，结果是"改了密码却登录不上"。
+	// 注意：密码只作为命令行参数/随机值传入，绝不出现在代码与配置文件里。
+	if *resetPwUser != "" {
+		return resetPasswordAndReport(ctx, users, sessions, *resetPwUser, *resetPwNew)
 	}
 
 	// 检查是否存在管理员：没有则给出明确指引（不自动创建，避免生成"弱口令管理员"）
@@ -363,6 +378,87 @@ func createAdminAndPrint(ctx context.Context, users model.UserRepository, userna
 请立即登录并修改密码（管理后台可配置全部渠道与查看所有数据，
 随机密码仅此一次展示，请勿通过聊天工具明文留存）。
 `, admin.Username, password)
+
+	return nil
+}
+
+// resetPasswordAndReport 重置指定用户的密码，并吊销其全部登录会话。
+//
+// 设计要点：
+//   - newPassword 为空时生成 36 位十六进制随机密码并打印一次（推荐用法，
+//     避免明文密码出现在进程列表 `ps` 中）；
+//   - 指定明文密码时【不回显】密码本身，只确认"已重置"，避免在终端与
+//     日志里留下可被翻出的明文；
+//   - 无论哪种方式，都强制吊销该用户的全部会话：改密的语义就是"旧凭据失效"，
+//     否则已泄露的会话仍能继续使用，重置密码就失去了意义。
+func resetPasswordAndReport(
+	ctx context.Context,
+	users model.UserRepository,
+	sessions model.SessionRepository,
+	username, newPassword string,
+) error {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return errors.New("用户名不能为空")
+	}
+
+	user, err := users.GetByUsername(ctx, username)
+	if err != nil {
+		if errors.Is(err, model.ErrUserNotFound) {
+			return fmt.Errorf("用户 %q 不存在", username)
+		}
+		return fmt.Errorf("查询用户失败: %w", err)
+	}
+
+	password := strings.TrimSpace(newPassword)
+	generated := false
+	if password == "" {
+		// 18 字节随机数 → 36 位十六进制，熵足够且便于复制
+		raw := make([]byte, 18)
+		if _, err := rand.Read(raw); err != nil {
+			return fmt.Errorf("生成随机密码失败: %w", err)
+		}
+		password = hex.EncodeToString(raw)
+		generated = true
+	}
+	// 与注册/改密走同一套强度规则，避免出现"重置出来的密码反而注册不了"的不一致
+	if err := crypto.ValidatePasswordStrength(password); err != nil {
+		return err
+	}
+
+	hash, err := crypto.HashPassword(password)
+	if err != nil {
+		return fmt.Errorf("计算口令哈希失败: %w", err)
+	}
+
+	user.PasswordHash = hash
+	if err := users.Update(ctx, user); err != nil {
+		return fmt.Errorf("更新用户密码失败: %w", err)
+	}
+
+	// 吊销全部会话：改密后旧登录态必须失效
+	if err := sessions.DeleteByUserID(ctx, user.ID); err != nil {
+		return fmt.Errorf("吊销旧会话失败: %w", err)
+	}
+
+	if generated {
+		fmt.Printf(`已重置用户密码（随机生成）：
+
+  用户名：%s
+  密码：  %s
+
+随机密码仅此一次展示，请立即登录并妥善保存。
+该用户的全部旧登录会话已失效，需重新登录。
+`, user.Username, password)
+	} else {
+		fmt.Printf(`已重置用户密码（使用指定值）：
+
+  用户名：%s
+
+出于安全考虑，此处不回显密码明文。
+该用户的全部旧登录会话已失效，需重新登录。
+`, user.Username)
+	}
 
 	return nil
 }
