@@ -28,9 +28,13 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,43 +43,98 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// schemaFS 把 schema.sql 嵌入二进制，避免运行期依赖外部文件。
+// migrationsFS 把迁移脚本目录嵌入二进制，避免运行期依赖外部文件。
 //
-//go:embed schema.sql
-var schemaFS embed.FS
+//go:embed migrations/*.sql
+var migrationsFS embed.FS
 
 // migration 描述一次结构变更。
 //
-// 版本号必须单调递增且永不复用；每个版本的 SQL 应保证「可安全重复执行」
+// 版本号必须单调递增且永不复用；每个脚本的 SQL 应保证「可安全重复执行」
 // （使用 IF NOT EXISTS 等），这样即使中途失败重跑也不会破坏数据。
 type migration struct {
-	Version int    // 版本号（与 schema_migrations.version 对应）
-	Name    string // 变更名称，用于人工排查
+	Version int    // 版本号（与 schema_migrations.version 对应，取自文件名前缀）
+	Name    string // 变更名称，用于人工排查（取自文件名下划线之后的部分）
 	SQL     string // 该版本的 SQL 语句集
 }
 
-// migrations 是按顺序执行的迁移清单。
+// migrations 是按版本升序排列的迁移清单，由 init() 在包初始化时构建。
 //
-// 约定：只允许在末尾追加，不允许修改或删除已有条目——已发布的结构变更
-// 在线上环境可能已执行，改动会导致新旧数据库结构不一致。
-var migrations = []migration{
-	{
-		Version: 1,
-		Name:    "init_schema",
-		// SQL 内容在 init() 中从嵌入文件读取，避免把大段 SQL 写死在 Go 代码里
-	},
+// 命名约定：migrations/NNNN_名称.sql，NNNN 为四位版本号（从 0001 起）。
+//
+// 铁律：
+//   - 只允许【新增】脚本文件，禁止修改或删除已发布的脚本——
+//     线上库可能已执行过旧版本，改动会导致新旧数据库结构不一致；
+//   - 新增表/字段请新建一个更大版本号的文件，不要往旧文件里追加。
+var migrations []migration
+
+// init 在包初始化阶段加载并校验迁移脚本。
+//
+// 这里使用 panic 是刻意的：脚本已在编译期嵌入，运行期读不到说明二进制损坏，
+// 属于不可恢复的编程错误，应尽早暴露，而不是带着错误的迁移集启动。
+func init() {
+	var err error
+	if migrations, err = loadMigrations(); err != nil {
+		panic(fmt.Sprintf("store: 加载迁移脚本失败: %v", err))
+	}
 }
 
-// init 在包初始化阶段把嵌入的 schema.sql 载入迁移清单。
-//
-// 这里使用 panic 是刻意的：嵌入文件在编译期就已确认存在，
-// 若运行期读不到说明二进制被破坏，属于不可恢复的编程错误，应尽早暴露。
-func init() {
-	raw, err := schemaFS.ReadFile("schema.sql")
+// loadMigrations 读取全部嵌入的迁移脚本，校验后按版本号升序返回。
+func loadMigrations() ([]migration, error) {
+	entries, err := fs.ReadDir(migrationsFS, "migrations")
 	if err != nil {
-		panic(fmt.Sprintf("store: 读取嵌入的 schema.sql 失败（二进制可能已损坏）: %v", err))
+		return nil, fmt.Errorf("读取迁移目录失败: %w", err)
 	}
-	migrations[0].SQL = string(raw)
+
+	result := make([]migration, 0, len(entries))
+	seen := make(map[int]string, len(entries)) // 版本号 → 文件名，用于查重
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
+			continue
+		}
+
+		version, name, err := parseMigrationFileName(entry.Name())
+		if err != nil {
+			return nil, err
+		}
+		// 版本号重复会导致迁移顺序不确定，必须直接拒绝
+		if prev, duplicated := seen[version]; duplicated {
+			return nil, fmt.Errorf("迁移版本号 %d 重复：%s 与 %s", version, prev, entry.Name())
+		}
+		seen[version] = entry.Name()
+
+		raw, err := migrationsFS.ReadFile("migrations/" + entry.Name())
+		if err != nil {
+			return nil, fmt.Errorf("读取迁移脚本 %s 失败: %w", entry.Name(), err)
+		}
+		result = append(result, migration{Version: version, Name: name, SQL: string(raw)})
+	}
+
+	if len(result) == 0 {
+		return nil, errors.New("未找到任何迁移脚本（migrations 目录为空？）")
+	}
+
+	sort.Slice(result, func(i, j int) bool { return result[i].Version < result[j].Version })
+	return result, nil
+}
+
+// parseMigrationFileName 解析形如 "0001_init.sql" 的文件名。
+//
+// 返回版本号与名称；命名不合规时返回错误（宁可启动失败，也不静默跳过脚本——
+// 静默跳过会导致线上缺表，故障现场极难定位）。
+func parseMigrationFileName(fileName string) (int, string, error) {
+	base := strings.TrimSuffix(fileName, ".sql")
+	parts := strings.SplitN(base, "_", 2)
+	if len(parts) != 2 || parts[1] == "" {
+		return 0, "", fmt.Errorf("迁移脚本命名不合规（应形如 NNNN_名称.sql）: %s", fileName)
+	}
+
+	version, err := strconv.Atoi(parts[0])
+	if err != nil || version <= 0 {
+		return 0, "", fmt.Errorf("迁移脚本版本号非法（应为正整数）: %s", fileName)
+	}
+	return version, parts[1], nil
 }
 
 // Store 是数据库访问的门面，持有连接池。
