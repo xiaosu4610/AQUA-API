@@ -671,29 +671,21 @@ func (r *Relay) forwardChat(w http.ResponseWriter, req *http.Request, target for
 	start := time.Now()
 	ch := target.channel
 
-	// 取渠道类型规格，并按该类型决定"怎么发这个请求"。
-	// 现状：渠道记录尚未持久化类型标识，统一解析为 OpenAI 兼容规格，
-	// 因此下面组装出的 URL / 请求头与旧实现（base_url + path、Bearer 鉴权）逐字节一致。
-	spec := upstreamSpecForChannel(ch)
-
-	// 上游协议出站转换：Anthropic 渠道需把内部 OpenAI 请求体改写为 Messages 请求体；
-	// 其余类型原样返回。转换失败（如工具无法映射）必须明确报错，绝不静默丢弃。
-	outBody, convertErr := encodeUpstreamRequestBody(spec, body)
-	if convertErr != nil {
-		writeAdaptedError(w, adapter, http.StatusBadRequest, convertErr.Error(),
-			oai.TypeInvalidRequest, "request_conversion_failed")
-		return forwardResponded
-	}
-
-	built, buildErr := buildUpstreamRequest(upstreamRequestInput{
-		Type:    spec,
-		BaseURL: ch.BaseURL,
-		APIKey:  target.apiKey,
-		Model:   modelName,
-		Path:    upstreamPath,
-		Headers: upstreamForwardHeaders(req.Header),
-	})
-	if buildErr != nil {
+	// 取渠道类型规格，并按该类型决定"怎么发这个请求"：解析规格 → 请求体协议转换
+	// （Anthropic / Gemini 会改写请求体）→ 组装 URL / 请求头（含类型专属路径、
+	// 查询参数与鉴权）。type_key 为空的渠道回退为 OpenAI 兼容，行为与旧实现一致。
+	wantStream := oai.PeekStream(body)
+	spec, outBody, built, prepareErr := prepareChannelUpstream(
+		ch, target.apiKey, modelName, upstreamPath, body,
+		upstreamForwardHeaders(req.Header), wantStream)
+	if prepareErr != nil {
+		if errors.Is(prepareErr, errRequestBodyConversion) {
+			// 请求体无法转换为上游协议（如工具类型映射不了）：属调用方请求问题，
+			// 换渠道也不会成功，直接回 400 让使用者自助修正。
+			writeAdaptedError(w, adapter, http.StatusBadRequest, prepareErr.Error(),
+				oai.TypeInvalidRequest, "request_conversion_failed")
+			return forwardResponded
+		}
 		// 组装失败（如渠道与类型都没提供地址）：属于该渠道的配置问题。
 		// 此时【尚未写出任何响应】，可安全换下一个渠道重试；
 		// 若所有渠道都用尽，由上层统一回 502。
@@ -774,10 +766,10 @@ func (r *Relay) forwardChat(w http.ResponseWriter, req *http.Request, target for
 		}
 	}
 
-	// 上游协议入站转换：Anthropic 渠道的响应需改写回内部 OpenAI 协议
+	// 上游协议入站转换：Anthropic / Gemini 渠道的响应需改写回内部 OpenAI 协议
 	// （非流式整体改写、流式逐事件转换、错误体改写为 OpenAI 错误体）。
-	// 非 Anthropic 上游此调用为空操作，既有回写路径完全不受影响。
-	if err := normalizeUpstreamResponse(spec, resp, oai.PeekStream(body)); err != nil {
+	// 其余上游此调用为空操作，既有回写路径完全不受影响。
+	if err := normalizeUpstreamResponse(spec, resp, wantStream); err != nil {
 		// 读取/改写上游响应失败：此时响应头尚未发出，可换渠道重试
 		drainAndClose(resp)
 		return forwardRetryChannel

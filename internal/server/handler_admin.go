@@ -169,6 +169,16 @@ type channelUpsertRequest struct {
 	Priority int      `json:"priority"`
 	Weight   int      `json:"weight"`
 	Status   int      `json:"status"`
+	// TypeKey 是渠道类型标识（与 channeltype 目录的 Key 对应，如 azure_openai）。
+	//
+	// 留空表示"不指定类型"：创建时为空即按 OpenAI 兼容处理；
+	// 更新时留空表示"不修改"（见 handleUpdateChannel），避免旧版前端只提交
+	// 部分字段时把已配置的类型标识清空，从而让专用渠道静默退化为 OpenAI 兼容。
+	TypeKey string `json:"type_key"`
+	// ExtraConfig 是类型专属参数（如 Azure 的 deployment / api_version）。
+	//
+	// 更新时以 nil（字段缺失）表示"不修改"；显式传 {} 表示"清空"。
+	ExtraConfig map[string]string `json:"extra_config"`
 	// KeyStrategy 是渠道凭据池的调度策略标识。
 	//
 	// 留空表示"不修改"：更新接口据此刻意不覆盖已有策略，
@@ -300,6 +310,8 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 	channel := &model.Channel{
 		Name:        strings.TrimSpace(req.Name),
 		Type:        req.Type,
+		TypeKey:     strings.TrimSpace(req.TypeKey),
+		ExtraConfig: req.ExtraConfig,
 		BaseURL:     strings.TrimSpace(req.BaseURL),
 		Models:      req.Models,
 		Group:       defaultIfEmpty(strings.TrimSpace(req.Group), defaultChannelGroup),
@@ -443,6 +455,16 @@ func (s *Server) handleUpdateChannel(c *gin.Context) {
 	channel.Priority = req.Priority
 	channel.Weight = defaultIfZero(req.Weight, 1)
 	channel.Status = model.ChannelStatus(defaultIfZero(req.Status, int(model.ChannelStatusEnabled)))
+	// 类型标识留空表示"不修改"：与 KeyStrategy 同理，避免旧版前端只提交
+	// 部分字段时把专用渠道的类型清空（那会让 Azure/Anthropic 渠道静默退化为
+	// OpenAI 兼容，请求全部打错地址）。非空时由领域层校验是否为已登记类型。
+	if strings.TrimSpace(req.TypeKey) != "" {
+		channel.TypeKey = strings.TrimSpace(req.TypeKey)
+	}
+	// 扩展配置：字段缺失（nil）表示不修改，显式传 {} 表示清空。
+	if req.ExtraConfig != nil {
+		channel.ExtraConfig = req.ExtraConfig
+	}
 	// 策略留空表示"不修改"：这样只提交部分字段（如启停）也不会把策略重置。
 	// 非空时校验合法性，非法值直接 400。
 	if strings.TrimSpace(req.KeyStrategy) != "" {

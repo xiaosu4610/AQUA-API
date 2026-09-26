@@ -67,11 +67,6 @@ const anthropicDefaultMaxTokens = 4096
 // 但绝不会达到这个量级；设上限用于防御异常上游撑爆内存。
 const maxAnthropicStreamLineBytes = 1 << 20
 
-// isAnthropicUpstream 判断该渠道类型是否需要走 Anthropic 出站转换。
-func isAnthropicUpstream(spec channeltype.Type) bool {
-	return spec.Protocol == channeltype.ProtocolAnthropic
-}
-
 // ---- 请求转换（OpenAI → Anthropic）----
 
 // openAIUpstreamRequest 是内部 OpenAI 请求体中需要转换的字段。
@@ -103,12 +98,28 @@ type openAIUpstreamMessage struct {
 
 // encodeUpstreamRequestBody 按渠道类型把内部 OpenAI 请求体转换为上游协议请求体。
 //
-// 非 Anthropic 类型原样返回（保证既有上游行为不变）。
+// 分发规则：Anthropic / Gemini 各自改写为原生协议；其余类型（含 OpenAI 兼容、
+// Azure）原样返回，保证既有上游的请求体逐字节不变。
+//
+// 转换失败一律包装为 errRequestBodyConversion：转发主链路据此把它当作
+// "调用方请求问题"回 400，而不是可重试的渠道故障。
 func encodeUpstreamRequestBody(spec channeltype.Type, body []byte) ([]byte, error) {
-	if !isAnthropicUpstream(spec) {
+	switch spec.Protocol {
+	case channeltype.ProtocolAnthropic:
+		converted, err := encodeAnthropicRequest(body)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", errRequestBodyConversion, err)
+		}
+		return converted, nil
+	case channeltype.ProtocolGemini:
+		converted, err := encodeGeminiRequest(body)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", errRequestBodyConversion, err)
+		}
+		return converted, nil
+	default:
 		return body, nil
 	}
-	return encodeAnthropicRequest(body)
 }
 
 // encodeAnthropicRequest 把内部 OpenAI 请求体转换为 Anthropic Messages 请求体。
@@ -500,6 +511,10 @@ func decodeOpenAIStop(raw json.RawMessage) []string {
 }
 
 // flattenOpenAIContent 把 content（字符串或内容块数组）拍平为纯文本。
+//
+// 供"需要把内容压成一段文本"的协议使用（Anthropic 的 system、Gemini 的
+// systemInstruction 与工具结果）；非文本块会被忽略。错误信息保持协议无关，
+// 因为 Anthropic 与 Gemini 都会复用它。
 func flattenOpenAIContent(raw json.RawMessage) (string, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
@@ -514,7 +529,7 @@ func flattenOpenAIContent(raw json.RawMessage) (string, error) {
 		Text string `json:"text"`
 	}
 	if err := json.Unmarshal(trimmed, &blocks); err != nil {
-		return "", fmt.Errorf("relay: OpenAI 消息内容结构无法识别，无法转换为 Anthropic: %w", err)
+		return "", fmt.Errorf("relay: OpenAI 消息内容结构无法识别，无法转换为上游协议: %w", err)
 	}
 	parts := make([]string, 0, len(blocks))
 	for _, block := range blocks {
@@ -734,13 +749,18 @@ func marshalOpenAIPayload(payload map[string]any) []byte {
 
 // normalizeUpstreamResponse 就地把上游响应改写为内部 OpenAI 协议。
 //
-// 非 Anthropic 上游直接返回，不做任何改动——这样既有 OpenAI 渠道的
-// 响应回写路径（含响应头、流式行为）与改动前完全一致。
+// 分发规则：Anthropic / Gemini 各自把响应（含流式、错误体）改写回 OpenAI；
+// 其余类型直接返回，不做任何改动——这样既有 OpenAI 渠道的响应回写路径
+// （含响应头、流式行为）与改动前完全一致。
 func normalizeUpstreamResponse(spec channeltype.Type, resp *http.Response, wantStream bool) error {
-	if !isAnthropicUpstream(spec) {
+	switch spec.Protocol {
+	case channeltype.ProtocolAnthropic:
+		return adjustAnthropicUpstreamResponse(resp, wantStream)
+	case channeltype.ProtocolGemini:
+		return adjustGeminiUpstreamResponse(resp, wantStream)
+	default:
 		return nil
 	}
-	return adjustAnthropicUpstreamResponse(resp, wantStream)
 }
 
 // adjustAnthropicUpstreamResponse 把上游 Anthropic 响应改写为 OpenAI 形态。

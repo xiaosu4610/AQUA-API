@@ -41,13 +41,15 @@ var allowedAuthModes = map[AuthMode]bool{
 
 // implementedProtocols 是「当前已实现的协议适配器」白名单。
 //
-// Azure（部署名 + api-version 进路径与查询）与 Anthropic（Messages 协议）的
-// 出站适配器已实现并通过测试；Gemini / Vertex / Bedrock / PaLM / Ollama /
-// 自定义等协议尚未实现，一律不能标为可用。
+// Azure（部署名 + api-version 进路径与查询）、Anthropic（Messages 协议）与
+// Gemini（generateContent，模型名与动作进路径、密钥走查询参数）的出站适配器
+// 已实现并通过测试；Vertex / Bedrock / PaLM / Ollama / 自定义等协议尚未实现，
+// 一律不能标为可用。
 var implementedProtocols = map[Protocol]bool{
 	ProtocolOpenAI:    true,
 	ProtocolAzure:     true,
 	ProtocolAnthropic: true,
+	ProtocolGemini:    true,
 }
 
 // TestTypes_必填字段非空 保证每条类型都具备后台展示与路由所需的最小信息。

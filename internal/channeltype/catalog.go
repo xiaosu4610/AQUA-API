@@ -311,8 +311,8 @@ func Types() []Type {
 			Protocol: ProtocolGemini, AuthMode: AuthQueryKey,
 			DefaultBaseURL: "https://generativelanguage.googleapis.com",
 			Caps:           CapChat | CapStream | CapTools | CapVision | CapReasoning,
-			Available:      false,
-			Notes:          "原生 generateContent 协议：模型名与动作写在路径里、密钥走查询参数，需专用适配器。",
+			Available:      true,
+			Notes:          "原生 generateContent 协议：模型名与动作写在路径里、密钥走查询参数，已内置专用适配器。",
 		},
 		{
 			Key: "palm", Label: "Google PaLM 旧版", Category: CategoryText,

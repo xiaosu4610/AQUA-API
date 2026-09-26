@@ -24,6 +24,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -45,7 +46,7 @@ const (
 // channelColumns 集中定义查询列，避免各处手写列名导致顺序错乱。
 //
 // 注意：列顺序必须与 scanChannel 的 Scan 参数顺序严格一致。
-const channelColumns = `id, name, type, base_url, api_key_enc, models, group_name, priority, weight, status, created_at, updated_at, last_test_at, last_test_ok, key_strategy`
+const channelColumns = `id, name, type, type_key, extra_config, base_url, api_key_enc, models, group_name, priority, weight, status, created_at, updated_at, last_test_at, last_test_ok, key_strategy`
 
 // channelRepository 是 model.ChannelRepository 的 SQL 实现。
 //
@@ -81,9 +82,9 @@ func (r *channelRepository) Create(ctx context.Context, ch *model.Channel) error
 
 	res, err := r.db.ExecContext(ctx, `
 		INSERT INTO channels
-			(name, type, base_url, api_key_enc, models, group_name, priority, weight, status, created_at, updated_at, key_strategy)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ch.Name, ch.Type, ch.BaseURL, encryptedKey, encodeModels(ch.Models),
+			(name, type, type_key, extra_config, base_url, api_key_enc, models, group_name, priority, weight, status, created_at, updated_at, key_strategy)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ch.Name, ch.Type, ch.TypeKey, encodeExtraConfig(ch.ExtraConfig), ch.BaseURL, encryptedKey, encodeModels(ch.Models),
 		ch.Group, ch.Priority, ch.Weight, int(ch.Status),
 		ch.CreatedAt.Unix(), ch.UpdatedAt.Unix(),
 		string(model.NormalizeKeyStrategy(string(ch.KeyStrategy))),
@@ -186,10 +187,10 @@ func (r *channelRepository) Update(ctx context.Context, ch *model.Channel) error
 	// 刻意不更新 created_at：创建时间应保持不可变，便于审计
 	res, err := r.db.ExecContext(ctx, `
 		UPDATE channels SET
-			name = ?, type = ?, base_url = ?, api_key_enc = ?, models = ?,
+			name = ?, type = ?, type_key = ?, extra_config = ?, base_url = ?, api_key_enc = ?, models = ?,
 			group_name = ?, priority = ?, weight = ?, status = ?, updated_at = ?, key_strategy = ?
 		WHERE id = ?`,
-		ch.Name, ch.Type, ch.BaseURL, encryptedKey, encodeModels(ch.Models),
+		ch.Name, ch.Type, ch.TypeKey, encodeExtraConfig(ch.ExtraConfig), ch.BaseURL, encryptedKey, encodeModels(ch.Models),
 		ch.Group, ch.Priority, ch.Weight, int(ch.Status),
 		ch.UpdatedAt.Unix(), string(model.NormalizeKeyStrategy(string(ch.KeyStrategy))), ch.ID,
 	)
@@ -324,6 +325,8 @@ func (r *channelRepository) scanChannel(sc rowScanner) (*model.Channel, error) {
 		id          uint64
 		name        string
 		channelTy   int
+		typeKey     string
+		extraJSON   string
 		baseURL     string
 		encoded     string
 		modelsCSV   string
@@ -338,7 +341,7 @@ func (r *channelRepository) scanChannel(sc rowScanner) (*model.Channel, error) {
 		keyStrategy string
 	)
 
-	if err := sc.Scan(&id, &name, &channelTy, &baseURL, &encoded, &modelsCSV,
+	if err := sc.Scan(&id, &name, &channelTy, &typeKey, &extraJSON, &baseURL, &encoded, &modelsCSV,
 		&group, &priority, &weight, &status, &createdAt, &updatedAt,
 		&lastTestAt, &lastTestOK, &keyStrategy); err != nil {
 		// sql.ErrNoRows 属于正常控制流，不额外包装，便于调用方用 errors.Is 判断
@@ -354,20 +357,22 @@ func (r *channelRepository) scanChannel(sc rowScanner) (*model.Channel, error) {
 	}
 
 	return &model.Channel{
-		ID:         id,
-		Name:       name,
-		Type:       channelTy,
-		BaseURL:    baseURL,
-		APIKey:     apiKey,
-		Models:     decodeModels(modelsCSV),
-		Group:      group,
-		Priority:   priority,
-		Weight:     weight,
-		Status:     model.ChannelStatus(status),
-		CreatedAt:  time.Unix(createdAt, 0),
-		UpdatedAt:  time.Unix(updatedAt, 0),
-		LastTestAt: unixToExpiresAt(lastTestAt), // 复用"0 表示零值时间"的转换
-		LastTestOK: lastTestOK != 0,
+		ID:          id,
+		Name:        name,
+		Type:        channelTy,
+		TypeKey:     typeKey,
+		ExtraConfig: decodeExtraConfig(extraJSON),
+		BaseURL:     baseURL,
+		APIKey:      apiKey,
+		Models:      decodeModels(modelsCSV),
+		Group:       group,
+		Priority:    priority,
+		Weight:      weight,
+		Status:      model.ChannelStatus(status),
+		CreatedAt:   time.Unix(createdAt, 0),
+		UpdatedAt:   time.Unix(updatedAt, 0),
+		LastTestAt:  unixToExpiresAt(lastTestAt), // 复用"0 表示零值时间"的转换
+		LastTestOK:  lastTestOK != 0,
 
 		KeyStrategy: model.NormalizeKeyStrategy(keyStrategy),
 	}, nil
@@ -411,4 +416,41 @@ func decodeModels(csv string) []string {
 		}
 	}
 	return result
+}
+
+// encodeExtraConfig 把类型专属参数序列化为 JSON 对象字符串（落库格式）。
+//
+// 空值一律落成 "{}"：让"没有扩展配置"在库里只有一种表示（空 JSON 对象），
+// 避免 NULL 与空串并存导致读取端要处理两种"没有值"的情形。
+// 序列化失败（理论上不会：键值均为字符串）时同样回退为 "{}"，绝不让一次
+// 保存因扩展配置而整体失败——扩展配置只是锦上添花，不应阻断主流程。
+func encodeExtraConfig(values map[string]string) string {
+	if len(values) == 0 {
+		return "{}"
+	}
+	encoded, err := json.Marshal(values)
+	if err != nil {
+		return "{}"
+	}
+	return string(encoded)
+}
+
+// decodeExtraConfig 把 JSON 对象字符串还原为键值映射（读取格式）。
+//
+// 返回 nil 表示"无扩展配置"（空串 / "{}" / 非法 JSON）：
+// 协议适配器对 nil 映射会自动回退到类型默认值（见 relay 的 extraValue）。
+// 非法 JSON 不报错而是视为空：历史脏数据不应让整条渠道无法读取。
+func decodeExtraConfig(raw string) map[string]string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == "{}" {
+		return nil
+	}
+	var out map[string]string
+	if err := json.Unmarshal([]byte(trimmed), &out); err != nil {
+		return nil
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

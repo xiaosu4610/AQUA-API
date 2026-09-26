@@ -29,6 +29,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"gitee.com/xiaosu4610/aqua-api/internal/channeltype"
 )
 
 // 领域错误定义。
@@ -89,16 +91,26 @@ func (s ChannelStatus) IsValid() bool {
 //	读取时由仓储解密。因此本结构体绝不可被直接序列化返回给前端——
 //	对外输出请使用 MaskedAPIKey()。
 type Channel struct {
-	ID       uint64        // 主键，新建时为 0（由数据库生成）
-	Name     string        // 显示名，如 "OpenAI 官方"
-	Type     int           // 渠道类型编号（M1 统一按 OpenAI 兼容处理）
-	BaseURL  string        // 上游基础地址，如 https://api.openai.com
-	APIKey   string        // 上游密钥【明文，仅内存】
-	Models   []string      // 可用模型列表
-	Group    string        // 所属分组，用于按分组路由与计费
-	Priority int           // 优先级，数值越大越优先
-	Weight   int           // 同优先级内的随机权重，需 > 0
-	Status   ChannelStatus // 可用状态
+	ID   uint64 // 主键，新建时为 0（由数据库生成）
+	Name string // 显示名，如 "OpenAI 官方"
+	Type int    // 渠道类型编号（兼容字段；M1 起统一为 1）
+	// TypeKey 是渠道类型标识（与 channeltype 目录的 Key 对应，如 azure_openai）。
+	//
+	// 空串表示"未指定类型"：转发层据此回退为 OpenAI 兼容，保证历史渠道行为不变。
+	// 非空时必须是已登记的类型，否则协议适配器无从选择（见 Validate）。
+	TypeKey string
+	// ExtraConfig 是类型专属扩展参数（如 Azure 的 deployment / api_version）。
+	//
+	// 语义为"键值字符串对"，与 channeltype.Type.ExtraFields 的 Key 对应；
+	// 落库时序列化为 JSON 对象。协议适配器据此补齐路径占位符与查询参数。
+	ExtraConfig map[string]string
+	BaseURL     string        // 上游基础地址，如 https://api.openai.com
+	APIKey      string        // 上游密钥【明文，仅内存】
+	Models      []string      // 可用模型列表
+	Group       string        // 所属分组，用于按分组路由与计费
+	Priority    int           // 优先级，数值越大越优先
+	Weight      int           // 同优先级内的随机权重，需 > 0
+	Status      ChannelStatus // 可用状态
 	// KeyStrategy 是本渠道凭据池的调度策略（落库于 channels.key_strategy）。
 	//
 	// 空值在落库时由仓储归一为 DefaultKeyStrategy()（最少在途），
@@ -126,6 +138,15 @@ func (c *Channel) Validate() error {
 	}
 	if c.Type <= 0 {
 		return fmt.Errorf("渠道类型非法: %d（必须为正整数）", c.Type)
+	}
+	// 类型标识非空时才校验：空串是历史渠道的合法状态（回退为 OpenAI 兼容）。
+	// 非空则必须是已登记的类型——否则转发层选不出协议适配器与鉴权方式，
+	// 会以 400/401 的形式在上游暴露，且报错含义模糊难以定位。
+	if key := strings.TrimSpace(c.TypeKey); key != "" {
+		if _, ok := channeltype.Find(key); !ok {
+			return fmt.Errorf("渠道类型标识非法: %q（未在渠道类型目录中登记，可用：%s）",
+				key, strings.Join(channeltype.Keys(), " / "))
+		}
 	}
 	if strings.TrimSpace(c.BaseURL) == "" {
 		return errors.New("渠道 base_url 不能为空")

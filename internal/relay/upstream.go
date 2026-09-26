@@ -11,8 +11,10 @@
 // 流转（Flow）：
 //
 //	forwardChat
-//	  ├─ upstreamSpecForChannel(ch)          取渠道类型规格
-//	  ├─ buildUpstreamRequest(input)         组装最终 URL / 请求头（含鉴权）
+//	  ├─ prepareChannelUpstream(ch, ...)     取规格 + 转换请求体 + 组装 URL/头
+//	  │    ├─ upstreamSpecForChannel(ch)     按 type_key 取渠道类型规格
+//	  │    ├─ encodeUpstreamRequestBody(...) 请求体协议转换（Anthropic / Gemini）
+//	  │    └─ buildUpstreamRequest(input)    组装最终 URL / 请求头（含鉴权）
 //	  └─ http.NewRequestWithContext(...)      发送
 //
 // 扩展（Extend）：
@@ -49,12 +51,28 @@ const (
 	anthropicMessagesPath = "/messages"
 	// authQueryKeyParam 是"密钥进查询参数"时的参数名（Google 系约定）。
 	authQueryKeyParam = "key"
+	// geminiGeneratePath 是 Gemini 非流式生成端点。
+	//
+	// Gemini 与 OpenAI 的两点差异：模型名与"动作"（生成/流式生成）都在路径里，
+	// 而不是在请求体里；因此同一份对话请求在流式与非流式下走两个不同路径。
+	geminiGeneratePath = "/v1beta/models/{model}:generateContent"
+	// geminiStreamPath 是 Gemini 流式生成端点。
+	//
+	// 选择 streamGenerateContent 需配合查询参数 alt=sse，才会得到 SSE 分片；
+	// 否则上游以 JSON 数组形式分块返回，转换层无法逐事件处理。
+	geminiStreamPath = "/v1beta/models/{model}:streamGenerateContent"
 )
 
 // errUpstreamBaseURLMissing 表示渠道与类型都没提供上游地址，无法确定请求目标。
 //
 // 单独定义便于上层据此给出可操作提示（"请填写上游地址"），而不是含糊的 502。
 var errUpstreamBaseURLMissing = errors.New("relay: 渠道未填写上游地址，且该渠道类型没有默认地址")
+
+// errRequestBodyConversion 表示内部请求体无法转换为目标上游协议。
+//
+// 与"组装失败（地址缺失）"区分开：转换失败是调用方请求本身的问题（如工具类型
+// 映射不了），应回 400 让使用者自助修正；而组装失败是渠道配置问题，可换渠道重试。
+var errRequestBodyConversion = errors.New("relay: 请求体无法转换为上游协议")
 
 // openAICompatibleSpec 是"OpenAI 兼容"这一当前唯一启用形态的渠道类型规格。
 //
@@ -76,13 +94,56 @@ func mustResolveTypeKey(key string) channeltype.Type {
 
 // upstreamSpecForChannel 解析渠道对应的上游类型规格。
 //
-// 现状（重要）：渠道记录目前只持久化一个兼容用的数字 type（1 = OpenAI 兼容），
-// 类型标识（channeltype.Key）尚未落库（见迭代计划 M9）。因此这里统一返回
-// OpenAI 兼容规格，保证既有渠道的转发行为（地址拼接、Bearer 鉴权）完全不变。
-// 待类型标识落库后，此处改为按该标识 Find 即可，转发主链路无需任何改动。
+// 规则（保持向后兼容是硬要求）：
+//   - 渠道填写了 type_key 且该类型已登记 → 使用它的 Protocol / AuthMode /
+//     DefaultHeaders / ExtraFields，专用适配器据此工作；
+//   - type_key 为空（历史渠道），或指向一个未登记的类型（理论不该出现，
+//     因为领域层已校验）→ 回退为 OpenAI 兼容规格，转发行为与改造前完全一致。
 func upstreamSpecForChannel(ch *model.Channel) channeltype.Type {
-	_ = ch
+	if ch != nil {
+		if key := strings.TrimSpace(ch.TypeKey); key != "" {
+			if item, ok := channeltype.Find(key); ok {
+				return item
+			}
+		}
+	}
 	return openAICompatibleSpec
+}
+
+// prepareChannelUpstream 把「渠道 + 内部 OpenAI 请求体」组装成可直接发送的上游请求。
+//
+// 三步：① 按渠道类型解析规格；② 按规格把请求体转换为上游协议；③ 组装 URL 与请求头。
+// 之所以把三步收进一个函数而不是散在转发主链路里：它们是"接线"的关键路径，
+// 集中后既好测（见 upstream_wiring_test.go），也不易漏掉 Extra / Stream 的传递。
+//
+// 返回的 spec 供调用方在响应阶段复用（决定是否做入站协议改写）。
+// 错误分为两类：请求体转换失败（errors.Is(err, errRequestBodyConversion)，
+// 属调用方问题）与其他组装失败（属渠道配置问题，可换渠道重试）。
+func prepareChannelUpstream(
+	ch *model.Channel, apiKey, modelName, path string,
+	body []byte, headers http.Header, stream bool,
+) (channeltype.Type, []byte, *UpstreamRequest, error) {
+	spec := upstreamSpecForChannel(ch)
+
+	outBody, err := encodeUpstreamRequestBody(spec, body)
+	if err != nil {
+		return spec, nil, nil, err
+	}
+
+	built, err := buildUpstreamRequest(upstreamRequestInput{
+		Type:    spec,
+		BaseURL: ch.BaseURL,
+		APIKey:  apiKey,
+		Model:   modelName,
+		Path:    path,
+		Headers: headers,
+		Extra:   ch.ExtraConfig,
+		Stream:  stream,
+	})
+	if err != nil {
+		return spec, nil, nil, err
+	}
+	return spec, outBody, built, nil
 }
 
 // upstreamRequestInput 是组装一次上游请求所需的全部输入。
@@ -101,6 +162,11 @@ type upstreamRequestInput struct {
 	Headers http.Header
 	// Extra 是渠道的类型专属参数（如 Azure 的 deployment / api_version）。
 	Extra map[string]string
+	// Stream 表示本次请求是否要求流式返回。
+	//
+	// 仅少数协议需要它：Gemini 把"是否流式"写进路径与查询参数，而 OpenAI /
+	// Anthropic 用请求体里的 stream 字段表达，故对它们无影响。
+	Stream bool
 }
 
 // UpstreamRequest 描述组装完成、可直接发送的上游请求。
@@ -205,6 +271,15 @@ func upstreamPath(in upstreamRequestInput) string {
 		}
 	case channeltype.ProtocolAnthropic:
 		path = anthropicMessagesPath
+	case channeltype.ProtocolGemini:
+		// Gemini 的模型名直接进路径（模板里已含 /models/ 前缀），
+		// 因此去掉调用方可能多带的前缀，避免拼出 /models/models/...。
+		in.Model = strings.TrimPrefix(in.Model, "models/")
+		if in.Stream {
+			path = geminiStreamPath
+		} else {
+			path = geminiGeneratePath
+		}
 	}
 	return fillPathTemplate(path, in)
 }
@@ -238,6 +313,12 @@ func applyUpstreamQuery(in upstreamRequestInput, query url.Values) {
 		// Azure 用查询参数选择接口版本，缺失或写错会被直接拒绝。
 		if version := extraValue(in, "api_version"); version != "" {
 			query.Set("api-version", version)
+		}
+	case channeltype.ProtocolGemini:
+		// 流式生成要求 alt=sse，上游才会以 SSE 分片返回（否则是一段 JSON 数组，
+		// 无法逐事件转换）。非流式不需要该参数。
+		if in.Stream {
+			query.Set("alt", "sse")
 		}
 	}
 }

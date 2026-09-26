@@ -107,15 +107,21 @@ func toUserDTO(u *model.User) userDTO {
 //
 // 安全约束：只输出掩码后的密钥（masked_key），绝不输出明文。
 type channelDTO struct {
-	ID        uint64   `json:"id"`
-	Name      string   `json:"name"`
-	Type      int      `json:"type"`
-	BaseURL   string   `json:"base_url"`
-	MaskedKey string   `json:"masked_key"`
-	Models    []string `json:"models"`
-	Group     string   `json:"group"`
-	Priority  int      `json:"priority"`
-	Weight    int      `json:"weight"`
+	ID   uint64 `json:"id"`
+	Name string `json:"name"`
+	Type int    `json:"type"`
+	// TypeKey 是渠道类型标识（如 azure_openai / anthropic / gemini）；
+	// 空串表示历史渠道（转发时按 OpenAI 兼容处理）。
+	TypeKey string `json:"type_key"`
+	// ExtraConfig 是类型专属参数（如 Azure 的 deployment / api_version）。
+	// 恒为非 nil（无配置时返回 {}），便于前端直接读取而不必判空。
+	ExtraConfig map[string]string `json:"extra_config"`
+	BaseURL     string            `json:"base_url"`
+	MaskedKey   string            `json:"masked_key"`
+	Models      []string          `json:"models"`
+	Group       string            `json:"group"`
+	Priority    int               `json:"priority"`
+	Weight      int               `json:"weight"`
 	// KeyStrategy 是凭据池调度策略标识（sequential / round_robin / ...）；
 	// 后端保证恒为合法值（空值已归一为默认策略）。
 	KeyStrategy string `json:"key_strategy"`
@@ -227,16 +233,23 @@ func toChannelDTO(ch *model.Channel) channelDTO {
 	if models == nil {
 		models = make([]string, 0)
 	}
+	// 扩展配置恒以非 nil 形式下发：前端直接读取即可，无需判空。
+	extra := ch.ExtraConfig
+	if extra == nil {
+		extra = make(map[string]string)
+	}
 	return channelDTO{
-		ID:        ch.ID,
-		Name:      ch.Name,
-		Type:      ch.Type,
-		BaseURL:   ch.BaseURL,
-		MaskedKey: ch.MaskedAPIKey(),
-		Models:    models,
-		Group:     ch.Group,
-		Priority:  ch.Priority,
-		Weight:    ch.Weight,
+		ID:          ch.ID,
+		Name:        ch.Name,
+		Type:        ch.Type,
+		TypeKey:     ch.TypeKey,
+		ExtraConfig: extra,
+		BaseURL:     ch.BaseURL,
+		MaskedKey:   ch.MaskedAPIKey(),
+		Models:      models,
+		Group:       ch.Group,
+		Priority:    ch.Priority,
+		Weight:      ch.Weight,
 		// 统一下发合法策略：即使库中出现空值/脏值，前端也能拿到默认策略。
 		KeyStrategy: string(model.NormalizeKeyStrategy(string(ch.KeyStrategy))),
 		Status:      int(ch.Status),
