@@ -4,6 +4,7 @@
 //
 //	配置错误的代价很高（启动失败或带着错误配置运行），因此对「三级覆盖顺序」
 //	与「校验规则」都做显式测试，防止后续改动破坏既有语义。
+//	此外专门锁定一条安全不变量：加密主密钥【不能】从配置文件读取。
 //
 // 流转（Flow）：
 //
@@ -21,22 +22,47 @@ import (
 	"testing"
 )
 
+// testAppKey 是测试用的加密主密钥（非真实密钥）。
+const testAppKey = "config-test-app-key-0123456789abcdef0123456789"
+
 // neutralizeEnv 清空所有本包关心的环境变量，保证测试不受外部环境影响。
 //
 // 说明：t.Setenv 设为空串后，applyEnv 会因「空值视为未设置」而跳过，
 // 等价于该变量不存在——这正是我们要的隔离效果。
+// 注意：会一并清空 AQUA_APP_KEY，因此需要执行 Load/Validate 的用例
+// 必须再调用 setTestAppKey 提供主密钥（否则会因缺少主密钥而校验失败）。
 func neutralizeEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{
 		"AQUA_SERVER_LISTEN", "AQUA_SERVER_MODE",
 		"AQUA_DATABASE_DRIVER", "AQUA_DATABASE_DSN",
 		"AQUA_LOG_LEVEL", "AQUA_LOG_FORMAT",
+		"AQUA_APP_KEY",
 	} {
 		t.Setenv(k, "")
 	}
 }
 
-// TestDefault_AllFieldsHaveValues 验证默认配置不含空字段，保证「零配置可启动」。
+// setTestAppKey 注入测试用加密主密钥（配置校验要求其非空）。
+func setTestAppKey(t *testing.T) {
+	t.Helper()
+	t.Setenv("AQUA_APP_KEY", testAppKey)
+}
+
+// writeConfigFile 在临时目录写入一份配置文件并返回其路径。
+func writeConfigFile(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "aqua.json")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("写入测试配置失败: %v", err)
+	}
+	return path
+}
+
+// TestDefault_AllFieldsHaveValues 验证默认配置提供了全部非敏感字段的默认值。
+//
+// 注意：加密主密钥刻意【没有】默认值（见 TestDefault_RequiresAppKey），
+// 因此 Default() 单独调用时不应通过校验。
 func TestDefault_AllFieldsHaveValues(t *testing.T) {
 	neutralizeEnv(t)
 	cfg := Default()
@@ -57,15 +83,34 @@ func TestDefault_AllFieldsHaveValues(t *testing.T) {
 		t.Errorf("默认日志配置 = %q/%q，期望 %q/%q",
 			cfg.Log.Level, cfg.Log.Format, DefaultLogLevel, DefaultLogFormat)
 	}
-	// 默认配置本身必须通过校验
+	if cfg.Security.AppKey != "" {
+		t.Errorf("加密主密钥不应有默认值，实际为 %q", cfg.Security.AppKey)
+	}
+}
+
+// TestDefault_RequiresAppKey 验证缺少主密钥时校验必须失败。
+//
+// 这是一条刻意的安全设计：若主密钥可有默认值，等于所有部署共用同一把钥匙，
+// 比不加密更危险。宁可启动失败，也不允许"带病运行"。
+func TestDefault_RequiresAppKey(t *testing.T) {
+	neutralizeEnv(t)
+	cfg := Default()
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("缺少加密主密钥时校验应失败，实际通过")
+	}
+
+	// 补上主密钥后应通过
+	cfg.Security.AppKey = testAppKey
 	if err := cfg.Validate(); err != nil {
-		t.Errorf("默认配置未通过校验: %v", err)
+		t.Errorf("补齐主密钥后应通过校验，实际: %v", err)
 	}
 }
 
 // TestLoad_NoConfigFile_UsesDefaults 验证不传配置文件时使用默认值。
 func TestLoad_NoConfigFile_UsesDefaults(t *testing.T) {
 	neutralizeEnv(t)
+	setTestAppKey(t)
 
 	cfg, err := Load("")
 	if err != nil {
@@ -74,6 +119,9 @@ func TestLoad_NoConfigFile_UsesDefaults(t *testing.T) {
 	if cfg.Server.Listen != DefaultListen {
 		t.Errorf("监听地址 = %q，期望默认值 %q", cfg.Server.Listen, DefaultListen)
 	}
+	if cfg.Security.AppKey != testAppKey {
+		t.Error("加密主密钥未从环境变量注入")
+	}
 }
 
 // TestLoad_MissingFile_NoError 验证配置文件不存在时不报错（回退默认值）。
@@ -81,6 +129,7 @@ func TestLoad_NoConfigFile_UsesDefaults(t *testing.T) {
 // 这是刻意的设计：最小部署场景下用户可能完全不提供配置文件。
 func TestLoad_MissingFile_NoError(t *testing.T) {
 	neutralizeEnv(t)
+	setTestAppKey(t)
 
 	missing := filepath.Join(t.TempDir(), "not-exist.json")
 	cfg, err := Load(missing)
@@ -97,12 +146,9 @@ func TestLoad_MissingFile_NoError(t *testing.T) {
 // 关键点：文件中只写了 server.listen，其余字段应保留默认值。
 func TestLoad_FileOverridesDefaults(t *testing.T) {
 	neutralizeEnv(t)
+	setTestAppKey(t)
 
-	path := filepath.Join(t.TempDir(), "aqua.json")
-	content := `{"server":{"listen":"0.0.0.0:9000"}}`
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatalf("写入测试配置失败: %v", err)
-	}
+	path := writeConfigFile(t, `{"server":{"listen":"0.0.0.0:9000"}}`)
 
 	cfg, err := Load(path)
 	if err != nil {
@@ -123,14 +169,11 @@ func TestLoad_FileOverridesDefaults(t *testing.T) {
 // TestLoad_EnvOverridesFile 验证环境变量优先级高于配置文件。
 func TestLoad_EnvOverridesFile(t *testing.T) {
 	neutralizeEnv(t)
+	setTestAppKey(t)
 	t.Setenv("AQUA_SERVER_LISTEN", "127.0.0.1:9999")
 	t.Setenv("AQUA_LOG_LEVEL", "debug")
 
-	path := filepath.Join(t.TempDir(), "aqua.json")
-	content := `{"server":{"listen":"0.0.0.0:9000"},"log":{"level":"error"}}`
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatalf("写入测试配置失败: %v", err)
-	}
+	path := writeConfigFile(t, `{"server":{"listen":"0.0.0.0:9000"},"log":{"level":"error"}}`)
 
 	cfg, err := Load(path)
 	if err != nil {
@@ -144,14 +187,35 @@ func TestLoad_EnvOverridesFile(t *testing.T) {
 	}
 }
 
+// TestLoad_AppKeyCannotComeFromFile 验证加密主密钥无法从配置文件注入。
+//
+// 这是本包最重要的安全断言：即使攻击者/误操作把密钥写进配置文件并提交，
+// 程序也不会读取它，从而避免密钥随仓库泄露。
+func TestLoad_AppKeyCannotComeFromFile(t *testing.T) {
+	neutralizeEnv(t)
+	setTestAppKey(t)
+
+	// 配置文件中刻意写入 security.appKey（字段名符合直觉，但 json tag 为 "-"）
+	path := writeConfigFile(t, `{"security":{"appKey":"key-from-file-should-be-ignored"}}`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load 返回错误: %v", err)
+	}
+	if cfg.Security.AppKey == "key-from-file-should-be-ignored" {
+		t.Fatal("加密主密钥被从配置文件读取了（严重安全问题）")
+	}
+	if cfg.Security.AppKey != testAppKey {
+		t.Errorf("加密主密钥应仅来自环境变量，实际 = %q", cfg.Security.AppKey)
+	}
+}
+
 // TestLoad_InvalidJSON_ReturnsError 验证非法 JSON 会明确报错而非静默使用默认值。
 func TestLoad_InvalidJSON_ReturnsError(t *testing.T) {
 	neutralizeEnv(t)
+	setTestAppKey(t)
 
-	path := filepath.Join(t.TempDir(), "bad.json")
-	if err := os.WriteFile(path, []byte("{ not valid json "), 0o600); err != nil {
-		t.Fatalf("写入测试配置失败: %v", err)
-	}
+	path := writeConfigFile(t, "{ not valid json ")
 
 	if _, err := Load(path); err == nil {
 		t.Fatal("非法 JSON 应返回错误，实际返回 nil")
@@ -161,11 +225,9 @@ func TestLoad_InvalidJSON_ReturnsError(t *testing.T) {
 // TestLoad_EmptyFile_UsesDefaults 验证空配置文件等价于不提供配置。
 func TestLoad_EmptyFile_UsesDefaults(t *testing.T) {
 	neutralizeEnv(t)
+	setTestAppKey(t)
 
-	path := filepath.Join(t.TempDir(), "empty.json")
-	if err := os.WriteFile(path, []byte("   \n"), 0o600); err != nil {
-		t.Fatalf("写入测试配置失败: %v", err)
-	}
+	path := writeConfigFile(t, "   \n")
 
 	cfg, err := Load(path)
 	if err != nil {
@@ -226,6 +288,16 @@ func TestValidate_InvalidCases(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "加密主密钥为空",
+			mutate:  func(c *Config) { c.Security.AppKey = "" },
+			wantErr: true,
+		},
+		{
+			name:    "加密主密钥仅空白",
+			mutate:  func(c *Config) { c.Security.AppKey = "   " },
+			wantErr: true,
+		},
+		{
 			name:    "合法配置（对照）",
 			mutate:  func(c *Config) {},
 			wantErr: false,
@@ -235,6 +307,7 @@ func TestValidate_InvalidCases(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := Default()
+			cfg.Security.AppKey = testAppKey // 先补齐必需项，再制造目标错误
 			tc.mutate(cfg)
 
 			err := cfg.Validate()

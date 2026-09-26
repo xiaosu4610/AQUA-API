@@ -26,6 +26,8 @@
 //	  2) Default() 里补默认值；
 //	  3) applyEnv() 里补环境变量映射（如需要）；
 //	  4) Validate() 里补合法性校验（如该字段有取值范围）。
+//	安全类字段（如密钥）额外要求：json tag 必须写 "-"（禁止从配置文件读取），
+//	只在 applyEnv 中由环境变量注入，绝不允许出现在文件与仓库里。
 //	注意：本包只允许依赖标准库，不得引入第三方库，也不得反向依赖 internal 下其他包。
 package config
 
@@ -63,6 +65,7 @@ type Config struct {
 	Server   ServerConfig   `json:"server"`   // HTTP 服务相关
 	Database DatabaseConfig `json:"database"` // 数据库相关
 	Log      LogConfig      `json:"log"`      // 日志相关
+	Security SecurityConfig `json:"security"` // 安全相关（密钥仅来自环境变量）
 }
 
 // ServerConfig 描述 HTTP 服务的监听与运行模式。
@@ -93,6 +96,22 @@ type LogConfig struct {
 	Format string `json:"format"`
 }
 
+// SecurityConfig 描述安全相关配置。
+//
+// 安全约束（重要）：本结构体的字段【不允许】从配置文件读取，只能由环境变量注入，
+// 因此所有字段的 json tag 均为 "-"（encoding/json 会忽略它们）。
+// 这样即便有人把配置模板误提交进仓库，也不会泄露密钥。
+type SecurityConfig struct {
+	// AppKey 是加密渠道密钥的主密钥，来自环境变量 AQUA_APP_KEY。
+	//
+	// 为什么必须存在：渠道密钥以密文落库，若没有稳定的主密钥就无法解密，
+	// 也无法安全地新增渠道。它不应写入配置文件与仓库。
+	//
+	// 重要提醒：主密钥一旦变更，已加密的渠道密钥将【无法解密】。
+	// 因此必须妥善备份并保持稳定；必要时请按"新增密钥版本 + 保留旧密钥"的方式轮换。
+	AppKey string `json:"-"`
+}
+
 // Default 返回一份带完整默认值的配置。
 //
 // 设计意图：所有字段都有合理默认，保证「零配置可启动」。
@@ -111,6 +130,9 @@ func Default() *Config {
 			Level:  DefaultLogLevel,
 			Format: DefaultLogFormat,
 		},
+		// Security 刻意不提供默认值：加密主密钥必须由使用者显式提供，
+		// 若给出固定默认值等于"所有人都用同一把钥匙"，比没有加密更危险。
+		Security: SecurityConfig{},
 	}
 }
 
@@ -184,6 +206,8 @@ func applyEnv(cfg *Config) {
 	setIfNotEmpty(&cfg.Database.DSN, EnvPrefix+"DATABASE_DSN")
 	setIfNotEmpty(&cfg.Log.Level, EnvPrefix+"LOG_LEVEL")
 	setIfNotEmpty(&cfg.Log.Format, EnvPrefix+"LOG_FORMAT")
+	// 安全类字段只允许来自环境变量（其 json tag 为 "-"，无法从文件读取）
+	setIfNotEmpty(&cfg.Security.AppKey, EnvPrefix+"APP_KEY")
 }
 
 // setIfNotEmpty 在环境变量存在且非空时，将其值写入 dst 指向的字段。
@@ -226,6 +250,11 @@ func (c *Config) Validate() error {
 	}
 	if !oneOf(c.Log.Format, "text", "json") {
 		return fmt.Errorf("配置错误：log.format=%q 非法，可选 text/json", c.Log.Format)
+	}
+
+	// 加密主密钥必须存在：没有它无法解密已存的渠道密钥，也无法安全新增渠道
+	if strings.TrimSpace(c.Security.AppKey) == "" {
+		return fmt.Errorf("配置错误：缺少加密主密钥，请设置环境变量 %sAPP_KEY（可用 aqua -gen-key 生成一个）", EnvPrefix)
 	}
 
 	return nil
