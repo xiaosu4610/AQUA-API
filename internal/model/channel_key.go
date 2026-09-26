@@ -148,6 +148,51 @@ func NormalizeKeyStrategy(raw string) KeyStrategy {
 	return KeyStrategyLeastInFlight
 }
 
+// KeyStrategyAll 返回全部合法策略，顺序与后台下拉展示一致。
+//
+// 单独提供这份清单（而不是让调用方各自拼列表）：
+// 校验提示、接口下发与界面渲染都以它为唯一来源，避免新增策略时漏改某处。
+func KeyStrategyAll() []KeyStrategy {
+	return []KeyStrategy{
+		KeyStrategySequential,
+		KeyStrategyRoundRobin,
+		KeyStrategyWeightedRandom,
+		KeyStrategyLeastRecent,
+		KeyStrategyLeastInFlight,
+	}
+}
+
+// KeyStrategyOptionText 返回策略标识的顿号连接串，用于错误提示中的"可选值"。
+func KeyStrategyOptionText() string {
+	options := KeyStrategyAll()
+	parts := make([]string, 0, len(options))
+	for _, s := range options {
+		parts = append(parts, string(s))
+	}
+	return strings.Join(parts, " / ")
+}
+
+// Description 返回策略的一句话说明，供后台渲染帮助文案。
+//
+// 文字放在领域层而不是前端：新增策略时只需在此补充，界面自动跟随，
+// 避免"后端加了策略、前端忘了加说明"的漏配。
+func (s KeyStrategy) Description() string {
+	switch s {
+	case KeyStrategySequential:
+		return "总是优先使用优先级最高、最早加入的凭据，其余仅作备份。"
+	case KeyStrategyRoundRobin:
+		return "按顺序轮流使用池内凭据，让请求严格均摊到每一把。"
+	case KeyStrategyWeightedRandom:
+		return "按权重随机挑选，权重越大承担越多的流量。"
+	case KeyStrategyLeastRecent:
+		return "优先使用最久没有被用过的凭据，让每把都有机会被发现失效。"
+	case KeyStrategyLeastInFlight:
+		return "优先使用当前在途请求最少的凭据，高并发下最不容易把流量压在一把上。"
+	default:
+		return ""
+	}
+}
+
 // DefaultKeyStrategy 返回渠道未显式配置时使用的默认策略。
 func DefaultKeyStrategy() KeyStrategy { return KeyStrategyLeastInFlight }
 

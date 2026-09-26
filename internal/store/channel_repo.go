@@ -45,7 +45,7 @@ const (
 // channelColumns 集中定义查询列，避免各处手写列名导致顺序错乱。
 //
 // 注意：列顺序必须与 scanChannel 的 Scan 参数顺序严格一致。
-const channelColumns = `id, name, type, base_url, api_key_enc, models, group_name, priority, weight, status, created_at, updated_at, last_test_at, last_test_ok`
+const channelColumns = `id, name, type, base_url, api_key_enc, models, group_name, priority, weight, status, created_at, updated_at, last_test_at, last_test_ok, key_strategy`
 
 // channelRepository 是 model.ChannelRepository 的 SQL 实现。
 //
@@ -81,11 +81,12 @@ func (r *channelRepository) Create(ctx context.Context, ch *model.Channel) error
 
 	res, err := r.db.ExecContext(ctx, `
 		INSERT INTO channels
-			(name, type, base_url, api_key_enc, models, group_name, priority, weight, status, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			(name, type, base_url, api_key_enc, models, group_name, priority, weight, status, created_at, updated_at, key_strategy)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		ch.Name, ch.Type, ch.BaseURL, encryptedKey, encodeModels(ch.Models),
 		ch.Group, ch.Priority, ch.Weight, int(ch.Status),
 		ch.CreatedAt.Unix(), ch.UpdatedAt.Unix(),
+		string(model.NormalizeKeyStrategy(string(ch.KeyStrategy))),
 	)
 	if err != nil {
 		return fmt.Errorf("store: 新增渠道失败: %w", err)
@@ -186,11 +187,11 @@ func (r *channelRepository) Update(ctx context.Context, ch *model.Channel) error
 	res, err := r.db.ExecContext(ctx, `
 		UPDATE channels SET
 			name = ?, type = ?, base_url = ?, api_key_enc = ?, models = ?,
-			group_name = ?, priority = ?, weight = ?, status = ?, updated_at = ?
+			group_name = ?, priority = ?, weight = ?, status = ?, updated_at = ?, key_strategy = ?
 		WHERE id = ?`,
 		ch.Name, ch.Type, ch.BaseURL, encryptedKey, encodeModels(ch.Models),
 		ch.Group, ch.Priority, ch.Weight, int(ch.Status),
-		ch.UpdatedAt.Unix(), ch.ID,
+		ch.UpdatedAt.Unix(), string(model.NormalizeKeyStrategy(string(ch.KeyStrategy))), ch.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("store: 更新渠道 %d 失败: %w", ch.ID, err)
@@ -320,25 +321,26 @@ type rowScanner interface {
 //   - 解密失败会包装为明确错误——通常意味着 AQUA_APP_KEY 被更换或数据被篡改。
 func (r *channelRepository) scanChannel(sc rowScanner) (*model.Channel, error) {
 	var (
-		id         uint64
-		name       string
-		channelTy  int
-		baseURL    string
-		encoded    string
-		modelsCSV  string
-		group      string
-		priority   int
-		weight     int
-		status     int
-		createdAt  int64
-		updatedAt  int64
-		lastTestAt int64
-		lastTestOK int
+		id          uint64
+		name        string
+		channelTy   int
+		baseURL     string
+		encoded     string
+		modelsCSV   string
+		group       string
+		priority    int
+		weight      int
+		status      int
+		createdAt   int64
+		updatedAt   int64
+		lastTestAt  int64
+		lastTestOK  int
+		keyStrategy string
 	)
 
 	if err := sc.Scan(&id, &name, &channelTy, &baseURL, &encoded, &modelsCSV,
 		&group, &priority, &weight, &status, &createdAt, &updatedAt,
-		&lastTestAt, &lastTestOK); err != nil {
+		&lastTestAt, &lastTestOK, &keyStrategy); err != nil {
 		// sql.ErrNoRows 属于正常控制流，不额外包装，便于调用方用 errors.Is 判断
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, err
@@ -366,6 +368,8 @@ func (r *channelRepository) scanChannel(sc rowScanner) (*model.Channel, error) {
 		UpdatedAt:  time.Unix(updatedAt, 0),
 		LastTestAt: unixToExpiresAt(lastTestAt), // 复用"0 表示零值时间"的转换
 		LastTestOK: lastTestOK != 0,
+
+		KeyStrategy: model.NormalizeKeyStrategy(keyStrategy),
 	}, nil
 }
 

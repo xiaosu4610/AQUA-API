@@ -231,6 +231,11 @@ export interface Channel {
   group: string
   priority: number
   weight: number
+  /**
+   * 凭据池调度策略标识（sequential / round_robin / weighted_random /
+   * least_recent / least_in_flight）。后端保证恒为合法值。
+   */
+  key_strategy: string
   status: number
   status_text?: string
   last_test_at?: number
@@ -260,6 +265,45 @@ export interface ChannelKey {
   last_used_at: number
   last_error: string
   created_at: number
+  /** 权重（weighted_random 使用；0 表示不参与加权，全为 0 时退化为等概率） */
+  weight: number
+  /** 优先级（sequential 使用；数值越大越优先） */
+  priority: number
+  /** 每分钟请求上限（0 = 不限速） */
+  rpm_limit: number
+  /** 当前在途请求数（least_in_flight 使用）；只读展示 */
+  in_flight: number
+  /** 冷却截止时间的 Unix 秒（0 = 无冷却）；只读，由前端换算剩余时间 */
+  cooldown_until: number
+}
+
+/** PUT /api/admin/keys/{keyId} 请求体：状态与调度参数均可选，仅提交变更项 */
+export interface UpdateChannelKeyPayload {
+  status?: number
+  /**
+   * 调度参数（weight / priority / rpm_limit）。
+   *
+   * 三项必须同时提供：后端底层是一次性整组覆盖，缺项会被写成 0。
+   */
+  weight?: number
+  priority?: number
+  rpm_limit?: number
+}
+
+/** 一种凭据调度策略（GET /api/admin/key-strategies 的 items 项） */
+export interface KeyStrategyOption {
+  /** 策略标识（稳定不变，写入渠道记录） */
+  key: string
+  /** 中文名（后端下发，前端不硬编码） */
+  label: string
+  /** 一句话说明（后端下发，用于下拉下方的帮助文案） */
+  description: string
+}
+
+/** GET /api/admin/key-strategies 响应 */
+export interface KeyStrategyCatalog {
+  items: KeyStrategyOption[]
+  total: number
 }
 
 /** 密钥状态：与后端 model.ChannelKeyStatus 一一对应 */
@@ -292,6 +336,11 @@ export interface ChannelPayload {
   priority: number
   weight: number
   status: number
+  /**
+   * 凭据池调度策略标识。留空表示「不修改」（更新时后端保留原策略）。
+   * 取值来自 GET /api/admin/key-strategies。
+   */
+  key_strategy?: string
   /**
    * 批量密钥文本：每行一把，行内可用空格或逗号附加备注。
    *

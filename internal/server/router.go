@@ -113,9 +113,13 @@ func (s *Server) registerRoutes() {
 	admin.PUT("/channels/:id", s.handleUpdateChannel)
 	admin.DELETE("/channels/:id", s.handleDeleteChannel)
 	admin.POST("/channels/:id/test", s.handleTestChannel)
-	// 密钥池明细与单把密钥的状态管理
+	// 密钥池明细与单把密钥的状态/调度参数管理
 	admin.GET("/channels/:id/keys", s.handleListChannelKeys)
 	admin.PUT("/keys/:keyId", s.handleUpdateChannelKeyStatus)
+
+	// 凭据调度策略目录：后台渠道表单据此渲染「调度策略」下拉与帮助文案，
+	// 因此新增策略不需要改前端代码。
+	admin.GET("/key-strategies", s.handleListKeyStrategies)
 
 	// 从上游拉取模型列表。
 	//

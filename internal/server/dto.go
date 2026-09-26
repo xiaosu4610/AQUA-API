@@ -107,21 +107,24 @@ func toUserDTO(u *model.User) userDTO {
 //
 // 安全约束：只输出掩码后的密钥（masked_key），绝不输出明文。
 type channelDTO struct {
-	ID         uint64   `json:"id"`
-	Name       string   `json:"name"`
-	Type       int      `json:"type"`
-	BaseURL    string   `json:"base_url"`
-	MaskedKey  string   `json:"masked_key"`
-	Models     []string `json:"models"`
-	Group      string   `json:"group"`
-	Priority   int      `json:"priority"`
-	Weight     int      `json:"weight"`
-	Status     int      `json:"status"`
-	StatusText string   `json:"status_text"`
-	LastTestAt int64    `json:"last_test_at"`
-	LastTestOK bool     `json:"last_test_ok"`
-	CreatedAt  int64    `json:"created_at"`
-	UpdatedAt  int64    `json:"updated_at"`
+	ID        uint64   `json:"id"`
+	Name      string   `json:"name"`
+	Type      int      `json:"type"`
+	BaseURL   string   `json:"base_url"`
+	MaskedKey string   `json:"masked_key"`
+	Models    []string `json:"models"`
+	Group     string   `json:"group"`
+	Priority  int      `json:"priority"`
+	Weight    int      `json:"weight"`
+	// KeyStrategy 是凭据池调度策略标识（sequential / round_robin / ...）；
+	// 后端保证恒为合法值（空值已归一为默认策略）。
+	KeyStrategy string `json:"key_strategy"`
+	Status      int    `json:"status"`
+	StatusText  string `json:"status_text"`
+	LastTestAt  int64  `json:"last_test_at"`
+	LastTestOK  bool   `json:"last_test_ok"`
+	CreatedAt   int64  `json:"created_at"`
+	UpdatedAt   int64  `json:"updated_at"`
 	// KeyPool 是密钥池概览（渠道可挂多把上游密钥并轮询使用）。
 	// 零值表示该渠道没有配置密钥池，走"单密钥"模式。
 	KeyPool keyPoolDTO `json:"key_pool"`
@@ -154,6 +157,16 @@ type channelKeyDTO struct {
 	LastUsedAt int64  `json:"last_used_at"`
 	LastError  string `json:"last_error"`
 	CreatedAt  int64  `json:"created_at"`
+
+	// 调度维度字段（只读透出 + 可编辑参数）。
+	//
+	//   - weight / priority / rpm_limit 是可在后台编辑的调度参数；
+	//   - in_flight / cooldown_until 是运行态，仅供展示（冷却剩余时间由前端按 Unix 秒计算）。
+	Weight        int   `json:"weight"`
+	Priority      int   `json:"priority"`
+	RPMLimit      int   `json:"rpm_limit"`
+	InFlight      int   `json:"in_flight"`
+	CooldownUntil int64 `json:"cooldown_until"`
 }
 
 // toChannelKeyDTO 把凭据模型转为对外 DTO。
@@ -177,6 +190,12 @@ func toChannelKeyDTO(key *model.ChannelKey) channelKeyDTO {
 		LastUsedAt: unixOrZero(key.LastUsedAt),
 		LastError:  key.LastError,
 		CreatedAt:  unixOrZero(key.CreatedAt),
+
+		Weight:        key.Weight,
+		Priority:      key.Priority,
+		RPMLimit:      key.RPMLimit,
+		InFlight:      key.InFlight,
+		CooldownUntil: unixOrZero(key.CooldownUntil),
 	}
 }
 
@@ -209,21 +228,23 @@ func toChannelDTO(ch *model.Channel) channelDTO {
 		models = make([]string, 0)
 	}
 	return channelDTO{
-		ID:         ch.ID,
-		Name:       ch.Name,
-		Type:       ch.Type,
-		BaseURL:    ch.BaseURL,
-		MaskedKey:  ch.MaskedAPIKey(),
-		Models:     models,
-		Group:      ch.Group,
-		Priority:   ch.Priority,
-		Weight:     ch.Weight,
-		Status:     int(ch.Status),
-		StatusText: ch.Status.String(),
-		LastTestAt: unixOrZero(ch.LastTestAt),
-		LastTestOK: ch.LastTestOK,
-		CreatedAt:  unixOrZero(ch.CreatedAt),
-		UpdatedAt:  unixOrZero(ch.UpdatedAt),
+		ID:        ch.ID,
+		Name:      ch.Name,
+		Type:      ch.Type,
+		BaseURL:   ch.BaseURL,
+		MaskedKey: ch.MaskedAPIKey(),
+		Models:    models,
+		Group:     ch.Group,
+		Priority:  ch.Priority,
+		Weight:    ch.Weight,
+		// 统一下发合法策略：即使库中出现空值/脏值，前端也能拿到默认策略。
+		KeyStrategy: string(model.NormalizeKeyStrategy(string(ch.KeyStrategy))),
+		Status:      int(ch.Status),
+		StatusText:  ch.Status.String(),
+		LastTestAt:  unixOrZero(ch.LastTestAt),
+		LastTestOK:  ch.LastTestOK,
+		CreatedAt:   unixOrZero(ch.CreatedAt),
+		UpdatedAt:   unixOrZero(ch.UpdatedAt),
 	}
 }
 

@@ -20,7 +20,7 @@
  *   由 /admin/channel-types 目录下发，本页按选中类型触发式渲染，
  *   因此后端新增一种上游时本页无需改动。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import AppIcon from '@/components/AppIcon.vue'
 import DataState from '@/components/DataState.vue'
@@ -31,6 +31,7 @@ import {
   createChannel,
   deleteChannel,
   fetchChannelTypes,
+  fetchKeyStrategies,
   fetchUpstreamModels,
   getChannel,
   listChannelKeys,
@@ -38,7 +39,7 @@ import {
   listGroups,
   testChannel,
   updateChannel,
-  updateChannelKeyStatus,
+  updateChannelKey,
 } from '@/api/admin'
 import {
   KEY_STATUS_AUTO_REMOVED,
@@ -53,6 +54,7 @@ import {
   type ChannelType,
   type ChannelTypeCategory,
   type FetchModelsPayload,
+  type KeyStrategyOption,
   type ModelGroup,
 } from '@/api/types'
 import { confirmDialog } from '@/composables/useConfirm'
@@ -93,6 +95,20 @@ const keysLoading = ref(false)
 const keysError = ref('')
 /** 正在切换状态的密钥 id（避免重复点击） */
 const keyBusyId = ref<number | null>(null)
+/** 正在保存调度参数的密钥 id */
+const savingKeyId = ref<number | null>(null)
+/** 每把密钥的调度参数草稿（id → {weight, priority, rpm_limit}），支持内联编辑 */
+const keyDrafts = ref<Record<number, KeySchedulingDraft>>({})
+/** 冷却剩余时间的参照时刻：每秒刷新，让"剩余 xx 分 xx 秒"实时递减 */
+const now = ref(Date.now())
+let clockTimer: number | undefined
+
+/** 单把凭据的可编辑调度参数 */
+interface KeySchedulingDraft {
+  weight: number
+  priority: number
+  rpm_limit: number
+}
 
 /* ── 列表 ─────────────────────────────────────────────── */
 
@@ -116,7 +132,40 @@ onMounted(() => {
   void loadChannels()
   void loadGroupOptions()
   void loadChannelTypes()
+  void loadKeyStrategies()
+  // 冷却剩余时间需要"随时间推进"的当前时刻，否则展示会一直停在打开抽屉那一刻。
+  clockTimer = window.setInterval(() => {
+    now.value = Date.now()
+  }, 1000)
 })
+
+onBeforeUnmount(() => {
+  if (clockTimer !== undefined) window.clearInterval(clockTimer)
+})
+
+/* ── 凭据调度策略目录 ─────────────────────────────────── */
+/**
+ * 调度策略目录：由后端下发每种策略的标识、中文名与一句话说明。
+ *
+ * 为什么不在前端硬编码：策略是稳定枚举，但"有哪些策略、各自什么意思"
+ * 的知识属于后端领域层；后端新增策略时前端无需改动即可展示。
+ * 加载失败只影响便利性，故不阻断页面。
+ */
+const keyStrategies = ref<KeyStrategyOption[]>([])
+
+async function loadKeyStrategies(): Promise<void> {
+  try {
+    const data = await fetchKeyStrategies()
+    keyStrategies.value = data.items ?? []
+  } catch {
+    keyStrategies.value = []
+  }
+}
+
+/** 当前选中策略的说明文案（在下拉下方展示） */
+const selectedStrategyDesc = computed(
+  () => keyStrategies.value.find((item) => item.key === form.value.key_strategy)?.description ?? '',
+)
 
 /**
  * 分组候选：来源于「模型分组」页。
@@ -259,9 +308,11 @@ interface ChannelForm {
   priority: number
   weight: number
   status: number
+  /** 凭据池调度策略标识（来自 GET /api/admin/key-strategies） */
+  key_strategy: string
 }
 
-/** 表单默认值：优先级 10、权重 1、启用，符合常见「默认可用」预期 */
+/** 表单默认值：优先级 10、权重 1、启用、最少在途调度，符合常见「默认可用」预期 */
 function emptyChannelForm(): ChannelForm {
   return {
     name: '',
@@ -274,6 +325,8 @@ function emptyChannelForm(): ChannelForm {
     priority: 10,
     weight: 1,
     status: STATUS_ENABLED,
+    // 与后端默认策略一致（least_in_flight）：新建渠道时默认就选中它。
+    key_strategy: 'least_in_flight',
   }
 }
 
@@ -326,6 +379,7 @@ async function openEdit(channel: Channel): Promise<void> {
     priority: channel.priority,
     weight: channel.weight,
     status: channel.status,
+    key_strategy: channel.key_strategy || 'least_in_flight',
   }
   formError.value = ''
   drawerOpen.value = true
@@ -344,6 +398,7 @@ async function openEdit(channel: Channel): Promise<void> {
       priority: detail.priority,
       weight: detail.weight,
       status: detail.status,
+      key_strategy: detail.key_strategy || 'least_in_flight',
     }
   } catch (err) {
     // 取详情失败不阻断编辑：至少列表数据可用，但提示用户
@@ -441,26 +496,82 @@ async function openKeys(channel: Channel): Promise<void> {
   await loadChannelKeys(channel.id)
 }
 
-/** 读取密钥池明细（只含掩码） */
+/** 读取密钥池明细（只含掩码），并重置每把密钥的调度参数草稿 */
 async function loadChannelKeys(channelId: number): Promise<void> {
   keysLoading.value = true
   keysError.value = ''
   try {
     const result = await listChannelKeys(channelId)
     channelKeys.value = result.items ?? []
+    syncKeyDrafts(channelKeys.value)
   } catch (err) {
     channelKeys.value = []
+    keyDrafts.value = {}
     keysError.value = err instanceof ApiError ? err.message : '密钥列表加载失败'
   } finally {
     keysLoading.value = false
   }
 }
 
+/** 用最新读到的密钥数据重置草稿，避免上一次编辑残留在界面上 */
+function syncKeyDrafts(keys: ChannelKey[]): void {
+  const drafts: Record<number, KeySchedulingDraft> = {}
+  for (const key of keys) {
+    drafts[key.id] = { weight: key.weight, priority: key.priority, rpm_limit: key.rpm_limit }
+  }
+  keyDrafts.value = drafts
+}
+
+/** 保存某把密钥的调度参数（weight / priority / rpm_limit） */
+async function saveKeyScheduling(key: ChannelKey): Promise<void> {
+  const draft = keyDrafts.value[key.id]
+  if (!draft) return
+  // 前端先做一次校验：避免把负数提交给后端再拿回一条错误
+  if (draft.weight < 0 || draft.priority < 0 || draft.rpm_limit < 0) {
+    toastError('权重 / 优先级 / 每分钟上限不能为负数')
+    return
+  }
+  savingKeyId.value = key.id
+  try {
+    await updateChannelKey(key.id, {
+      weight: Number(draft.weight) || 0,
+      priority: Number(draft.priority) || 0,
+      rpm_limit: Number(draft.rpm_limit) || 0,
+    })
+    toastSuccess('凭据调度参数已保存')
+    if (keysOfChannel.value) await loadChannelKeys(keysOfChannel.value.id)
+  } catch (err) {
+    toastError(err instanceof ApiError ? err.message : '保存调度参数失败')
+  } finally {
+    savingKeyId.value = null
+  }
+}
+
+/**
+ * 把冷却截止时间换算成"剩余多久"的文案。
+ *
+ * 后端下发的是 Unix 秒；`now` 每秒刷新，因此文案会实时递减。
+ * 未冷却（0 或已到期）显示 "—"，避免用"0 秒"造成仍在冷却的误解。
+ */
+function cooldownText(key: ChannelKey): string {
+  if (!key.cooldown_until) return '—'
+  const remainMs = key.cooldown_until * 1000 - now.value
+  if (remainMs <= 0) return '—'
+
+  const remainSeconds = Math.ceil(remainMs / 1000)
+  const hours = Math.floor(remainSeconds / 3600)
+  const minutes = Math.floor((remainSeconds % 3600) / 60)
+  const seconds = remainSeconds % 60
+  if (hours > 0) return `冷却中 ${hours} 时 ${minutes} 分`
+  if (minutes > 0) return `冷却中 ${minutes} 分 ${seconds} 秒`
+  return `冷却中 ${seconds} 秒`
+}
+
 /** 启用 / 禁用 / 恢复某把密钥 */
 async function setKeyStatus(key: ChannelKey, status: number): Promise<void> {
   keyBusyId.value = key.id
   try {
-    await updateChannelKeyStatus(key.id, status)
+    await updateChannelKey(key.id, { status })
     toastSuccess(`密钥已${status === KEY_STATUS_ENABLED ? '启用' : '禁用'}`)
     if (keysOfChannel.value) await loadChannelKeys(keysOfChannel.value.id)
     // 池内可用密钥数会影响列表展示，一并刷新
@@ -515,6 +626,7 @@ async function submitForm(): Promise<void> {
     priority: Number(form.value.priority) || 0,
     weight: Number(form.value.weight) || 1,
     status: form.value.status,
+    key_strategy: form.value.key_strategy,
   }
   // 编辑时密钥留空表示「不修改」，因此不发送该字段（避免把密钥覆盖为空）
   if (form.value.api_key.trim()) payload.api_key = form.value.api_key.trim()
@@ -1092,6 +1204,18 @@ const isEmpty = computed(() => !loading.value && !error.value && channels.value.
           </div>
         </div>
 
+        <!-- 凭据调度策略：决定密钥池里"挑哪一把"的规则 -->
+        <div>
+          <label class="label" for="channel-key-strategy">凭据调度策略</label>
+          <select id="channel-key-strategy" v-model="form.key_strategy" class="input max-w-[20rem]">
+            <option v-for="strategy in keyStrategies" :key="strategy.key" :value="strategy.key">
+              {{ strategy.label }}
+            </option>
+          </select>
+          <p v-if="selectedStrategyDesc" class="hint">{{ selectedStrategyDesc }}</p>
+          <p v-else class="hint">决定该渠道的密钥池按什么规则选取凭据。</p>
+        </div>
+
         <div>
           <label class="label" for="channel-status">状态</label>
           <select id="channel-status" v-model.number="form.status" class="input max-w-[12rem]">
@@ -1161,6 +1285,11 @@ const isEmpty = computed(() => !loading.value && !error.value && channels.value.
                 <th>备注</th>
                 <th>状态</th>
                 <th class="text-right">连续失败</th>
+                <th class="text-right">权重</th>
+                <th class="text-right">优先级</th>
+                <th class="text-right">每分钟上限</th>
+                <th class="text-right">在途</th>
+                <th>冷却</th>
                 <th>最近使用</th>
                 <th class="cell-actions">操作</th>
               </tr>
@@ -1175,10 +1304,57 @@ const isEmpty = computed(() => !loading.value && !error.value && channels.value.
                   </span>
                 </td>
                 <td class="cell-num" data-label="连续失败">{{ key.fail_count }}</td>
+
+                <!-- 调度参数：可直接内联编辑，改完点右侧「保存调度参数」 -->
+                <td data-label="权重">
+                  <input
+                    v-model.number="keyDrafts[key.id].weight"
+                    class="input w-20 px-2 py-1 text-right tabular-nums"
+                    type="number"
+                    min="0"
+                  />
+                </td>
+                <td data-label="优先级">
+                  <input
+                    v-model.number="keyDrafts[key.id].priority"
+                    class="input w-20 px-2 py-1 text-right tabular-nums"
+                    type="number"
+                    min="0"
+                  />
+                </td>
+                <td data-label="每分钟上限">
+                  <input
+                    v-model.number="keyDrafts[key.id].rpm_limit"
+                    class="input w-24 px-2 py-1 text-right tabular-nums"
+                    type="number"
+                    min="0"
+                    title="0 表示不限速"
+                  />
+                </td>
+
+                <!-- 运行态：只读展示，供判断当前是否可用 -->
+                <td class="cell-num" data-label="在途">{{ key.in_flight }}</td>
+                <td class="cell-muted whitespace-nowrap" data-label="冷却" :title="key.last_error || undefined">
+                  {{ cooldownText(key) }}
+                </td>
+
                 <td class="cell-muted" data-label="最近使用">
                   {{ key.last_used_at ? formatDateTime(key.last_used_at) : '未使用' }}
                 </td>
                 <td class="cell-actions" data-label="操作">
+                  <button
+                    type="button"
+                    class="btn btn-row"
+                    title="保存调度参数"
+                    :disabled="savingKeyId === key.id"
+                    @click="saveKeyScheduling(key)"
+                  >
+                    <span
+                      v-if="savingKeyId === key.id"
+                      class="mx-auto block h-3.5 w-3.5 animate-spin rounded-full border-2 border-ink-600 border-t-brand-400"
+                    />
+                    <AppIcon v-else name="check" :size="14" />
+                  </button>
                   <button
                     v-if="key.status !== KEY_STATUS_ENABLED"
                     type="button"

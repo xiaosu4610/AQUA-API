@@ -169,6 +169,11 @@ type channelUpsertRequest struct {
 	Priority int      `json:"priority"`
 	Weight   int      `json:"weight"`
 	Status   int      `json:"status"`
+	// KeyStrategy 是渠道凭据池的调度策略标识。
+	//
+	// 留空表示"不修改"：更新接口据此刻意不覆盖已有策略，
+	// 否则前端只提交部分字段（如仅切换状态）就会把策略重置回默认值。
+	KeyStrategy string `json:"key_strategy"`
 	// KeysText 是"批量密钥"文本框内容：每行一把密钥，行内可用空格或逗号附加备注。
 	//
 	// 为什么用文本而不是 []string：
@@ -284,15 +289,24 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 		return
 	}
 
+	// 调度策略：空值取默认；非法值直接 400 并告知可选值（不静默兜底，
+	// 否则管理员填错也"保存成功"，却在转发时按另一套策略调度）。
+	strategy, err := parseKeyStrategy(req.KeyStrategy)
+	if err != nil {
+		oai.WriteError(c.Writer, http.StatusBadRequest, err.Error(), oai.TypeInvalidRequest, "invalid_key_strategy")
+		return
+	}
+
 	channel := &model.Channel{
-		Name:     strings.TrimSpace(req.Name),
-		Type:     req.Type,
-		BaseURL:  strings.TrimSpace(req.BaseURL),
-		Models:   req.Models,
-		Group:    defaultIfEmpty(strings.TrimSpace(req.Group), defaultChannelGroup),
-		Priority: req.Priority,
-		Weight:   defaultIfZero(req.Weight, 1),
-		Status:   model.ChannelStatus(defaultIfZero(req.Status, int(model.ChannelStatusEnabled))),
+		Name:        strings.TrimSpace(req.Name),
+		Type:        req.Type,
+		BaseURL:     strings.TrimSpace(req.BaseURL),
+		Models:      req.Models,
+		Group:       defaultIfEmpty(strings.TrimSpace(req.Group), defaultChannelGroup),
+		Priority:    req.Priority,
+		Weight:      defaultIfZero(req.Weight, 1),
+		Status:      model.ChannelStatus(defaultIfZero(req.Status, int(model.ChannelStatusEnabled))),
+		KeyStrategy: strategy,
 	}
 	if req.APIKey != nil {
 		channel.APIKey = *req.APIKey
@@ -429,6 +443,16 @@ func (s *Server) handleUpdateChannel(c *gin.Context) {
 	channel.Priority = req.Priority
 	channel.Weight = defaultIfZero(req.Weight, 1)
 	channel.Status = model.ChannelStatus(defaultIfZero(req.Status, int(model.ChannelStatusEnabled)))
+	// 策略留空表示"不修改"：这样只提交部分字段（如启停）也不会把策略重置。
+	// 非空时校验合法性，非法值直接 400。
+	if strings.TrimSpace(req.KeyStrategy) != "" {
+		strategy, err := parseKeyStrategy(req.KeyStrategy)
+		if err != nil {
+			oai.WriteError(c.Writer, http.StatusBadRequest, err.Error(), oai.TypeInvalidRequest, "invalid_key_strategy")
+			return
+		}
+		channel.KeyStrategy = strategy
+	}
 	if req.APIKey != nil {
 		channel.APIKey = *req.APIKey
 	}
@@ -640,16 +664,24 @@ func (s *Server) handleListChannelKeys(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": items, "total": len(items)})
 }
 
-// channelKeyStatusRequest 是修改密钥状态的请求体。
-type channelKeyStatusRequest struct {
-	Status int `json:"status"`
+// channelKeyUpdateRequest 是修改单把凭据的请求体。
+//
+// 路径保持 PUT /api/admin/keys/:keyId，但语义已从"改状态"扩展为"改状态与调度参数"：
+//   - Status 为空表示不改状态；
+//   - weight / priority / rpm_limit 为调度参数，三者需同时提供
+//     （仓储的 UpdateScheduling 是整组覆盖，缺项会把它误写成 0）。
+type channelKeyUpdateRequest struct {
+	Status   *int `json:"status"`
+	Weight   *int `json:"weight"`
+	Priority *int `json:"priority"`
+	RPMLimit *int `json:"rpm_limit"`
 }
 
-// handleUpdateChannelKeyStatus 手动启用 / 禁用 / 恢复某把密钥。
+// handleUpdateChannelKeyStatus 更新某把密钥的状态与调度参数。
 //
 // 典型场景：
-//   - 恢复被误杀（连续失败自动摘除）的密钥；
-//   - 临时禁用一个正在被上游限流的密钥，避免它继续拖慢请求。
+//   - 恢复被误杀（连续失败自动摘除）的密钥，或临时禁用正在被限流的密钥；
+//   - 调整该凭据的权重 / 优先级 / 每分钟上限（配合渠道级的调度策略）。
 func (s *Server) handleUpdateChannelKeyStatus(c *gin.Context) {
 	keyID, err := strconv.ParseUint(c.Param("keyId"), 10, 64)
 	if err != nil || keyID == 0 {
@@ -657,15 +689,13 @@ func (s *Server) handleUpdateChannelKeyStatus(c *gin.Context) {
 		return
 	}
 
-	var req channelKeyStatusRequest
+	var req channelKeyUpdateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		oai.WriteError(c.Writer, http.StatusBadRequest, "请求体格式错误", oai.TypeInvalidRequest, oai.CodeInvalidJSON)
 		return
 	}
-
-	status := model.ChannelKeyStatus(req.Status)
-	if !status.IsValid() {
-		oai.WriteError(c.Writer, http.StatusBadRequest, "密钥状态非法", oai.TypeInvalidRequest, "invalid_status")
+	if req.Status == nil && req.Weight == nil && req.Priority == nil && req.RPMLimit == nil {
+		oai.WriteError(c.Writer, http.StatusBadRequest, "未提供任何可更新字段", oai.TypeInvalidRequest, "empty_update")
 		return
 	}
 	if s.deps.ChannelKeys == nil {
@@ -673,15 +703,102 @@ func (s *Server) handleUpdateChannelKeyStatus(c *gin.Context) {
 		return
 	}
 
-	if err := s.deps.ChannelKeys.UpdateStatus(c.Request.Context(), keyID, status); err != nil {
-		if errors.Is(err, model.ErrChannelKeyNotFound) {
-			oai.WriteError(c.Writer, http.StatusNotFound, "密钥不存在", oai.TypeInvalidRequest, "key_not_found")
+	ctx := c.Request.Context()
+	resp := gin.H{"ok": true}
+
+	// 1) 状态（可选）
+	if req.Status != nil {
+		status := model.ChannelKeyStatus(*req.Status)
+		if !status.IsValid() {
+			oai.WriteError(c.Writer, http.StatusBadRequest, "密钥状态非法", oai.TypeInvalidRequest, "invalid_status")
 			return
 		}
-		s.respondInternalError(c, "更新密钥状态失败")
+		if err := s.deps.ChannelKeys.UpdateStatus(ctx, keyID, status); err != nil {
+			s.respondKeyUpdateError(c, err)
+			return
+		}
+		resp["status"] = int(status)
+		resp["status_text"] = status.String()
+	}
+
+	// 2) 调度参数（可选）：三项必须同时给，否则未给项会被写 0 造成意外停用
+	if req.Weight != nil || req.Priority != nil || req.RPMLimit != nil {
+		if req.Weight == nil || req.Priority == nil || req.RPMLimit == nil {
+			oai.WriteError(c.Writer, http.StatusBadRequest,
+				"更新调度参数时需同时提供 weight / priority / rpm_limit 三项",
+				oai.TypeInvalidRequest, "incomplete_scheduling")
+			return
+		}
+		if *req.Weight < 0 || *req.Priority < 0 || *req.RPMLimit < 0 {
+			oai.WriteError(c.Writer, http.StatusBadRequest,
+				"权重 / 优先级 / 每分钟上限不能为负数", oai.TypeInvalidRequest, "invalid_scheduling")
+			return
+		}
+		if err := s.deps.ChannelKeys.UpdateScheduling(ctx, keyID, *req.Weight, *req.Priority, *req.RPMLimit); err != nil {
+			s.respondKeyUpdateError(c, err)
+			return
+		}
+		resp["weight"] = *req.Weight
+		resp["priority"] = *req.Priority
+		resp["rpm_limit"] = *req.RPMLimit
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// respondKeyUpdateError 统一翻译密钥更新的领域错误。
+func (s *Server) respondKeyUpdateError(c *gin.Context, err error) {
+	if errors.Is(err, model.ErrChannelKeyNotFound) {
+		oai.WriteError(c.Writer, http.StatusNotFound, "密钥不存在", oai.TypeInvalidRequest, "key_not_found")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"ok": true, "status": int(status), "status_text": status.String()})
+	s.respondInternalError(c, "更新密钥失败")
+}
+
+// ---------------------------------------------------------------------------
+// 凭据调度策略目录
+// ---------------------------------------------------------------------------
+
+// keyStrategyDTO 描述一种凭据调度策略（供后台渲染下拉与帮助文案）。
+//
+// 说明文案由后端下发（取自领域层），前端不硬编码：
+// 这样新增策略时只需改后端一处，界面自动跟随。
+type keyStrategyDTO struct {
+	Key         string `json:"key"`
+	Label       string `json:"label"`
+	Description string `json:"description"`
+}
+
+// handleListKeyStrategies 返回全部凭据调度策略。
+//
+// 只读接口：策略取值是稳定枚举，站长只能"选用"，不能自定义，
+// 因此这里不做鉴权以外的任何副作用，也不需要分页。
+func (s *Server) handleListKeyStrategies(c *gin.Context) {
+	items := make([]keyStrategyDTO, 0, len(model.KeyStrategyAll()))
+	for _, strategy := range model.KeyStrategyAll() {
+		items = append(items, keyStrategyDTO{
+			Key:         string(strategy),
+			Label:       strategy.String(),
+			Description: strategy.Description(),
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items, "total": len(items)})
+}
+
+// parseKeyStrategy 解析并校验渠道凭据调度策略。
+//
+// 空值取默认策略（least_in_flight）；非法值返回带可选值的错误，
+// 由调用方转成 400 反馈给管理员。
+func parseKeyStrategy(raw string) (model.KeyStrategy, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return model.DefaultKeyStrategy(), nil
+	}
+	strategy := model.KeyStrategy(trimmed)
+	if !strategy.IsValid() {
+		return "", fmt.Errorf("凭据调度策略非法: %q（可选：%s）", trimmed, model.KeyStrategyOptionText())
+	}
+	return strategy, nil
 }
 
 // probeChannel 向渠道发起一次最小请求，用于验证连通与凭据有效性。

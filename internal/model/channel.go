@@ -89,18 +89,23 @@ func (s ChannelStatus) IsValid() bool {
 //	读取时由仓储解密。因此本结构体绝不可被直接序列化返回给前端——
 //	对外输出请使用 MaskedAPIKey()。
 type Channel struct {
-	ID        uint64        // 主键，新建时为 0（由数据库生成）
-	Name      string        // 显示名，如 "OpenAI 官方"
-	Type      int           // 渠道类型编号（M1 统一按 OpenAI 兼容处理）
-	BaseURL   string        // 上游基础地址，如 https://api.openai.com
-	APIKey    string        // 上游密钥【明文，仅内存】
-	Models    []string      // 可用模型列表
-	Group     string        // 所属分组，用于按分组路由与计费
-	Priority  int           // 优先级，数值越大越优先
-	Weight    int           // 同优先级内的随机权重，需 > 0
-	Status    ChannelStatus // 可用状态
-	CreatedAt time.Time     // 创建时间
-	UpdatedAt time.Time     // 更新时间
+	ID       uint64        // 主键，新建时为 0（由数据库生成）
+	Name     string        // 显示名，如 "OpenAI 官方"
+	Type     int           // 渠道类型编号（M1 统一按 OpenAI 兼容处理）
+	BaseURL  string        // 上游基础地址，如 https://api.openai.com
+	APIKey   string        // 上游密钥【明文，仅内存】
+	Models   []string      // 可用模型列表
+	Group    string        // 所属分组，用于按分组路由与计费
+	Priority int           // 优先级，数值越大越优先
+	Weight   int           // 同优先级内的随机权重，需 > 0
+	Status   ChannelStatus // 可用状态
+	// KeyStrategy 是本渠道凭据池的调度策略（落库于 channels.key_strategy）。
+	//
+	// 空值在落库时由仓储归一为 DefaultKeyStrategy()（最少在途），
+	// 因此读取回来的值恒为合法策略；取值与语义见 KeyStrategy 常量。
+	KeyStrategy KeyStrategy
+	CreatedAt   time.Time // 创建时间
+	UpdatedAt   time.Time // 更新时间
 
 	// LastTestAt 是最近一次测活时间；零值表示从未测活。
 	LastTestAt time.Time
@@ -140,6 +145,11 @@ func (c *Channel) Validate() error {
 	}
 	if strings.TrimSpace(c.Group) == "" {
 		return errors.New("渠道分组不能为空")
+	}
+	// 策略为空表示"未指定"，由仓储归一为默认策略；只拦明显非法的取值。
+	if c.KeyStrategy != "" && !c.KeyStrategy.IsValid() {
+		return fmt.Errorf("渠道凭据调度策略非法: %q（可选：%s）",
+			string(c.KeyStrategy), KeyStrategyOptionText())
 	}
 	return nil
 }

@@ -28,6 +28,7 @@ import type {
   DashboardStats,
   FetchModelsPayload,
   FetchModelsResult,
+  KeyStrategyCatalog,
   LogQuery,
   ModelGroup,
   ModelGroupPayload,
@@ -44,6 +45,7 @@ import type {
   Task,
   TaskProvider,
   TaskQuery,
+  UpdateChannelKeyPayload,
   UpdateSiteSettingsPayload,
   UpdateUserPayload,
   UsageLog,
@@ -209,9 +211,25 @@ export function listChannelKeys(channelId: number): Promise<{ items: ChannelKey[
   return api.get<{ items: ChannelKey[]; total: number }>(`/admin/channels/${channelId}/keys`)
 }
 
-/** PUT /api/admin/keys/{keyId}：修改单把密钥的状态（启用 / 禁用 / 恢复） */
-export function updateChannelKeyStatus(keyId: number, status: number): Promise<unknown> {
-  return api.put<unknown>(`/admin/keys/${keyId}`, { status })
+/**
+ * PUT /api/admin/keys/{keyId}：修改单把密钥的状态与调度参数。
+ *
+ * 路径沿用原有的状态更新接口（未破坏既有调用），只是扩展了可接受的字段：
+ *   - 仅传 status：启用 / 禁用 / 恢复；
+ *   - 传 weight + priority + rpm_limit：更新调度参数（三项必须同时提供）。
+ */
+export function updateChannelKey(keyId: number, payload: UpdateChannelKeyPayload): Promise<unknown> {
+  return api.put<unknown>(`/admin/keys/${keyId}`, payload)
+}
+
+/**
+ * GET /api/admin/key-strategies：凭据调度策略目录。
+ *
+ * 返回每种策略的标识、中文名与一句话说明，供渠道表单渲染下拉与帮助文案
+ * （文案由后端下发，前端不硬编码，新增策略时前端无需改动）。
+ */
+export function fetchKeyStrategies(): Promise<KeyStrategyCatalog> {
+  return api.get<KeyStrategyCatalog>('/admin/key-strategies')
 }
 
 /* ── 模型分组 ───────────────────────────────────────────── */
