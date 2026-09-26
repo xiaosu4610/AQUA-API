@@ -247,6 +247,14 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '站点公告' },
       },
       {
+        // 运维监控：数据库体积/磁盘水位/调用健康度与备份导出，
+        // 与"调用日志"分开放——它回答的是"这台服务器还健康吗"。
+        path: 'maintenance',
+        name: 'admin-maintenance',
+        component: () => import('@/views/admin/MaintenanceView.vue'),
+        meta: { title: '运维监控' },
+      },
+      {
         path: 'settings',
         name: 'admin-settings',
         component: () => import('@/views/admin/SettingsView.vue'),

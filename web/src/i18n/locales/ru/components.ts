@@ -244,6 +244,7 @@ export default {
       logs: 'Журнал вызовов',
       audit: 'Журнал действий администратора',
       announcements: 'Объявления',
+      maintenanceMonitor: 'Мониторинг и резервные копии',
       settings: 'Настройки',
     },
     console: {

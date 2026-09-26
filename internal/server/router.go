@@ -212,6 +212,11 @@ func (s *Server) registerRoutes() {
 	admin.GET("/settings", s.handleGetSettings)
 	admin.PUT("/settings", s.handleUpdateSettings)
 
+	// 运维监控与数据库备份（概览 / 一致性快照下载 / 备份只读校验）
+	admin.GET("/maintenance/overview", s.handleMaintenanceOverview)
+	admin.GET("/maintenance/backup", s.handleMaintenanceBackup)
+	admin.POST("/maintenance/backup/inspect", s.handleMaintenanceInspectBackup)
+
 	// 异步任务管理（管理员可见全部任务并取消）
 	admin.GET("/tasks", s.handleAdminListTasks)
 	admin.POST("/tasks/:ref/cancel", s.handleAdminCancelTask)

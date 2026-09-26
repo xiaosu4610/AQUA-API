@@ -235,6 +235,7 @@ export default {
       logs: 'سجلات الاستخدام',
       audit: 'سجل عمليات الإدارة',
       announcements: 'الإعلانات',
+      maintenanceMonitor: 'المراقبة والنسخ الاحتياطي',
       settings: 'الإعدادات',
     },
     console: {

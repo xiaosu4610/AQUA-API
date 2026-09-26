@@ -237,6 +237,7 @@ export default {
       logs: 'Usage Logs',
       audit: 'Admin Audit',
       announcements: 'Announcements',
+      maintenanceMonitor: 'Maintenance',
       settings: 'Settings',
     },
     console: {

@@ -242,6 +242,7 @@ export default {
       logs: 'Registros de uso',
       audit: 'Auditoría de administración',
       announcements: 'Anuncios',
+      maintenanceMonitor: 'Mantenimiento y copias',
       settings: 'Ajustes',
     },
     console: {

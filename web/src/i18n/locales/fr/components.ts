@@ -244,6 +244,7 @@ export default {
       logs: 'Journaux d’appels',
       audit: 'Journal d’administration',
       announcements: 'Annonces',
+      maintenanceMonitor: 'Supervision',
       settings: 'Paramètres',
     },
     console: {
