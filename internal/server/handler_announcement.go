@@ -117,8 +117,10 @@ func (s *Server) handlePublicListAnnouncements(c *gin.Context) {
 		return
 	}
 
+	// 公开端一次返回的公告条数上限可在后台「运行上限」页调整（默认 20）。
+	activeLimit := s.limitSettingsCached(c.Request.Context()).AnnouncementActiveMax
 	items, err := s.deps.Announcements.ListActive(
-		c.Request.Context(), time.Now(), model.AnnouncementActiveMaxLimit)
+		c.Request.Context(), time.Now(), activeLimit)
 	if err != nil {
 		s.respondInternalError(c, "查询公告失败")
 		return

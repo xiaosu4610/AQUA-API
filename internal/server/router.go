@@ -402,6 +402,13 @@ func (s *Server) registerRoutes() {
 	admin.GET("/settings", s.handleGetSettings)
 	admin.PUT("/settings", s.handleUpdateSettings)
 
+	// 运行上限（超管可调）：请求体大小、批量导入条数、统计窗口、试用时长、公告条数。
+	//
+	// 独立于 /settings：它是数值型"保护性上限"，每项都带默认值与合法区间，
+	// 由后端下发、前端据此渲染表单；默认值与改动前的硬编码常量逐一相等。
+	admin.GET("/limits", s.handleGetLimits)
+	admin.PUT("/limits", s.handleUpdateLimits)
+
 	// 邮件通道（SMTP）配置：站长在后台填写自己的发信账号与授权码。
 	//
 	// 为什么单独成组而不是塞进 /settings：

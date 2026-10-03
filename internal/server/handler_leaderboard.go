@@ -87,8 +87,10 @@ func (s *Server) handleLeaderboard(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	days := leaderboardDefaultDays
+	// 统计窗口上限可在后台「运行上限」页调整（默认 365 天）。
+	maxDays := s.limitSettingsCached(ctx).LeaderboardMaxDays
 	if raw := c.Query("days"); raw != "" {
-		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 && parsed <= leaderboardMaxDays {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 && parsed <= maxDays {
 			days = parsed
 		}
 	}

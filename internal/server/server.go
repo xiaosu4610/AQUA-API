@@ -194,6 +194,13 @@ type Server struct {
 	// 名称变化频率远低于查询频率，短 TTL（30s）足够；管理员改名的改动
 	// 至多滞后 30 秒出现在列表上，展示性数据可接受。
 	nameCache *ttlCache
+
+	// limitCache 缓存「运行上限」设置（limit_* 键）。
+	//
+	// 这些值变化频率极低（只有超管在后台主动修改），却被请求体限额等热路径
+	// 高频读取；加一层短 TTL 缓存，避免每请求查一次设置表。后台保存后主动失效，
+	// 保证"改完立即生效"，而不是等 TTL 到期。
+	limitCache *ttlCache
 }
 
 // New 创建并装配 HTTP 服务（不启动监听，便于测试直接取用 Handler）。
@@ -211,9 +218,6 @@ func New(deps Deps) *Server {
 	// 解析 Accept-Language 并把语言偏好写入请求 context。
 	// 放在业务处理器之前：让所有错误响应都能按用户语言返回（未携带时回退中文）。
 	engine.Use(middleware.Locale())
-	// 请求体大小上限：必须在任何会读 body 的中间件（如登录限流的 keyFunc）
-	// 与业务处理器之前装配，否则它们会把无上限的整个请求体读进内存。
-	engine.Use(bodyLimit())
 
 	s := &Server{
 		deps:      deps,
@@ -234,7 +238,15 @@ func New(deps Deps) *Server {
 		sensitiveFilter: middleware.NewSensitiveFilter(deps.SensitiveWords, deps.Settings),
 		// 名称映射缓存：用户/渠道名等低频变化数据，30 秒 TTL。
 		nameCache: newTTLCache(30 * time.Second),
+		// 运行上限缓存：请求体限额等热路径高频读取，30 秒 TTL + 保存后主动失效。
+		limitCache: newTTLCache(30 * time.Second),
 	}
+
+	// 请求体大小上限：必须在任何会读 body 的中间件（如登录限流的 keyFunc）
+	// 与业务处理器之前装配，否则它们会把无上限的整个请求体读进内存。
+	// 限额值改为运行期可调（见 handler_limits.go），故需 s 构造完成后装配。
+	engine.Use(s.bodyLimit())
+
 	s.registerRoutes()
 
 	// 注册前端静态资源与 SPA 回退。

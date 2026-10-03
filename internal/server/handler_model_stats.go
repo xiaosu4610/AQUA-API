@@ -77,8 +77,10 @@ func (s *Server) handleModelStats(c *gin.Context) {
 	}
 
 	minutes := modelStatsDefaultMinutes
+	// 统计窗口上限可在后台「运行上限」页调整（默认 1440 分钟）。
+	maxMinutes := s.limitSettingsCached(c.Request.Context()).ModelStatsMaxMinutes
 	if raw := c.Query("minutes"); raw != "" {
-		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 && parsed <= modelStatsMaxMinutes {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 && parsed <= maxMinutes {
 			minutes = parsed
 		}
 	}

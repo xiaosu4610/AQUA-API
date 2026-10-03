@@ -38,6 +38,7 @@ export default {
     corpus: 'Corpus',
     maintenance: 'Monitoring',
     settings: 'Settings',
+    limits: 'Runtime Limits',
     brand: 'Admin Panel',
     entering: 'Entering admin panel…',
     noPermission: 'You do not have permission to access the admin panel',
@@ -1552,6 +1553,56 @@ export default {
       saveFailed: 'SMTP save failed',
       testSent: 'Test email sent to {to}',
       testFailed: 'Failed to send test email',
+    },
+  },
+
+  limits: {
+    title: 'Runtime Limits',
+    subtitle:
+      'Protective limits adjustable by super admins; defaults match the previous hard-coded values and changes take effect immediately',
+    save: 'Save',
+    rangeHint: 'Allowed range {min} ~ {max}',
+    defaultHint: 'Default {value}',
+    notice:
+      'These are the gates that protect the system and upstream resources. Raising them allows larger inputs or longer statistics windows, but also increases the cost of a single request or query. Every item has a hard ceiling, so it can never be made effectively unlimited.',
+    unit: {
+      bytes: 'bytes',
+      words: 'entries',
+      items: 'entries',
+      days: 'days',
+      minutes: 'minutes',
+      hours: 'hours',
+    },
+    field: {
+      bodyMaxBytes: {
+        label: 'JSON request body limit',
+        help: 'Byte limit for JSON bodies (login, registration, admin write APIs, etc.). Default 4 MiB = 4194304.',
+      },
+      sensitiveImportMaxWords: {
+        label: 'Sensitive-word import limit',
+        help: 'Maximum words accepted in one bulk import; extra words are truncated.',
+      },
+      leaderboardMaxDays: {
+        label: 'Leaderboard window limit',
+        help: 'Maximum number of days allowed for the usage leaderboard (upper bound of the days parameter).',
+      },
+      modelStatsMaxMinutes: {
+        label: 'Model stats window limit',
+        help: 'Maximum number of minutes allowed for live model metrics (upper bound of the minutes parameter).',
+      },
+      trialGrantMaxHours: {
+        label: 'Trial duration limit',
+        help: 'Maximum valid hours allowed when granting a time-limited trial quota.',
+      },
+      announcementActiveMax: {
+        label: 'Public announcement limit',
+        help: 'Maximum number of active announcements returned to the frontend at once.',
+      },
+    },
+    toast: {
+      loadFailed: 'Failed to load runtime limits',
+      saved: 'Runtime limits saved',
+      saveFailed: 'Save failed',
     },
   },
 

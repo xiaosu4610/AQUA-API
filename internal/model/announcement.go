@@ -195,19 +195,37 @@ type AnnouncementRepository interface {
 	ListActive(ctx context.Context, now time.Time, limit int) ([]*Announcement, error)
 }
 
-// announcementActiveMaxLimit 是公开端一次最多返回的公告条数。
+// AnnouncementActiveMaxLimit 是公开端一次最多返回的公告条数【默认值】。
 //
 // 取 20：前台横幅是"一眼扫过"的展示位，过多会淹没页面；
 // 上限也防止外部用超大 limit 拉走全部数据。
+//
+// 说明（2026-10-04）：本站已允许超管在后台「运行上限」页调整公开端一次返回的
+// 公告条数（设置键 limit_announcement_active_max），本常量退化为其默认值来源。
+// 取值仍受 AnnouncementActiveAbsoluteMaxLimit 的硬上限兜底，改再大也不会失控。
 const AnnouncementActiveMaxLimit = 20
 
-// AnnouncementActiveLimit 把调用方传入的 limit 归一化到 [1, 上限] 区间。
+// AnnouncementActiveAbsoluteMaxLimit 是公开端公告条数的【绝对硬上限】。
+//
+// 存在的理由：条数已改为后台可调，若不给仓储层留一道与设置无关的兜底，
+// 一个被写坏或越界的设置值就能让公开接口一次把全站公告拉走（放大响应体与查询成本）。
+// 硬上限与设置层允许的最大值同源（见 limit_settings.go），保证"设了多大就真能生效"。
+const AnnouncementActiveAbsoluteMaxLimit = 100
+
+// AnnouncementActiveLimit 把调用方传入的 limit 归一化到 [1, 绝对硬上限] 区间。
 //
 // 导出而非内联进仓储：handler 也需要用它来构造响应，两边共用同一上限，
-// 避免"仓储截断到 20、handler 却以为自己要了 100"这类不一致。
+// 避免"仓储截断、handler 却以为自己要了更多"这类不一致。
+//
+// 注意与旧实现的区别：上限由 AnnouncementActiveMaxLimit（默认 20）提升为
+// AnnouncementActiveAbsoluteMaxLimit（100），这样后台把默认值调大后才真正生效
+// （否则会被仓储静默夹回 20）。limit<=0 时仍回退默认值 20，行为与从前一致。
 func AnnouncementActiveLimit(limit int) int {
-	if limit <= 0 || limit > AnnouncementActiveMaxLimit {
+	if limit <= 0 {
 		return AnnouncementActiveMaxLimit
+	}
+	if limit > AnnouncementActiveAbsoluteMaxLimit {
+		return AnnouncementActiveAbsoluteMaxLimit
 	}
 	return limit
 }

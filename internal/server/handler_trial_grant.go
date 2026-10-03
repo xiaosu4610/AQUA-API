@@ -28,6 +28,7 @@ package server
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -117,9 +118,11 @@ func (s *Server) handleGrantTrial(c *gin.Context) {
 			oai.TypeInvalidRequest, "trial_grant_amount_too_small")
 		return
 	}
-	if req.Hours <= 0 || req.Hours > trialGrantMaxHours {
+	// 时长上限可在后台「运行上限」页调整（默认 720 小时 = 30 天）。
+	maxHours := s.limitSettingsCached(ctx).TrialGrantMaxHours
+	if req.Hours <= 0 || req.Hours > maxHours {
 		oai.WriteError(c.Writer, http.StatusBadRequest,
-			"有效时长需在 1 到 720 小时之间",
+			fmt.Sprintf("有效时长需在 1 到 %d 小时之间", maxHours),
 			oai.TypeInvalidRequest, "trial_grant_invalid_hours")
 		return
 	}

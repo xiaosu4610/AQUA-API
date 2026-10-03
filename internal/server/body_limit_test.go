@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -27,7 +28,10 @@ func newBodyLimitEngine(t *testing.T) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
-	engine.Use(bodyLimit())
+	// 用最小 Server 承载中间件：deps.Settings 为 nil 时运行上限回退默认值（4MiB），
+	// 与本文件对 defaultBodyLimitBytes 的断言一致。
+	s := &Server{limitCache: newTTLCache(time.Minute)}
+	engine.Use(s.bodyLimit())
 	handler := func(c *gin.Context) {
 		n, err := io.Copy(io.Discard, c.Request.Body)
 		if err != nil {

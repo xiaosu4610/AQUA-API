@@ -41,6 +41,7 @@ export default {
     corpus: '语料共建',
     maintenance: '运维监控',
     settings: '系统设置',
+    limits: '运行上限',
     brand: '管理后台',
     entering: '正在进入管理后台…',
     noPermission: '没有权限访问管理后台',
@@ -1574,6 +1575,56 @@ export default {
       saveFailed: 'SMTP 保存失败',
       testSent: '测试邮件已发送至 {to}',
       testFailed: '测试邮件发送失败',
+    },
+  },
+
+  /* 运行上限（limits/page.tsx） */
+  limits: {
+    title: '运行上限',
+    subtitle: '超管可调的保护性上限：默认值与改动前一致，修改后立即生效',
+    save: '保存',
+    rangeHint: '可填范围 {min} ~ {max}',
+    defaultHint: '默认 {value}',
+    notice:
+      '这些是保护系统与上游资源的「闸门」。调大能容纳更大的输入或更长的统计窗口，但也会放大单次请求与查询的成本；每项都有硬上限兜底，无法改成「等于不限」。',
+    unit: {
+      bytes: '字节',
+      words: '条',
+      items: '条',
+      days: '天',
+      minutes: '分钟',
+      hours: '小时',
+    },
+    field: {
+      bodyMaxBytes: {
+        label: '普通接口请求体上限',
+        help: '登录、注册、后台写接口等 JSON 请求体的字节上限（默认 4 MiB = 4194304）。',
+      },
+      sensitiveImportMaxWords: {
+        label: '敏感词单次导入上限',
+        help: '一次批量导入敏感词最多接受的条数，超过部分会被截断。',
+      },
+      leaderboardMaxDays: {
+        label: '排行榜统计窗口上限',
+        help: '用量排行榜允许查询的最大天数（查询参数 days 的上限）。',
+      },
+      modelStatsMaxMinutes: {
+        label: '模型统计窗口上限',
+        help: '模型实时指标允许查询的最大分钟数（查询参数 minutes 的上限）。',
+      },
+      trialGrantMaxHours: {
+        label: '试用时长上限',
+        help: '后台发放限时试用额允许设置的最大有效小时数。',
+      },
+      announcementActiveMax: {
+        label: '公开公告条数上限',
+        help: '前台一次最多返回的生效公告条数。',
+      },
+    },
+    toast: {
+      loadFailed: '运行上限加载失败',
+      saved: '运行上限已保存',
+      saveFailed: '保存失败',
     },
   },
 

@@ -272,7 +272,7 @@ func TestAnnouncementRepository_ListActive排序置顶优先且新发布在前(t
 	}
 }
 
-func TestAnnouncementRepository_ListActive上限为20条(t *testing.T) {
+func TestAnnouncementRepository_ListActive上限可调且有硬上限(t *testing.T) {
 	repo := newTestAnnouncementFixture(t)
 	ctx := context.Background()
 	now := time.Unix(1_700_000_000, 0)
@@ -284,11 +284,32 @@ func TestAnnouncementRepository_ListActive上限为20条(t *testing.T) {
 		}
 	}
 
-	items, err := repo.ListActive(ctx, now, 100) // 传入超过上限的值应被收敛为 20
+	// 传 0（或负数）回退默认上限（20）：行为与"上限可调"之前完全一致。
+	items, err := repo.ListActive(ctx, now, 0)
 	if err != nil {
 		t.Fatalf("查询生效公告失败: %v", err)
 	}
-	if len(items) != 20 {
-		t.Fatalf("公开端最多返回 20 条，实际 %d", len(items))
+	if len(items) != model.AnnouncementActiveMaxLimit {
+		t.Fatalf("默认应最多返回 %d 条，实际 %d", model.AnnouncementActiveMaxLimit, len(items))
+	}
+
+	// 显式传大于默认值但不超过硬上限的值：应真的生效（证明"可调"，
+	// 而不是被仓储静默夹回默认的 20）。
+	items, err = repo.ListActive(ctx, now, model.AnnouncementActiveAbsoluteMaxLimit)
+	if err != nil {
+		t.Fatalf("查询生效公告失败: %v", err)
+	}
+	if len(items) != 25 {
+		t.Fatalf("上限调大后应返回全部 25 条，实际 %d", len(items))
+	}
+
+	// 超过硬上限：钳制到 AnnouncementActiveAbsoluteMaxLimit（此处 25 < 硬上限，条数不可直接观测，
+	// 但断言不报错且不超过已写入条数；钳制边界由 model.AnnouncementActiveLimit 的单测锁定）。
+	items, err = repo.ListActive(ctx, now, model.AnnouncementActiveAbsoluteMaxLimit+1000)
+	if err != nil {
+		t.Fatalf("查询生效公告失败: %v", err)
+	}
+	if len(items) != 25 {
+		t.Fatalf("超硬上限应被钳制，实际返回 %d 条", len(items))
 	}
 }

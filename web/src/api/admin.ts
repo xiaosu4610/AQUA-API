@@ -34,6 +34,7 @@ import type {
   FetchModelsResult,
   KeyStrategyCatalog,
   KeyFailurePolicyCatalog,
+  LimitItem,
   LogQuery,
   ModelGroup,
   ModelGroupPayload,
@@ -59,6 +60,7 @@ import type {
   TrialGrantPayload,
   TrialGrantResult,
   UpdateChannelKeyPayload,
+  UpdateLimitsPayload,
   UpdateRedeemCodePayload,
   UpdateSiteSettingsPayload,
   UpdateUserPayload,
@@ -263,6 +265,27 @@ export function updateSMTP(payload: SMTPSettingsPayload): Promise<SMTPSettings> 
  */
 export function testSMTP(to = ''): Promise<{ ok: boolean; to: string }> {
   return api.post<{ ok: boolean; to: string }>('/admin/smtp/test', { to })
+}
+
+/* ── 运行上限（超管可调）────────────────────────────────── */
+
+/**
+ * GET /api/admin/limits：读取运行上限（当前值 + 默认值 + 合法区间）。
+ *
+ * 与 /admin/settings 分开：这里只放数值型"保护性上限"，每项都带默认值与区间，
+ * 前端据此渲染表单并限制输入，不硬编码任何数值。
+ */
+export function fetchLimits(): Promise<{ items: LimitItem[] }> {
+  return api.get<{ items: LimitItem[] }>('/admin/limits')
+}
+
+/**
+ * PUT /api/admin/limits：更新运行上限（只提交变更字段）。
+ *
+ * 后端对越界值返回 400 与明确原因（含合法区间），前端应原样展示给管理员。
+ */
+export function updateLimits(payload: UpdateLimitsPayload): Promise<unknown> {
+  return api.put<unknown>('/admin/limits', payload)
 }
 
 /* ── 渠道模型 ID 映射 ───────────────────────────────────── */

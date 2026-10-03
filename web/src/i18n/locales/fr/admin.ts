@@ -38,6 +38,7 @@ export default {
     corpus: 'Corpus',
     maintenance: 'Supervision',
     settings: 'Paramètres',
+    limits: 'Limites d\'exécution',
     brand: 'Console d\'administration',
     entering: 'Accès à la console d\'administration…',
     noPermission: 'Vous n\'avez pas la permission d\'accéder à la console d\'administration',
@@ -1553,6 +1554,56 @@ export default {
       saveFailed: 'Échec de l\'enregistrement SMTP',
       testSent: 'E-mail de test envoyé à {to}',
       testFailed: 'Échec de l\'envoi de l\'e-mail de test',
+    },
+  },
+
+  limits: {
+    title: 'Limites d\'exécution',
+    subtitle:
+      'Limites de protection ajustables par le super administrateur ; les valeurs par défaut correspondent aux anciennes valeurs codées en dur et s\'appliquent immédiatement',
+    save: 'Enregistrer',
+    rangeHint: 'Plage autorisée {min} ~ {max}',
+    defaultHint: 'Par défaut {value}',
+    notice:
+      'Ce sont les vannes qui protègent le système et les ressources amont. Les augmenter permet des entrées plus volumineuses ou des fenêtres de statistiques plus longues, mais alourdit aussi le coût d\'une requête. Chaque élément possède un plafond absolu : impossible de le rendre réellement illimité.',
+    unit: {
+      bytes: 'octets',
+      words: 'entrées',
+      items: 'entrées',
+      days: 'jours',
+      minutes: 'minutes',
+      hours: 'heures',
+    },
+    field: {
+      bodyMaxBytes: {
+        label: 'Limite du corps JSON',
+        help: 'Limite en octets du corps JSON (connexion, inscription, API d\'écriture admin, etc.). Par défaut 4 Mio = 4194304.',
+      },
+      sensitiveImportMaxWords: {
+        label: 'Limite d\'import de mots sensibles',
+        help: 'Nombre maximal de mots acceptés en un seul import groupé ; le surplus est tronqué.',
+      },
+      leaderboardMaxDays: {
+        label: 'Limite de fenêtre du classement',
+        help: 'Nombre maximal de jours autorisés pour le classement d\'usage (borne du paramètre days).',
+      },
+      modelStatsMaxMinutes: {
+        label: 'Limite de fenêtre des stats de modèle',
+        help: 'Nombre maximal de minutes autorisées pour les métriques temps réel d\'un modèle (borne du paramètre minutes).',
+      },
+      trialGrantMaxHours: {
+        label: 'Limite de durée d\'essai',
+        help: 'Nombre maximal d\'heures valides lors de l\'octroi d\'un quota d\'essai limité dans le temps.',
+      },
+      announcementActiveMax: {
+        label: 'Limite d\'annonces publiques',
+        help: 'Nombre maximal d\'annonces actives renvoyées en une fois au frontend.',
+      },
+    },
+    toast: {
+      loadFailed: 'Échec du chargement des limites d\'exécution',
+      saved: 'Limites d\'exécution enregistrées',
+      saveFailed: 'Échec de l\'enregistrement',
     },
   },
 

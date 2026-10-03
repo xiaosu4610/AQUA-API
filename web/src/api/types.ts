@@ -1193,6 +1193,43 @@ export type UpdateSiteSettingsPayload = Partial<{
   compliance: Partial<ComplianceSettings>
 }>
 
+/* ────────────────────────── 运行上限（超管可调） ────────────────────────── */
+
+/**
+ * 一项运行上限：当前值 + 默认值 + 合法区间。
+ *
+ * 后端一次性给出三样信息，前端据此限制输入范围并展示"当前 vs 默认"，
+ * 因此前端不硬编码任何数值（改默认值只改后端一处）。
+ */
+export interface LimitItem {
+  /** 字段标识，与 PUT 请求体的键一致 */
+  field: string
+  /** 当前生效值 */
+  value: number
+  /** 默认值（与改动前的硬编码常量一致） */
+  default: number
+  /** 合法区间下界（含） */
+  min: number
+  /** 合法区间上界（含） */
+  max: number
+}
+
+/** PUT /api/admin/limits 请求体：只提交需要变更的字段（未提交项保持原值） */
+export type UpdateLimitsPayload = Partial<{
+  /** 普通 JSON 接口的请求体上限（字节） */
+  body_max_bytes: number
+  /** 敏感词单次批量导入的条数上限 */
+  sensitive_import_max_words: number
+  /** 排行榜允许的最大统计窗口（天） */
+  leaderboard_max_days: number
+  /** 模型实时指标允许的最大窗口（分钟） */
+  model_stats_max_minutes: number
+  /** 限时试用额的时长上限（小时） */
+  trial_grant_max_hours: number
+  /** 公开端一次返回的公告条数上限 */
+  announcement_active_max: number
+}>
+
 /* ────────────────────────── 上游进价与密钥余额核算 ────────────────────────── */
 
 /**

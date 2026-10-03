@@ -178,10 +178,12 @@ func (s *Server) handleImportSensitiveWords(c *gin.Context) {
 	}
 
 	category := strings.TrimSpace(req.Category)
+	// 单次导入上限可在后台「运行上限」页调整（默认 2000），避免一次粘贴整本字典长时间占用写锁。
+	importLimit := s.limitSettingsCached(c.Request.Context()).SensitiveImportMaxWords
 	words := make([]*model.SensitiveWord, 0, len(candidates))
 	invalid := 0
 	for _, candidate := range candidates {
-		if len(words) >= maxSensitiveImportWords {
+		if len(words) >= importLimit {
 			break
 		}
 		word := &model.SensitiveWord{

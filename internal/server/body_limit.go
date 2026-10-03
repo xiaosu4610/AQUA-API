@@ -13,9 +13,10 @@
 //
 //	请求 → bodyLimit（按路径选限额，用 http.MaxBytesReader 包一层）
 //	  ├─ /v1、/v1beta  → oai.MaxRequestBodyBytes+1：恰好让 oai.ReadBody 自己判超限，
-//	  │                  保持既有的 413 与错误文案不变
+//	  │                  保持既有的 413 与错误文案不变（此档【不】随后台设置变化，
+//	  │                  原因见 bodyLimit 内的说明——它是与 oai 共享的判定线）
 //	  ├─ 备份校验端点   → 豁免：处理器内部已有 512MiB 限额（handler_maintenance.go）
-//	  └─ 其余 POST 接口 → 4MiB：JSON 接口足够
+//	  └─ 其余 POST 接口 → 取「运行上限」设置 limit_body_max_bytes（默认 4MiB）
 //	→ 后续处理器/中间件（含限流 keyFunc）读到的是被限额的 body
 //
 // 扩展（Extend）：
@@ -38,11 +39,15 @@ import (
 )
 
 const (
-	// defaultBodyLimitBytes 是普通 JSON 接口的请求体上限。
+	// defaultBodyLimitBytes 是普通 JSON 接口请求体上限的【默认值】（4 MiB）。
 	//
-	// 取 4MiB 的依据：本站最大的批量输入是敏感词单次 2000 条、
-	// 公告与计价规则整表导入，实测都在 1MiB 以内；4MiB 留足余量，
-	// 同时把"每请求内存占用 × 并发数"封顶在可控范围内。
+	// 取 4MiB 的依据：本站最大的批量输入是敏感词单次导入、公告与计价规则整表导入，
+	// 实测都在 1MiB 以内；4MiB 留足余量，同时把"每请求内存占用 × 并发数"
+	// 封顶在可控范围内。
+	//
+	// 说明（2026-10-04）：该值已可在后台「运行上限」页调整（设置键
+	// limit_body_max_bytes），本常量退化为默认值来源；运行期实际取值见
+	// bodyLimit 中读取的 s.limitSettingsCached(...)。
 	defaultBodyLimitBytes = 4 << 20
 
 	// relayBodyLimitBytes 是 /v1 与 /v1beta 的上限：比 oai 的判定线多 1 字节。
@@ -50,6 +55,12 @@ const (
 	// 多 1 是刻意的：oai.ReadBody 读到 MaxRequestBodyBytes+1 字节才判超限，
 	// 若这里卡得更紧，超限会先以 "io: read error" 形式出现，
 	// 用户拿到的就不再是明确的 413「请求体超过上限」。
+	//
+	// 为什么这一档【不】随后台设置可调：该判定线必须与 oai 包里的
+	// MaxRequestBodyBytes 严格相等，而 oai.ReadBody 被 relay 的多条转发路径
+	// 共用（openai/media/adapter/token_auth）。把设置值串进这些路径会牵动
+	// 整个转发层，且一旦两处取值漂移就会退化成一个 io 读错误、丢掉 413 语义。
+	// 因此本档固定不变，普通 JSON 接口的上限独立可调。
 	relayBodyLimitBytes = oai.MaxRequestBodyBytes + 1
 
 	// bodyLimitExemptPath 是不套用默认限额的路径（处理器自行设限）。
@@ -64,7 +75,10 @@ const (
 //
 // 必须在任何会读 body 的中间件/处理器之前装配（限流 keyFunc 也要读 body）。
 // GET/HEAD/OPTIONS 没有请求体，直接跳过，避免无谓的包装。
-func bodyLimit() gin.HandlerFunc {
+//
+// 普通 JSON 接口的限额取自运行期设置（默认 4MiB），因此本方法挂在 *Server 上；
+// 设置读取走带 TTL 的缓存，热路径不会因它多一次查库。
+func (s *Server) bodyLimit() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		switch c.Request.Method {
 		case http.MethodGet, http.MethodHead, http.MethodOptions:
@@ -79,7 +93,8 @@ func bodyLimit() gin.HandlerFunc {
 		case isRelayPath(path):
 			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, relayBodyLimitBytes)
 		default:
-			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, defaultBodyLimitBytes)
+			limit := s.limitSettingsCached(c.Request.Context()).BodyMaxBytes
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
 		}
 		c.Next()
 	}

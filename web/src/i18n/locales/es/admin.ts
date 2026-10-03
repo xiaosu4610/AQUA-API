@@ -38,6 +38,7 @@ export default {
     corpus: 'Corpus',
     maintenance: 'Monitorización',
     settings: 'Ajustes',
+    limits: 'Límites de ejecución',
     brand: 'Panel de administración',
     entering: 'Entrando al panel de administración…',
     noPermission: 'No tienes permiso para acceder al panel de administración',
@@ -1553,6 +1554,56 @@ export default {
       saveFailed: 'Error al guardar SMTP',
       testSent: 'Correo de prueba enviado a {to}',
       testFailed: 'Error al enviar el correo de prueba',
+    },
+  },
+
+  limits: {
+    title: 'Límites de ejecución',
+    subtitle:
+      'Límites de protección ajustables por el superadministrador; los valores predeterminados coinciden con los anteriores valores codificados y se aplican de inmediato',
+    save: 'Guardar',
+    rangeHint: 'Rango permitido {min} ~ {max}',
+    defaultHint: 'Predeterminado {value}',
+    notice:
+      'Son las compuertas que protegen el sistema y los recursos upstream. Aumentarlas permite entradas más grandes o ventanas de estadísticas más largas, pero también encarece cada solicitud. Cada elemento tiene un tope absoluto, por lo que nunca puede quedar realmente sin límite.',
+    unit: {
+      bytes: 'bytes',
+      words: 'entradas',
+      items: 'entradas',
+      days: 'días',
+      minutes: 'minutos',
+      hours: 'horas',
+    },
+    field: {
+      bodyMaxBytes: {
+        label: 'Límite del cuerpo JSON',
+        help: 'Límite en bytes del cuerpo JSON (inicio de sesión, registro, API de escritura de administración, etc.). Predeterminado 4 MiB = 4194304.',
+      },
+      sensitiveImportMaxWords: {
+        label: 'Límite de importación de palabras sensibles',
+        help: 'Máximo de palabras aceptadas en una importación masiva; el exceso se trunca.',
+      },
+      leaderboardMaxDays: {
+        label: 'Límite de ventana del ranking',
+        help: 'Máximo de días permitidos para el ranking de uso (límite del parámetro days).',
+      },
+      modelStatsMaxMinutes: {
+        label: 'Límite de ventana de estadísticas del modelo',
+        help: 'Máximo de minutos permitidos para las métricas en vivo de un modelo (límite del parámetro minutes).',
+      },
+      trialGrantMaxHours: {
+        label: 'Límite de duración de prueba',
+        help: 'Máximo de horas válidas al otorgar una cuota de prueba limitada en el tiempo.',
+      },
+      announcementActiveMax: {
+        label: 'Límite de anuncios públicos',
+        help: 'Máximo de anuncios activos devueltos al frontend de una vez.',
+      },
+    },
+    toast: {
+      loadFailed: 'No se pudieron cargar los límites de ejecución',
+      saved: 'Límites de ejecución guardados',
+      saveFailed: 'Error al guardar',
     },
   },
 
