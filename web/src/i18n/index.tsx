@@ -152,7 +152,7 @@ export function setLocale(input: string | null | undefined): LocaleCode {
 interface I18nContextValue {
   /** 当前语言代码 */
   locale: LocaleCode
-  /** 翻译：t('common.action.save')；支持 {var} 插值（t('xx', { name: 'A' })） */
+  /** 翻译：t('common.action.save')；支持 {var} 插值（第二个参数传 { name: 'A' } 即可） */
   t: (key: string, vars?: Record<string, string | number>) => string
   /** 语言切换 */
   setLocale: (input: string | null | undefined) => void
