@@ -61,11 +61,10 @@ import (
 // 绝大多数对话/代码补全，又不至于因过大而触发上游的配额或长度校验拒绝。
 const anthropicDefaultMaxTokens = 4096
 
-// maxAnthropicStreamLineBytes 是解析 Anthropic SSE 单行的字节上限。
-//
-// 取 1MiB：单个事件（含工具参数的 partial_json 增量）可能较长，
-// 但绝不会达到这个量级；设上限用于防御异常上游撑爆内存。
-const maxAnthropicStreamLineBytes = 1 << 20
+// Anthropic SSE 单行的字节上限改为运行期可调（默认 1 MiB），
+// 取值与区间定义在 model.LimitSettings，读取见 StreamLimitsNow().AnthropicLineBytes。
+// 保留该上限的意义：单个事件（含工具参数的 partial_json 增量）可能较长，
+// 但绝不会到 1 MiB 量级；设上限用于防御异常上游撑爆内存。
 
 // ---- 请求转换（OpenAI → Anthropic）----
 
@@ -856,7 +855,7 @@ func wrapAnthropicUpstreamStream(upstream io.ReadCloser) io.ReadCloser {
 
 	go func() {
 		scanner := bufio.NewScanner(upstream)
-		scanner.Buffer(make([]byte, 0, 64*1024), maxAnthropicStreamLineBytes)
+		scanner.Buffer(make([]byte, 0, 64*1024), StreamLimitsNow().AnthropicLineBytes)
 
 		eventName := ""
 		for scanner.Scan() {

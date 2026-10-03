@@ -182,8 +182,9 @@ func TestUsageSniffer_OversizedUnterminatedObject_TailStaysBounded(t *testing.T)
 	filler := strings.Repeat(`"k":"vvvvvvvv",`, 100000)
 	mustWrite(t, sniffer, filler)
 
-	if len(sniffer.tail) > usageTailMaxBytes {
-		t.Errorf("尾部缓冲 = %d 字节，超过兜底上限 %d（内存未受控）", len(sniffer.tail), usageTailMaxBytes)
+	tailLimit := StreamLimitsNow().UsageTailBytes
+	if len(sniffer.tail) > tailLimit {
+		t.Errorf("尾部缓冲 = %d 字节，超过兜底上限 %d（内存未受控）", len(sniffer.tail), tailLimit)
 	}
 
 	// 放弃超长垃圾对象后，仍应能解析随后真正完整的 usage

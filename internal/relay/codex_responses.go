@@ -718,7 +718,7 @@ func wrapCodexUpstreamStream(upstream io.ReadCloser) io.ReadCloser {
 
 	go func() {
 		scanner := bufio.NewScanner(upstream)
-		scanner.Buffer(make([]byte, 0, 64*1024), maxCodexStreamLineBytes)
+		scanner.Buffer(make([]byte, 0, 64*1024), StreamLimitsNow().CodexLineBytes)
 
 		for scanner.Scan() {
 			select {
@@ -748,11 +748,10 @@ func wrapCodexUpstreamStream(upstream io.ReadCloser) io.ReadCloser {
 	return &codexStreamReader{reader: reader, writer: writer, upstream: upstream, done: done}
 }
 
-// maxCodexStreamLineBytes 是单个 Responses SSE 事件行的上限。
-//
-// 取 8MiB：推理事件的加密内容与图片回显都可能很长，比 Anthropic 的常规事件大得多；
+// Codex（Responses）SSE 事件行的字节上限改为运行期可调（默认 8 MiB），
+// 取值与区间定义在 model.LimitSettings，读取见 StreamLimitsNow().CodexLineBytes。
+// 默认比 Anthropic 的常规事件大得多：推理事件的加密内容与图片回显都可能很长；
 // 给足余量，同时仍能挡住异常上游把内存打满。
-const maxCodexStreamLineBytes = 8 << 20
 
 // codexSSEPayload 从一行 SSE 文本里取出 data 段。
 //
@@ -1249,7 +1248,7 @@ func codexUsagePayload(usage *openAIUsage) map[string]any {
 func aggregateCodexStream(raw []byte) []byte {
 	converter := newCodexStreamConverter()
 	scanner := bufio.NewScanner(strings.NewReader(string(raw)))
-	scanner.Buffer(make([]byte, 0, 64*1024), maxCodexStreamLineBytes)
+	scanner.Buffer(make([]byte, 0, 64*1024), StreamLimitsNow().CodexLineBytes)
 
 	for scanner.Scan() {
 		payload, ok := codexSSEPayload(scanner.Bytes())

@@ -60,10 +60,9 @@ import (
 	"github.com/LTZY-ACU/ltzy-api/internal/oai"
 )
 
-// maxGeminiStreamLineBytes 是解析 Gemini SSE 单行的字节上限。
-//
+// Gemini SSE 单行的字节上限改为运行期可调（默认 1 MiB），
+// 取值与区间定义在 model.LimitSettings，读取见 StreamLimitsNow().GeminiLineBytes。
 // 与 Anthropic 同理：单个事件可能较长，设上限用于防御异常上游撑爆内存。
-const maxGeminiStreamLineBytes = 1 << 20
 
 // ---- 请求转换（OpenAI → Gemini）----
 
@@ -623,7 +622,7 @@ func wrapGeminiUpstreamStream(upstream io.ReadCloser) io.ReadCloser {
 
 	go func() {
 		scanner := bufio.NewScanner(upstream)
-		scanner.Buffer(make([]byte, 0, 64*1024), maxGeminiStreamLineBytes)
+		scanner.Buffer(make([]byte, 0, 64*1024), StreamLimitsNow().GeminiLineBytes)
 
 		for scanner.Scan() {
 			select {

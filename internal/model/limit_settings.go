@@ -48,6 +48,14 @@ const (
 	SettingKeyLimitTrialGrantMaxHours = "limit_trial_grant_max_hours"
 	// SettingKeyLimitAnnouncementActiveMax 是公开端一次返回的公告条数上限。
 	SettingKeyLimitAnnouncementActiveMax = "limit_announcement_active_max"
+	// SettingKeyLimitSSEAnthropicLineBytes 是解析 Anthropic SSE 单行的字节上限。
+	SettingKeyLimitSSEAnthropicLineBytes = "limit_sse_anthropic_line_bytes"
+	// SettingKeyLimitSSEGeminiLineBytes 是解析 Gemini SSE 单行的字节上限。
+	SettingKeyLimitSSEGeminiLineBytes = "limit_sse_gemini_line_bytes"
+	// SettingKeyLimitSSECodexLineBytes 是解析 Codex（OpenAI Responses）SSE 事件行的字节上限。
+	SettingKeyLimitSSECodexLineBytes = "limit_sse_codex_line_bytes"
+	// SettingKeyLimitSSEUsageTailBytes 是流式解析中"等待 usage 对象完整"的尾部字节上限。
+	SettingKeyLimitSSEUsageTailBytes = "limit_sse_usage_tail_bytes"
 )
 
 // 各项运行上限的合法区间（下界 / 上界）。
@@ -80,6 +88,38 @@ const (
 	// 与仓储层的硬上限同源，保证"后台设成多大，仓储就真的允许多大"。
 	MinLimitAnnouncementActiveMax = 1
 	MaxLimitAnnouncementActiveMax = AnnouncementActiveAbsoluteMaxLimit
+
+	// SSE 单行上限：64 KiB ~ 256 MiB。
+	//
+	// 下界 64 KiB：再小会让正常的大段事件（长 reasoning、带图片的 delta）频繁截断；
+	// 上界 256 MiB：这些值直接决定"单个流式请求最多占多少内存"，
+	// 放开成任意值等于关掉内存保护（并发长响应足以打爆进程）。
+	MinLimitSSELineBytes int64 = 64 << 10
+	MaxLimitSSELineBytes int64 = 256 << 20
+
+	// SSE usage 尾部兜底：64 KiB ~ 64 MiB。
+	//
+	// usage 对象本身只有几百字节，下界 64 KiB 已是极宽松的余量；
+	// 上界 64 MiB 防"尾部随响应无限增长"这条内存兜底被误关掉。
+	MinLimitSSEUsageTailBytes int64 = 64 << 10
+	MaxLimitSSEUsageTailBytes int64 = 64 << 20
+)
+
+// SSE 流式上限的默认值（与改为可调之前写死在 relay 的常量逐一相等）。
+//
+// 单独定义而不复用 relay 的常量：model 是被 relay 依赖的下层，
+// 不能反向引用 relay（会形成循环依赖）。因此这里作为唯一权威定义，
+// relay 侧通过 model.DefaultLimitSettings() 取值，并由 relay 的
+// stream_limits_test 断言二者一致，杜绝两处漂移。
+const (
+	// DefaultLimitSSEAnthropicLineBytes 对应 relay.maxAnthropicStreamLineBytes。
+	DefaultLimitSSEAnthropicLineBytes int64 = 1 << 20
+	// DefaultLimitSSEGeminiLineBytes 对应 relay.maxGeminiStreamLineBytes。
+	DefaultLimitSSEGeminiLineBytes int64 = 1 << 20
+	// DefaultLimitSSECodexLineBytes 对应 relay.maxCodexStreamLineBytes。
+	DefaultLimitSSECodexLineBytes int64 = 8 << 20
+	// DefaultLimitSSEUsageTailBytes 对应 relay.usageTailMaxBytes。
+	DefaultLimitSSEUsageTailBytes int64 = 1 << 20
 )
 
 // LimitSettings 是运行上限设置的强类型视图。
@@ -112,6 +152,22 @@ type LimitSettings struct {
 	//
 	// 默认 20：前台横幅是"一眼扫过"的展示位，过多会淹没页面。
 	AnnouncementActiveMax int
+	// SSEAnthropicLineBytes 是解析 Anthropic SSE 单行的字节上限（字节）。
+	//
+	// 默认 1 MiB。超长事件（长 reasoning、带 base64 图片的 delta）在此被截断时，
+	// 站长可调大；但调大意味着单个流式请求的内存占用上限随之提高。
+	SSEAnthropicLineBytes int64
+	// SSEGeminiLineBytes 是解析 Gemini SSE 单行的字节上限（字节）。默认 1 MiB。
+	SSEGeminiLineBytes int64
+	// SSECodexLineBytes 是解析 Codex（OpenAI Responses）SSE 事件行的字节上限（字节）。
+	//
+	// 默认 8 MiB：Responses 的事件里会整段携带已生成内容，因此基线本就高于其它协议。
+	SSECodexLineBytes int64
+	// SSEUsageTailBytes 是流式解析中"等待 usage 对象接收完整"时允许保留的尾部字节上限（字节）。
+	//
+	// 默认 1 MiB。它是内存兜底：一个 usage 对象不可能达到该量级，
+	// 一旦超过就说明上游发的不是合法 JSON（或对象永不闭合），解析器会跳过该标记。
+	SSEUsageTailBytes int64
 }
 
 // DefaultLimitSettings 返回全部运行上限的默认值。
@@ -131,6 +187,12 @@ func DefaultLimitSettings() LimitSettings {
 		ModelStatsMaxMinutes:    24 * 60, // 1440
 		TrialGrantMaxHours:      24 * 30, // 720
 		AnnouncementActiveMax:   20,
+
+		// SSE 流式上限：与 relay 侧原常量逐一相等（见下方各 Default 常量的说明）。
+		SSEAnthropicLineBytes: DefaultLimitSSEAnthropicLineBytes,
+		SSEGeminiLineBytes:    DefaultLimitSSEGeminiLineBytes,
+		SSECodexLineBytes:     DefaultLimitSSECodexLineBytes,
+		SSEUsageTailBytes:     DefaultLimitSSEUsageTailBytes,
 	}
 }
 
@@ -143,6 +205,10 @@ func (s LimitSettings) ToMap() map[string]string {
 		SettingKeyLimitModelStatsMaxMinutes:    strconv.Itoa(s.ModelStatsMaxMinutes),
 		SettingKeyLimitTrialGrantMaxHours:      strconv.Itoa(s.TrialGrantMaxHours),
 		SettingKeyLimitAnnouncementActiveMax:   strconv.Itoa(s.AnnouncementActiveMax),
+		SettingKeyLimitSSEAnthropicLineBytes:   strconv.FormatInt(s.SSEAnthropicLineBytes, 10),
+		SettingKeyLimitSSEGeminiLineBytes:      strconv.FormatInt(s.SSEGeminiLineBytes, 10),
+		SettingKeyLimitSSECodexLineBytes:       strconv.FormatInt(s.SSECodexLineBytes, 10),
+		SettingKeyLimitSSEUsageTailBytes:       strconv.FormatInt(s.SSEUsageTailBytes, 10),
 	}
 }
 
@@ -191,6 +257,22 @@ func LoadLimitSettings(ctx context.Context, repo SettingRepository) (LimitSettin
 		MinLimitAnnouncementActiveMax, MaxLimitAnnouncementActiveMax); ok {
 		settings.AnnouncementActiveMax = v
 	}
+	if v, ok := parseLimitInt64(values, SettingKeyLimitSSEAnthropicLineBytes,
+		MinLimitSSELineBytes, MaxLimitSSELineBytes); ok {
+		settings.SSEAnthropicLineBytes = v
+	}
+	if v, ok := parseLimitInt64(values, SettingKeyLimitSSEGeminiLineBytes,
+		MinLimitSSELineBytes, MaxLimitSSELineBytes); ok {
+		settings.SSEGeminiLineBytes = v
+	}
+	if v, ok := parseLimitInt64(values, SettingKeyLimitSSECodexLineBytes,
+		MinLimitSSELineBytes, MaxLimitSSELineBytes); ok {
+		settings.SSECodexLineBytes = v
+	}
+	if v, ok := parseLimitInt64(values, SettingKeyLimitSSEUsageTailBytes,
+		MinLimitSSEUsageTailBytes, MaxLimitSSEUsageTailBytes); ok {
+		settings.SSEUsageTailBytes = v
+	}
 
 	return settings, nil
 }
@@ -205,6 +287,23 @@ func parseLimitInt(values map[string]string, key string, min, max int) (int, boo
 		return 0, false
 	}
 	parsed, err := strconv.Atoi(raw)
+	if err != nil || parsed < min || parsed > max {
+		return 0, false
+	}
+	return parsed, true
+}
+
+// parseLimitInt64 与 parseLimitInt 同口径，供 int64 型的上限使用。
+//
+// SSE 相关的上限取值可达数百 MiB，放在 int 上虽也够用，但与
+// LimitSettings 的 int64 字段同类型可省去来回转换，也让"越界即丢弃"的
+// 判断与其它项完全一致。
+func parseLimitInt64(values map[string]string, key string, min, max int64) (int64, bool) {
+	raw, ok := values[key]
+	if !ok {
+		return 0, false
+	}
+	parsed, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || parsed < min || parsed > max {
 		return 0, false
 	}
@@ -240,6 +339,22 @@ func (s LimitSettings) Validate() error {
 	if s.AnnouncementActiveMax < MinLimitAnnouncementActiveMax || s.AnnouncementActiveMax > MaxLimitAnnouncementActiveMax {
 		return fmt.Errorf("公开公告条数上限必须在 %d ~ %d 条之间，当前 %d",
 			MinLimitAnnouncementActiveMax, MaxLimitAnnouncementActiveMax, s.AnnouncementActiveMax)
+	}
+	if s.SSEAnthropicLineBytes < MinLimitSSELineBytes || s.SSEAnthropicLineBytes > MaxLimitSSELineBytes {
+		return fmt.Errorf("Anthropic SSE 单行上限必须在 %d ~ %d 字节之间，当前 %d",
+			MinLimitSSELineBytes, MaxLimitSSELineBytes, s.SSEAnthropicLineBytes)
+	}
+	if s.SSEGeminiLineBytes < MinLimitSSELineBytes || s.SSEGeminiLineBytes > MaxLimitSSELineBytes {
+		return fmt.Errorf("Gemini SSE 单行上限必须在 %d ~ %d 字节之间，当前 %d",
+			MinLimitSSELineBytes, MaxLimitSSELineBytes, s.SSEGeminiLineBytes)
+	}
+	if s.SSECodexLineBytes < MinLimitSSELineBytes || s.SSECodexLineBytes > MaxLimitSSELineBytes {
+		return fmt.Errorf("Codex SSE 单行上限必须在 %d ~ %d 字节之间，当前 %d",
+			MinLimitSSELineBytes, MaxLimitSSELineBytes, s.SSECodexLineBytes)
+	}
+	if s.SSEUsageTailBytes < MinLimitSSEUsageTailBytes || s.SSEUsageTailBytes > MaxLimitSSEUsageTailBytes {
+		return fmt.Errorf("SSE usage 尾部上限必须在 %d ~ %d 字节之间，当前 %d",
+			MinLimitSSEUsageTailBytes, MaxLimitSSEUsageTailBytes, s.SSEUsageTailBytes)
 	}
 	return nil
 }

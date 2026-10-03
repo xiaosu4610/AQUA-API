@@ -284,6 +284,10 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) Run(ctx context.Context) error {
 	errCh := make(chan error, 1)
 
+	// 启动时先把库里保存的 SSE 流式上限推送给 relay（进程级状态，见 relay/stream_limits.go）。
+	// 不做这一步的话，后台改过的值要等下一次"保存设置"或重启后才生效。
+	s.applyStreamLimits(ctx)
+
 	// 支付对账循环：补偿丢失的回调（主动向网关查单），随 ctx 取消退出。
 	// 见 reconcile_payment.go 的头注释——这是"回调是唯一入账触发器"的单点风险治理。
 	go s.startPaymentReconciler(ctx)

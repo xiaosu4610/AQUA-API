@@ -1599,6 +1599,22 @@ export default {
         label: 'Limite d\'annonces publiques',
         help: 'Nombre maximal d\'annonces actives renvoyées en une fois au frontend.',
       },
+      sseAnthropicLineBytes: {
+        label: 'Limite de ligne en streaming Anthropic',
+        help: 'Nombre maximal d\'octets d\'une ligne SSE amont Anthropic (y compris Claude) ; par défaut 1 MiB = 1048576. Augmentez-la pour les lignes très longues ; une valeur trop faible tronque et provoque une erreur.',
+      },
+      sseGeminiLineBytes: {
+        label: 'Limite de ligne en streaming Gemini',
+        help: 'Nombre maximal d\'octets d\'une ligne SSE amont Gemini ; par défaut 1 MiB = 1048576. Augmentez-la pour les lignes très longues ; une valeur trop faible tronque et provoque une erreur.',
+      },
+      sseCodexLineBytes: {
+        label: 'Limite de ligne en streaming Codex',
+        help: 'Nombre maximal d\'octets d\'une ligne SSE amont Codex Responses ; par défaut 8 MiB = 8388608, car une ligne porte souvent un bloc de raisonnement complet.',
+      },
+      sseUsageTailBytes: {
+        label: 'Limite du tampon de fin (usage)',
+        help: 'Taille du tampon de fin utilisé pour détecter les statistiques d\'usage avant la fin d\'une réponse en streaming ; par défaut 1 MiB = 1048576.',
+      },
     },
     toast: {
       loadFailed: 'Échec du chargement des limites d\'exécution',

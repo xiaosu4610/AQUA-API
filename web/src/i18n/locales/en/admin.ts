@@ -1598,6 +1598,22 @@ export default {
         label: 'Public announcement limit',
         help: 'Maximum number of active announcements returned to the frontend at once.',
       },
+      sseAnthropicLineBytes: {
+        label: 'Anthropic streaming line limit',
+        help: 'Maximum bytes of a single upstream SSE line from Anthropic (incl. Claude); default 1 MiB = 1048576. Raise it for very long lines; too low truncates and errors.',
+      },
+      sseGeminiLineBytes: {
+        label: 'Gemini streaming line limit',
+        help: 'Maximum bytes of a single upstream SSE line from Gemini; default 1 MiB = 1048576. Raise it for very long lines; too low truncates and errors.',
+      },
+      sseCodexLineBytes: {
+        label: 'Codex streaming line limit',
+        help: 'Maximum bytes of a single upstream SSE line from Codex Responses; default 8 MiB = 8388608, since a line often carries a full reasoning block.',
+      },
+      sseUsageTailBytes: {
+        label: 'Usage tail buffer limit',
+        help: 'Tail buffer size used to sniff usage stats before a streaming response ends; default 1 MiB = 1048576.',
+      },
     },
     toast: {
       loadFailed: 'Failed to load runtime limits',

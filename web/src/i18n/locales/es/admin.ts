@@ -1599,6 +1599,22 @@ export default {
         label: 'Límite de anuncios públicos',
         help: 'Máximo de anuncios activos devueltos al frontend de una vez.',
       },
+      sseAnthropicLineBytes: {
+        label: 'Límite de línea en streaming de Anthropic',
+        help: 'Máximo de bytes de una línea SSE ascendente de Anthropic (incl. Claude); por defecto 1 MiB = 1048576. Auméntalo para líneas muy largas; un valor muy bajo trunca y da error.',
+      },
+      sseGeminiLineBytes: {
+        label: 'Límite de línea en streaming de Gemini',
+        help: 'Máximo de bytes de una línea SSE ascendente de Gemini; por defecto 1 MiB = 1048576. Auméntalo para líneas muy largas; un valor muy bajo trunca y da error.',
+      },
+      sseCodexLineBytes: {
+        label: 'Límite de línea en streaming de Codex',
+        help: 'Máximo de bytes de una línea SSE ascendente de Codex Responses; por defecto 8 MiB = 8388608, ya que una línea suele llevar un bloque de razonamiento completo.',
+      },
+      sseUsageTailBytes: {
+        label: 'Límite del búfer de cola (usage)',
+        help: 'Tamaño del búfer de cola usado para detectar las estadísticas de uso antes de terminar una respuesta en streaming; por defecto 1 MiB = 1048576.',
+      },
     },
     toast: {
       loadFailed: 'No se pudieron cargar los límites de ejecución',

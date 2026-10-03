@@ -122,12 +122,13 @@ func (r rawUsage) normalize() (openAIUsage, bool) {
 // usageMarker 是响应中承载用量的字段名（对象内部的键）。
 const usageMarker = `"usage"`
 
-// usageTailMaxBytes 是"等待一个 usage 对象接收完整"时允许保留的最大尾部字节数。
+// "等待一个 usage 对象接收完整"时允许保留的最大尾部字节数改为运行期可调
+// （默认 1 MiB），取值与区间定义在 model.LimitSettings，
+// 读取见 StreamLimitsNow().UsageTailBytes。
 //
 // 作用是内存兜底：一个 usage 对象绝不可能达到这个量级，因此一旦超过就说明
 // 上游发来的并不是合法 JSON（或该对象永远不会闭合）。此时放弃等待、跳过该标记，
 // 避免尾部随响应无限增长。
-const usageTailMaxBytes = 1 << 20
 
 // usageSniffer 是一个 io.Writer：在响应体流经网关的同时【增量】解析其中的 usage。
 //
@@ -227,7 +228,7 @@ func (u *usageSniffer) scan() {
 		decoder := json.NewDecoder(bytes.NewReader(u.tail[i:]))
 		if err := decoder.Decode(&raw); err != nil {
 			if isTruncatedJSON(err) {
-				if len(u.tail)-markerPos > usageTailMaxBytes {
+				if len(u.tail)-markerPos > StreamLimitsNow().UsageTailBytes {
 					// 超过兜底上限：上游发的不是合法 JSON，跳过以免尾部无限增长
 					searchFrom = valueStart
 					continue

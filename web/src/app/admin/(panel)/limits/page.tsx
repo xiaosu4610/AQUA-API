@@ -2,7 +2,8 @@
  *
  * 意图（Why）：
  *   网关里有一批"保护性上限"（请求体大小、批量导入条数、统计窗口、试用时长、
- *   公告条数），此前写死在代码里。本页把它们集中呈现、允许超管调整：
+ *   公告条数、SSE 单行/尾部缓冲字节数），此前写死在代码里。本页把它们集中呈现、
+ *   允许超管调整：
  *   每项都显示当前值、默认值与合法区间，数值全部由后端 /api/admin/limits 下发，
  *   前端不硬编码任何阈值——改默认值或区间只改后端一处。
  *
@@ -57,6 +58,26 @@ const FIELD_META: Record<string, { labelKey: string; helpKey: string; unitKey: s
     labelKey: 'admin.limits.field.announcementActiveMax.label',
     helpKey: 'admin.limits.field.announcementActiveMax.help',
     unitKey: 'admin.limits.unit.items',
+  },
+  sse_anthropic_line_bytes: {
+    labelKey: 'admin.limits.field.sseAnthropicLineBytes.label',
+    helpKey: 'admin.limits.field.sseAnthropicLineBytes.help',
+    unitKey: 'admin.limits.unit.bytes',
+  },
+  sse_gemini_line_bytes: {
+    labelKey: 'admin.limits.field.sseGeminiLineBytes.label',
+    helpKey: 'admin.limits.field.sseGeminiLineBytes.help',
+    unitKey: 'admin.limits.unit.bytes',
+  },
+  sse_codex_line_bytes: {
+    labelKey: 'admin.limits.field.sseCodexLineBytes.label',
+    helpKey: 'admin.limits.field.sseCodexLineBytes.help',
+    unitKey: 'admin.limits.unit.bytes',
+  },
+  sse_usage_tail_bytes: {
+    labelKey: 'admin.limits.field.sseUsageTailBytes.label',
+    helpKey: 'admin.limits.field.sseUsageTailBytes.help',
+    unitKey: 'admin.limits.unit.bytes',
   },
 }
 

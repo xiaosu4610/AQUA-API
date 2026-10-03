@@ -48,6 +48,18 @@ func TestDefaultLimitSettings_与旧硬编码常量一致(t *testing.T) {
 	if got.AnnouncementActiveMax != AnnouncementActiveMaxLimit {
 		t.Errorf("默认公告条数上限 = %d，期望 %d", got.AnnouncementActiveMax, AnnouncementActiveMaxLimit)
 	}
+	if got.SSEAnthropicLineBytes != 1<<20 {
+		t.Errorf("默认 Anthropic SSE 单行上限 = %d，期望 %d", got.SSEAnthropicLineBytes, 1<<20)
+	}
+	if got.SSEGeminiLineBytes != 1<<20 {
+		t.Errorf("默认 Gemini SSE 单行上限 = %d，期望 %d", got.SSEGeminiLineBytes, 1<<20)
+	}
+	if got.SSECodexLineBytes != 8<<20 {
+		t.Errorf("默认 Codex SSE 单行上限 = %d，期望 %d", got.SSECodexLineBytes, 8<<20)
+	}
+	if got.SSEUsageTailBytes != 1<<20 {
+		t.Errorf("默认 SSE usage 尾部上限 = %d，期望 %d", got.SSEUsageTailBytes, 1<<20)
+	}
 	if err := got.Validate(); err != nil {
 		t.Fatalf("默认值必须通过校验，实际: %v", err)
 	}
@@ -61,6 +73,10 @@ func TestLoadLimitSettings_KV覆盖合法值(t *testing.T) {
 		SettingKeyLimitModelStatsMaxMinutes:    "2880",
 		SettingKeyLimitTrialGrantMaxHours:      "1440",
 		SettingKeyLimitAnnouncementActiveMax:   "50",
+		SettingKeyLimitSSEAnthropicLineBytes:   "2097152",  // 2 MiB
+		SettingKeyLimitSSEGeminiLineBytes:      "4194304",  // 4 MiB
+		SettingKeyLimitSSECodexLineBytes:       "16777216", // 16 MiB
+		SettingKeyLimitSSEUsageTailBytes:       "2097152",  // 2 MiB
 	}}
 
 	loaded, err := LoadLimitSettings(context.Background(), repo)
@@ -86,6 +102,18 @@ func TestLoadLimitSettings_KV覆盖合法值(t *testing.T) {
 	if loaded.AnnouncementActiveMax != 50 {
 		t.Errorf("公告条数上限未覆盖，实际 %d", loaded.AnnouncementActiveMax)
 	}
+	if loaded.SSEAnthropicLineBytes != 2097152 {
+		t.Errorf("Anthropic SSE 单行上限未覆盖，实际 %d", loaded.SSEAnthropicLineBytes)
+	}
+	if loaded.SSEGeminiLineBytes != 4194304 {
+		t.Errorf("Gemini SSE 单行上限未覆盖，实际 %d", loaded.SSEGeminiLineBytes)
+	}
+	if loaded.SSECodexLineBytes != 16777216 {
+		t.Errorf("Codex SSE 单行上限未覆盖，实际 %d", loaded.SSECodexLineBytes)
+	}
+	if loaded.SSEUsageTailBytes != 2097152 {
+		t.Errorf("SSE usage 尾部上限未覆盖，实际 %d", loaded.SSEUsageTailBytes)
+	}
 }
 
 func TestLoadLimitSettings_脏值越界回退默认(t *testing.T) {
@@ -96,6 +124,10 @@ func TestLoadLimitSettings_脏值越界回退默认(t *testing.T) {
 		SettingKeyLimitModelStatsMaxMinutes:    "0",        // 低于下界
 		SettingKeyLimitTrialGrantMaxHours:      "100000",   // 高于上界
 		SettingKeyLimitAnnouncementActiveMax:   "100000",   // 高于上界
+		SettingKeyLimitSSEAnthropicLineBytes:   "abc",      // 非数字
+		SettingKeyLimitSSEGeminiLineBytes:      "1",        // 低于下界
+		SettingKeyLimitSSECodexLineBytes:       "999999999", // 高于上界
+		SettingKeyLimitSSEUsageTailBytes:       "-1",       // 低于下界
 	}}
 
 	loaded, err := LoadLimitSettings(context.Background(), repo)
@@ -141,6 +173,10 @@ func TestLimitSettings_Validate_越界拒绝(t *testing.T) {
 		{"模型统计分钟越界", func(s *LimitSettings) { s.ModelStatsMaxMinutes = 0 }},
 		{"试用时长越界", func(s *LimitSettings) { s.TrialGrantMaxHours = MaxLimitTrialGrantMaxHours + 1 }},
 		{"公告条数越界", func(s *LimitSettings) { s.AnnouncementActiveMax = MaxLimitAnnouncementActiveMax + 1 }},
+		{"Anthropic SSE 单行低于下界", func(s *LimitSettings) { s.SSEAnthropicLineBytes = MinLimitSSELineBytes - 1 }},
+		{"Gemini SSE 单行高于上界", func(s *LimitSettings) { s.SSEGeminiLineBytes = MaxLimitSSELineBytes + 1 }},
+		{"Codex SSE 单行越界", func(s *LimitSettings) { s.SSECodexLineBytes = 0 }},
+		{"SSE usage 尾部高于上界", func(s *LimitSettings) { s.SSEUsageTailBytes = MaxLimitSSEUsageTailBytes + 1 }},
 	}
 	for _, tc := range cases {
 		settings := DefaultLimitSettings()
@@ -159,6 +195,11 @@ func TestLimitSettings_ToMap与Load往返一致(t *testing.T) {
 		ModelStatsMaxMinutes:    720,
 		TrialGrantMaxHours:      168,
 		AnnouncementActiveMax:   40,
+
+		SSEAnthropicLineBytes: 2 << 20,
+		SSEGeminiLineBytes:    3 << 20,
+		SSECodexLineBytes:     9 << 20,
+		SSEUsageTailBytes:     2 << 20,
 	}
 
 	repo := &fakeSettingRepo{values: original.ToMap()}

@@ -1620,6 +1620,22 @@ export default {
         label: '公开公告条数上限',
         help: '前台一次最多返回的生效公告条数。',
       },
+      sseAnthropicLineBytes: {
+        label: 'Anthropic 流式单行上限',
+        help: 'Anthropic（含 Claude）SSE 上游单行事件的最大字节数（默认 1 MiB = 1048576）。调大可容纳超长单行，过小会截断报错。',
+      },
+      sseGeminiLineBytes: {
+        label: 'Gemini 流式单行上限',
+        help: 'Gemini SSE 上游单行事件的最大字节数（默认 1 MiB = 1048576）。调大可容纳超长单行，过小会截断报错。',
+      },
+      sseCodexLineBytes: {
+        label: 'Codex 流式单行上限',
+        help: 'Codex Responses SSE 上游单行事件的最大字节数（默认 8 MiB = 8388608，因单行常携带完整推理块）。',
+      },
+      sseUsageTailBytes: {
+        label: '用量尾部缓冲上限',
+        help: '流式响应结束前用于嗅探 usage 统计信息的尾部缓冲上限（默认 1 MiB = 1048576）。',
+      },
     },
     toast: {
       loadFailed: '运行上限加载失败',
