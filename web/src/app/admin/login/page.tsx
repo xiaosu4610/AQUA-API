@@ -15,6 +15,7 @@ import { Button } from '@/components/ui/Button'
 import { Field, Input } from '@/components/ui/Form'
 import { useI18n } from '@/i18n'
 import { useAuth } from '@/lib/auth/auth-context'
+import { safeRedirect } from '@/lib/auth/safe-redirect'
 
 function AdminLoginForm() {
   const router = useRouter()
@@ -37,7 +38,8 @@ function AdminLoginForm() {
     setLoading(true)
     try {
       const user = await signInAsAdmin(password)
-      router.replace(redirect || (user.role === 10 ? '/admin' : '/console'))
+      // 同 /login：redirect 来自查询串，必须过滤后才可用于跳转（开放重定向防护）
+      router.replace(safeRedirect(redirect, user.role === 10 ? '/admin' : '/console'))
     } catch (err) {
       setError(err instanceof Error ? err.message : t('admin.login.failed'))
     } finally {

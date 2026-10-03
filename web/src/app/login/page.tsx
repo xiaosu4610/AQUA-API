@@ -15,6 +15,7 @@ import { Button } from '@/components/ui/Button'
 import { Field, Input } from '@/components/ui/Form'
 import { useI18n } from '@/i18n'
 import { useAuth } from '@/lib/auth/auth-context'
+import { safeRedirect } from '@/lib/auth/safe-redirect'
 import { useToast } from '@/lib/toast/toast-context'
 import type { LoginPayload } from '@/api/types'
 
@@ -35,7 +36,9 @@ function LoginForm() {
   const [error, setError] = useState('')
 
   function afterLogin(isAdmin: boolean) {
-    router.replace(redirect || (isAdmin ? '/admin' : '/console'))
+    // redirect 来自查询串，可被构造成站外地址（开放重定向），
+    // 过滤后只允许跳回本站路径；不合法就落到默认页。
+    router.replace(safeRedirect(redirect, isAdmin ? '/admin' : '/console'))
   }
 
   async function handleSubmit(e: React.FormEvent) {

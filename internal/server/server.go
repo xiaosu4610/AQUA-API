@@ -211,6 +211,9 @@ func New(deps Deps) *Server {
 	// 解析 Accept-Language 并把语言偏好写入请求 context。
 	// 放在业务处理器之前：让所有错误响应都能按用户语言返回（未携带时回退中文）。
 	engine.Use(middleware.Locale())
+	// 请求体大小上限：必须在任何会读 body 的中间件（如登录限流的 keyFunc）
+	// 与业务处理器之前装配，否则它们会把无上限的整个请求体读进内存。
+	engine.Use(bodyLimit())
 
 	s := &Server{
 		deps:      deps,
