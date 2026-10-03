@@ -30,6 +30,7 @@ import (
 
 	"github.com/LTZY-ACU/ltzy-api/internal/config"
 	"github.com/LTZY-ACU/ltzy-api/internal/model"
+	"github.com/LTZY-ACU/ltzy-api/internal/notify"
 )
 
 // defaultChannelHealthWindow 是统计窗口的兜底默认值。
@@ -197,6 +198,24 @@ func (s *Server) checkAndAutoDisableChannels(ctx context.Context, cfg config.Cha
 			"min_requests", cfg.MinRequests,
 			"window_minutes", int(window.Minutes()),
 		)
+
+		// 外发告警：自动停用意味着这条渠道正在把用户请求打失败，是"立刻要处理"级别。
+		// 只留一条 Warn 日志等于要求站长主动翻日志才能发现——而这件事发生在凌晨时，
+		// 往往要等到早上用户投诉才被发现。Notifier 为 nil（未装配告警）时 Alert 自行忽略。
+		// DedupKey 取渠道维度：同一时刻多个渠道被停用必须各发一条，不能互相抑制。
+		s.deps.Notifier.Alert(notify.Alert{
+			Key:   model.EventChannelAutoDisabled,
+			Level: notify.LevelCritical,
+			Title: fmt.Sprintf("渠道「%s」已被自动停用", stat.Name),
+			Detail: fmt.Sprintf("最近 %d 分钟内调用成功率 %.1f%%，低于阈值 %.1f%%，已自动停用该渠道。",
+				int(window.Minutes()), stat.SuccessRate*100, cfg.SuccessRate*100),
+			DedupKey: fmt.Sprintf("channel/%d", stat.ChannelID),
+			Fields: []notify.Field{
+				{Label: "渠道", Value: fmt.Sprintf("%s（#%d）", stat.Name, stat.ChannelID)},
+				{Label: "成功率", Value: fmt.Sprintf("%.1f%%（成功 %d / 共 %d）", stat.SuccessRate*100, stat.Success, stat.Requests)},
+				{Label: "阈值", Value: fmt.Sprintf("%.1f%%（样本数下限 %d）", cfg.SuccessRate*100, cfg.MinRequests)},
+			},
+		})
 	}
 	return disabled, nil
 }
