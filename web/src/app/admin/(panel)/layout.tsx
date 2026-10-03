@@ -66,6 +66,7 @@ const GROUPS: {
       { labelKey: 'admin.nav.maintenance', href: '/admin/maintenance', icon: 'trend' },
       { labelKey: 'admin.nav.settings', href: '/admin/settings', icon: 'sliders' },
       { labelKey: 'admin.nav.limits', href: '/admin/limits', icon: 'shield' },
+      { labelKey: 'admin.nav.alertChannels', href: '/admin/alert-channels', icon: 'alert' },
     ],
   },
 ]
