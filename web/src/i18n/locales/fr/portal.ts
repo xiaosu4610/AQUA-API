@@ -270,7 +270,127 @@ export default {
   },
   anydoor: {
     title: 'Porte magique',
-    subtitle: 'Une entrée de fonctionnalité sous le Terrain de jeu (en développement)',
-    comingSoon: 'La Porte magique arrive bientôt',
+    subtitle: 'Entrées de fonctionnalités du Terrain de jeu — choisissez-en une et lancez-vous',
+    aboutTitle: 'À propos de la Porte magique',
+    aboutBody:
+      'La Porte magique rassemble les mini-jeux et fonctionnalités interactives du site. Chaque entrée à droite est une carte de jeu indiquant son état actuel — « Ouvert » permet d’entrer immédiatement, « En maintenance » signifie qu’il n’est pas encore jouable. D’autres jeux seront ajoutés progressivement.',
+    statusOpen: 'Ouvert',
+    statusMaintenance: 'En maintenance',
+    enter: 'Entrer',
+    unavailable: 'Indisponible',
+    games: {
+      undercover: {
+        title: 'Enquête multijoueur',
+        desc: 'Un jeu de déduction créé par l’IA : associez une clé API, l’IA écrit un scénario d’enquête, l’un d’entre vous est peut-être un traître — votez pour le démasquer.',
+      },
+      tictactoe: {
+        title: 'Morpion IA',
+        desc: 'Affrontez une IA au morpion avec choix de la difficulté — idéal pour s’échauffer.',
+      },
+      wheel: {
+        title: 'Roue de la chance',
+        desc: 'Une roue de tirage avec des essais gratuits quotidiens ; les lots sont du crédit de plateforme et des badges exclusifs.',
+      },
+      pinch: {
+        title: 'Pique-aiguille',
+        desc: 'Un jeu de réflexes classique : cliquez au bon moment pour planter une aiguille dans le disque en rotation, testez votre rapidité.',
+      },
+      looptap: {
+        title: 'Looptap',
+        desc: 'Un jeu de rythme en boucle : suivez le tempo, enchaînez les combos et débloquez des succès.',
+      },
+      fruit: {
+        title: 'Fruit Ninja',
+        desc: 'Tranchez les fruits en glissant et évitez les bombes — le gameplay classique fonctionne à la souris, au clavier et au toucher.',
+      },
+    },
+  },
+  anydoorGame: {
+    title: 'Enquête multijoueur · Démasquez l’agent infiltré',
+    back: 'Retour à la Porte magique',
+    errMinPlayers: 'Il faut au moins 3 joueurs',
+    errSelectModel: 'Veuillez d’abord choisir un modèle',
+    errToken: 'Veuillez saisir un jeton d’accès commençant par sk- (à créer sur la page Jetons)',
+    errGenerate: 'Échec de la génération ; vérifiez le jeton et le modèle puis réessayez',
+    requestFailed: 'Échec de la requête IA (HTTP {status})',
+    defaultScenario: 'Un incident mystérieux se déroule, et l’un d’entre vous cache un secret.',
+    twistFailed: 'Échec de l’avancée de l’histoire',
+    resultFallback: 'Partie terminée : le camp vainqueur est « {winner} », et l’agent infiltré est {name}.',
+    roleUndercover: 'Agent infiltré',
+    roleCitizen: 'Civil',
+    winnerCitizens: 'le camp des civils',
+    setupTitle: 'Configuration de la partie',
+    setupDesc:
+      'Choisissez un modèle et saisissez votre jeton d’accès ; l’IA générera le scénario et les identités secrètes de cette manche. Toute la déduction est assurée par les modèles du site.',
+    modelLabel: 'Modèle',
+    modelHelp:
+      'Choisissez un modèle disponible avant de commencer ; la liste ci-dessous provient de la Place des modèles du site',
+    loadingModels: 'Chargement…',
+    tokenLabel: 'Jeton d’accès',
+    tokenHelp: 'Un jeton d’accès API commençant par sk- (et non votre mot de passe), créé sur la page Jetons',
+    tokenPlaceholder: 'Saisissez un jeton d’accès commençant par sk-',
+    playerCountLabel: 'Nombre de joueurs',
+    playerCountHelp: '3 à 12 joueurs ; si des pseudonymes sont saisis ci-dessous, ils prévalent',
+    namesLabel: 'Pseudonymes (facultatif)',
+    namesHelp:
+      'Séparez par des virgules / retours à la ligne, au moins 3 ; laissez vide pour nommer automatiquement Joueur 1…',
+    namesPlaceholder: 'ex. : Alex, Sam, Robin',
+    start: 'Démarrer la partie',
+    starting: 'Génération par l’IA…',
+    setupHint: 'La génération mènera à l’étape de distribution des identités',
+    playerName: 'Joueur {n}',
+    scenarioTitle: 'Scénario public',
+    briefingHintBefore: 'Passons maintenant l’appareil à chaque joueur à tour de rôle pour consulter son ',
+    secretIdentity: 'identité secrète',
+    briefingHintAfter: '. Puis passez à la discussion et au vote.',
+    startReveal: 'Commencer la distribution des identités',
+    revealTitle: 'Distribution des identités (passez l’appareil)',
+    revealHintBefore: 'Passez l’appareil à ',
+    revealHintAfter: ' ; assurez-vous que personne d’autre ne voit l’écran, puis appuyez pour consulter.',
+    revealButton: 'Je suis {name}, voir mon identité',
+    yourRole: 'Votre identité',
+    revealAfter: 'Après consultation, cachez l’appareil et passez-le au joueur suivant.',
+    revealNextLast: 'Tout vu, passer à la discussion',
+    revealNext: 'Joueur suivant',
+    discussTitle: 'Phase de discussion',
+    timerPause: 'Pause',
+    timerStart: 'Démarrer le chrono',
+    timerReset: 'Réinitialiser',
+    discussHint: 'Chacun devrait parler pour repérer les failles',
+    twistLoading: 'L’IA avance…',
+    twist: 'Laisser l’IA avancer l’histoire',
+    startVote: 'Commencer le vote',
+    voteTitle: 'Vote (passez l’appareil)',
+    voteHintBefore: 'Passez l’appareil à ',
+    voteHintAfter: ', qui vote pour l’agent infiltré selon lui/elle (pas pour lui-même/elle-même).',
+    voteNextLast: 'Voir le résultat',
+    voteNext: 'Vote suivant',
+    resultTitle: 'Résultat de la manche',
+    winnerLabel: 'Camp vainqueur',
+    tallyTitle: 'Répartition des votes',
+    restart: 'Rejouer',
+    promptStartSystem:
+      'Tu es l’hôte (AI Host) du jeu de déduction festif « Enquête multijoueur · Démasquez l’agent infiltré ».\n' +
+      'Génère la configuration d’une partie selon les règles suivantes :\n' +
+      '1. Il y a {count} joueurs ; exactement 1 est « l’agent infiltré » (undercover) et les autres sont des « civils » (citizen).\n' +
+      '2. Les civils ne savent pas qui est l’agent ; l’agent ne sait pas s’il est désigné à part.\n' +
+      '3. Chaque joueur reçoit un « indice secret » (secret) pour bluffer ou raisonner pendant la discussion ; rends les indices amusants.\n' +
+      '4. Garde un thème léger et festif, différent à chaque partie (école / travail / mystère / science-fiction, etc.).\n' +
+      'Ne produis qu’un seul bloc de code JSON, sans aucune explication supplémentaire, selon la structure suivante :\n' +
+      '{"scenario":"le scénario public pour tous (2-4 phrases)","roles":[{"name":"nom du joueur","role":"undercover ou citizen","secret":"indice secret de ce joueur"}]}\n' +
+      'Le nombre et l’ordre des roles doivent correspondre un à un à la liste des joueurs ci-dessous.',
+    promptStartUser: 'Liste des joueurs (dans l’ordre) : {names}. Veuillez générer la configuration.',
+    promptTwistSystem:
+      'Tu es l’hôte d’« Enquête multijoueur ». Fais avancer l’histoire en cours avec une voix d’animateur vivante et pleine de suspense, pour alimenter la discussion. Ne produis pas de JSON ; donne directement le texte (3 à 5 phrases).',
+    promptTwistUser: 'Scénario public actuel : {scenario}\nJoueurs : {players}\nVeuillez avancer l’histoire.',
+    promptResultSystem:
+      'Tu es l’hôte d’« Enquête multijoueur ». Lis le récapitulatif des votes de cette manche avec une voix d’animateur vivante et pleine de suspense, et annonce clairement le vainqueur à la fin. Ne produis pas de JSON ; donne directement le texte.',
+    resultLineScenario: 'Scénario public : {scenario}',
+    resultLineRoles: 'Rôles des joueurs : {roles}',
+    resultLineVotes: 'Votes : {votes}',
+    resultLineOutcome:
+      'Dépouillement et résultat : les plus votés sont {expelled} ({maxVotes} voix chacun) ; l’agent infiltré est {undercover} ; camp vainqueur : {winner}.',
+    voteCastedTo: '{voter} a voté pour {target}',
+    voteAbstain: 'abstention',
   },
 }

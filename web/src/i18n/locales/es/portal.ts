@@ -270,7 +270,128 @@ export default {
   },
   anydoor: {
     title: 'Puerta mágica',
-    subtitle: 'Una entrada de función dentro de la Zona de pruebas (en desarrollo)',
-    comingSoon: 'La Puerta mágica estará disponible pronto',
+    subtitle: 'Entradas de funciones dentro de la Zona de pruebas: elige una y empieza',
+    aboutTitle: 'Sobre la Puerta mágica',
+    aboutBody:
+      'La Puerta mágica reúne los minijuegos y funciones interactivas del sitio. Cada entrada de la derecha es una tarjeta de juego que muestra su estado actual: «Abierto» permite entrar de inmediato y «En mantenimiento» significa que aún no se puede jugar. Se irán añadiendo más juegos.',
+    statusOpen: 'Abierto',
+    statusMaintenance: 'En mantenimiento',
+    enter: 'Entrar',
+    unavailable: 'No disponible',
+    games: {
+      undercover: {
+        title: 'Deducción multijugador',
+        desc: 'Un juego de deducción creado por IA: vincula una clave API, la IA crea un escenario de misterio y uno de vosotros puede ser un traidor; votad para descubrirlo.',
+      },
+      tictactoe: {
+        title: 'Tres en raya con IA',
+        desc: 'Juega al tres en raya contra una IA con dificultad seleccionable, ideal para calentar.',
+      },
+      wheel: {
+        title: 'Ruleta de la suerte',
+        desc: 'Una ruleta de sorteo con tiradas gratis diarias; los premios son saldo de la plataforma e insignias exclusivas.',
+      },
+      pinch: {
+        title: 'Clava la aguja',
+        desc: 'Un juego de reflejos clásico: pulsa en el momento justo para clavar una aguja en el disco giratorio y pon a prueba tu velocidad.',
+      },
+      looptap: {
+        title: 'Looptap',
+        desc: 'Un juego de ritmo en bucle: sigue el compás, encadena combos y desbloquea logros.',
+      },
+      fruit: {
+        title: 'Fruit Ninja',
+        desc: 'Corta fruta deslizando y esquiva las bombas; la jugabilidad clásica funciona con ratón, teclado y táctil.',
+      },
+    },
+  },
+  anydoorGame: {
+    title: 'Deducción multijugador · Encuentra al agente encubierto',
+    back: 'Volver a la Puerta mágica',
+    errMinPlayers: 'Se necesitan al menos 3 jugadores',
+    errSelectModel: 'Primero elige un modelo',
+    errToken: 'Introduce un token de acceso que empiece por sk- (créalo en la página de tokens)',
+    errGenerate: 'Error al generar; comprueba el token y el modelo e inténtalo de nuevo',
+    requestFailed: 'Error en la solicitud a la IA (HTTP {status})',
+    defaultScenario: 'Está ocurriendo un suceso misterioso y alguien entre vosotros guarda un secreto.',
+    twistFailed: 'No se pudo avanzar la historia',
+    resultFallback: 'Partida terminada: el bando ganador es «{winner}» y el agente encubierto es {name}.',
+    roleUndercover: 'Agente encubierto',
+    roleCitizen: 'Civil',
+    winnerCitizens: 'el bando civil',
+    setupTitle: 'Configuración de la partida',
+    setupDesc:
+      'Elige un modelo e introduce tu token de acceso; la IA generará el escenario y las identidades secretas de esta ronda. Toda la deducción la realizan los modelos del sitio.',
+    modelLabel: 'Modelo',
+    modelHelp:
+      'Elige un modelo disponible antes de empezar; la lista de abajo proviene de la Plaza de modelos del sitio',
+    loadingModels: 'Cargando…',
+    tokenLabel: 'Token de acceso',
+    tokenHelp:
+      'Un token de acceso a la API que empieza por sk- (no tu contraseña), creado en la página de tokens',
+    tokenPlaceholder: 'Introduce un token de acceso que empiece por sk-',
+    playerCountLabel: 'Número de jugadores',
+    playerCountHelp: 'De 3 a 12 jugadores; si abajo se indican apodos, prevalecen',
+    namesLabel: 'Apodos (opcional)',
+    namesHelp:
+      'Separa con comas / saltos de línea, al menos 3; déjalo vacío para nombrar automáticamente Jugador 1…',
+    namesPlaceholder: 'p. ej.: Alex, Sam, Robin',
+    start: 'Empezar partida',
+    starting: 'La IA está generando…',
+    setupHint: 'Tras la generación pasarás a la fase de reparto de identidades',
+    playerName: 'Jugador {n}',
+    scenarioTitle: 'Escenario público',
+    briefingHintBefore: 'Ahora pasa el dispositivo a cada jugador por turnos para que vea su ',
+    secretIdentity: 'identidad secreta',
+    briefingHintAfter: '. Después pasad al debate y la votación.',
+    startReveal: 'Empezar reparto de identidades',
+    revealTitle: 'Reparto de identidades (pasa el dispositivo)',
+    revealHintBefore: 'Pasa el dispositivo a ',
+    revealHintAfter: '; asegúrate de que solo esa persona vea la pantalla y pulsa para consultar.',
+    revealButton: 'Soy {name}, ver mi identidad',
+    yourRole: 'Tu identidad',
+    revealAfter: 'Cuando termines, guarda el dispositivo y pásalo al siguiente.',
+    revealNextLast: 'Todos listos, al debate',
+    revealNext: 'Siguiente jugador',
+    discussTitle: 'Fase de debate',
+    timerPause: 'Pausar',
+    timerStart: 'Iniciar cronómetro',
+    timerReset: 'Reiniciar',
+    discussHint: 'Que todos hablen y busquen la fisura',
+    twistLoading: 'La IA avanza…',
+    twist: 'Deja que la IA avance la historia',
+    startVote: 'Empezar votación',
+    voteTitle: 'Votación (pasa el dispositivo)',
+    voteHintBefore: 'Pasa el dispositivo a ',
+    voteHintAfter: ', que vota por el agente encubierto que cree (no puede votarse a sí mismo).',
+    voteNextLast: 'Ver resultado',
+    voteNext: 'Siguiente voto',
+    resultTitle: 'Resultado de la ronda',
+    winnerLabel: 'Bando ganador',
+    tallyTitle: 'Recuento de votos',
+    restart: 'Jugar otra vez',
+    promptStartSystem:
+      'Eres el anfitrión (AI Host) del juego de deducción para fiestas «Deducción multijugador · Encuentra al agente encubierto».\n' +
+      'Genera la configuración de una partida con estas reglas:\n' +
+      '1. Hay {count} jugadores; exactamente 1 es el «agente encubierto» (undercover) y el resto son «civiles» (citizen).\n' +
+      '2. Los civiles no saben quién es el agente; el agente no sabe si está señalado.\n' +
+      '3. Cada jugador recibe una «pista secreta» (secret) para farolear o razonar durante el debate; haz que las pistas sean divertidas.\n' +
+      '4. Mantén un tema ligero y apto para reuniones, distinto en cada partida (colegio / trabajo / misterio / ciencia ficción, etc.).\n' +
+      'Devuelve solo un bloque de código JSON, sin ninguna explicación adicional, con esta estructura:\n' +
+      '{"scenario":"el escenario público para todos (2-4 frases)","roles":[{"name":"nombre del jugador","role":"undercover o citizen","secret":"pista secreta de este jugador"}]}\n' +
+      'El número y el orden de roles deben corresponder uno a uno con la lista de jugadores de abajo.',
+    promptStartUser: 'Lista de jugadores (en orden): {names}. Genera la configuración.',
+    promptTwistSystem:
+      'Eres el anfitrión de «Deducción multijugador». Avanza la historia actual con una voz de presentador viva y llena de suspense, para dar material al debate. No devuelvas JSON; da el texto directamente (3-5 frases).',
+    promptTwistUser: 'Escenario público actual: {scenario}\nJugadores: {players}\nAvanza la historia.',
+    promptResultSystem:
+      'Eres el anfitrión de «Deducción multijugador». Lee el resumen de la votación de esta ronda con una voz de presentador viva y llena de suspense y, al final, deja claro el ganador. No devuelvas JSON; da el texto directamente.',
+    resultLineScenario: 'Escenario público: {scenario}',
+    resultLineRoles: 'Identidades de los jugadores: {roles}',
+    resultLineVotes: 'Votación: {votes}',
+    resultLineOutcome:
+      'Recuento y resultado: los más votados son {expelled} ({maxVotes} votos cada uno); el agente encubierto es {undercover}; bando ganador: {winner}.',
+    voteCastedTo: '{voter} votó por {target}',
+    voteAbstain: 'se abstuvo',
   },
 }

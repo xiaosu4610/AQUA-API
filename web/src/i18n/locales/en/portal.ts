@@ -270,7 +270,125 @@ export default {
   },
   anydoor: {
     title: 'Anywhere Door',
-    subtitle: 'A feature entry under Playground (in development)',
-    comingSoon: 'The Anywhere Door is coming soon',
+    subtitle: 'Feature entries under Playground — pick one and start',
+    aboutTitle: 'About the Anywhere Door',
+    aboutBody:
+      'The Anywhere Door gathers the casual mini-games and interactive features of this site. Each entry on the right is a game card showing its current status — "Open" means you can enter right away, "Maintenance" means it is not playable yet. More games will be added over time.',
+    statusOpen: 'Open',
+    statusMaintenance: 'Maintenance',
+    enter: 'Enter',
+    unavailable: 'Not available',
+    games: {
+      undercover: {
+        title: 'Multiplayer Mystery',
+        desc: 'An AI-crafted deduction game: bind an API key, the AI writes a mystery scenario, one of you may be a villain — vote to find the culprit.',
+      },
+      tictactoe: {
+        title: 'AI Tic-Tac-Toe',
+        desc: 'Play tic-tac-toe against a built-in AI opponent with selectable difficulty — a relaxing warm-up.',
+      },
+      wheel: {
+        title: 'Lucky Wheel',
+        desc: 'A lucky draw wheel with free daily spins; prizes include platform quota and limited badges.',
+      },
+      pinch: {
+        title: 'Pin the Needle',
+        desc: 'A classic reflex game: tap at the right moment to stick a pin into the spinning disc and test your speed.',
+      },
+      looptap: {
+        title: 'Looptap',
+        desc: 'A looping rhythm-tap game: follow the beat, keep the combo going and unlock achievements.',
+      },
+      fruit: {
+        title: 'Fruit Ninja',
+        desc: 'Slice fruit by swiping and avoid the bombs — the classic gameplay works with mouse, keyboard and touch.',
+      },
+    },
+  },
+  anydoorGame: {
+    title: 'Multiplayer Mystery · Find the Undercover Agent',
+    back: 'Back to Anywhere Door',
+    errMinPlayers: 'At least 3 players are required',
+    errSelectModel: 'Please select a model first',
+    errToken: 'Please enter an access token starting with sk- (create one on the Tokens page)',
+    errGenerate: 'Generation failed; check your token and model and try again',
+    requestFailed: 'AI request failed (HTTP {status})',
+    defaultScenario: 'A mysterious incident is unfolding, and someone among you hides a secret.',
+    twistFailed: 'Failed to advance the story',
+    resultFallback: 'Game over: the winning side is "{winner}", and the undercover agent is {name}.',
+    roleUndercover: 'Undercover Agent',
+    roleCitizen: 'Civilian',
+    winnerCitizens: 'the Civilian Camp',
+    setupTitle: 'Game Setup',
+    setupDesc:
+      'Choose a model and enter your access token; the AI will generate the scenario and secret identities for this round. All reasoning is done by this site’s models.',
+    modelLabel: 'Model',
+    modelHelp: 'Pick an available model before starting; the list below comes from this site’s Model Plaza',
+    loadingModels: 'Loading…',
+    tokenLabel: 'Access Token',
+    tokenHelp: 'An API access token starting with sk- (not your login password), created on the Tokens page',
+    tokenPlaceholder: 'Enter an access token starting with sk-',
+    playerCountLabel: 'Players',
+    playerCountHelp: '3–12 players; if nicknames are provided below, they take precedence',
+    namesLabel: 'Nicknames (optional)',
+    namesHelp: 'Separate with commas / new lines, at least 3; leave blank to auto-name as Player 1…',
+    namesPlaceholder: 'e.g. Alex, Sam, Robin',
+    start: 'Start Game',
+    starting: 'AI generating…',
+    setupHint: 'After generation you will enter the identity-dealing stage',
+    playerName: 'Player {n}',
+    scenarioTitle: 'Public Scenario',
+    briefingHintBefore: 'Next, pass the device to each player in turn to view their ',
+    secretIdentity: 'secret identity',
+    briefingHintAfter: '. Then move on to discussion and voting.',
+    startReveal: 'Start Dealing Identities',
+    revealTitle: 'Deal Identities (pass the device)',
+    revealHintBefore: 'Pass the device to ',
+    revealHintAfter: '; make sure only they can see the screen, then tap to view.',
+    revealButton: 'I am {name}, view my identity',
+    yourRole: 'Your Role',
+    revealAfter: 'After viewing, hide the device and pass it to the next player.',
+    revealNextLast: 'All done, go to discussion',
+    revealNext: 'Next player',
+    discussTitle: 'Discussion',
+    timerPause: 'Pause',
+    timerStart: 'Start timer',
+    timerReset: 'Reset',
+    discussHint: 'Everyone should speak and look for the flaw',
+    twistLoading: 'AI advancing…',
+    twist: 'Let the AI advance the story',
+    startVote: 'Start Voting',
+    voteTitle: 'Vote (pass the device)',
+    voteHintBefore: 'Pass the device to ',
+    voteHintAfter: ', who votes for the undercover agent in their mind (cannot vote for themselves).',
+    voteNextLast: 'View result',
+    voteNext: 'Next vote',
+    resultTitle: 'Round Result',
+    winnerLabel: 'Winning Side',
+    tallyTitle: 'Votes',
+    restart: 'Play Again',
+    promptStartSystem:
+      'You are the host (AI Host) of the party deduction game "Multiplayer Mystery · Find the Undercover Agent".\n' +
+      'Generate a setup for one round with the following rules:\n' +
+      '1. There are {count} players; exactly 1 is the "undercover agent" (undercover) and the rest are "civilians" (citizen).\n' +
+      '2. Civilians do not know who the undercover is; the undercover does not know whether they are singled out.\n' +
+      '3. Each player gets a "secret hint" (secret) to help them bluff or deduce during discussion; make the hints fun.\n' +
+      '4. Keep the theme light and party-friendly, different each round (school / workplace / mystery / sci-fi, etc.).\n' +
+      'Output only one JSON code block, with no extra explanation, in the following structure:\n' +
+      '{"scenario":"the public scenario for everyone (2-4 sentences)","roles":[{"name":"player name","role":"undercover or citizen","secret":"the secret hint for this player"}]}\n' +
+      'The number and order of roles must correspond one-to-one with the player list given below.',
+    promptStartUser: 'Player list (in order): {names}. Please generate the setup.',
+    promptTwistSystem:
+      'You are the host of "Multiplayer Mystery". Advance the current story in a vivid, suspenseful host voice to create discussion material. Do not output JSON; give the prose directly (3-5 sentences).',
+    promptTwistUser: 'Current public scenario: {scenario}\nPlayers: {players}\nPlease advance the story.',
+    promptResultSystem:
+      'You are the host of "Multiplayer Mystery". Read out a recap of this round’s votes in a vivid, suspenseful host voice, and state the winner clearly at the end. Do not output JSON; give the prose directly.',
+    resultLineScenario: 'Public scenario: {scenario}',
+    resultLineRoles: 'Player roles: {roles}',
+    resultLineVotes: 'Votes: {votes}',
+    resultLineOutcome:
+      'Tally and result: most voted are {expelled} ({maxVotes} votes each); the undercover agent is {undercover}; winning side: {winner}.',
+    voteCastedTo: '{voter} voted for {target}',
+    voteAbstain: 'abstain',
   },
 }
