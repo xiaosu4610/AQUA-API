@@ -213,8 +213,12 @@ func New(deps Deps) *Server {
 	engine := gin.New()
 	// Recovery 必须最先装配：保证后续任何 panic 都不会导致进程退出
 	engine.Use(gin.Recovery())
-	// 访问日志（M1 先用 gin 默认实现；结构化日志与请求 ID 将在后续里程碑替换）
-	engine.Use(gin.Logger())
+	// 追踪 ID：紧接 Recovery 之后、其余中间件之前，保证「每个请求都有 ID」，
+	// 这样后续鉴权 / 限流 / 敏感词报错时都能带上同一个 ID（便于一线工单精确定位）。
+	engine.Use(middleware.Trace())
+	// 结构化访问日志（slog）：输出 trace_id/method/path/status/latency/client_ip，
+	// 替换原 gin.Logger() 的非结构化文本输出（后者无法按字段检索、且无请求标识）。
+	engine.Use(middleware.AccessLog())
 	// 解析 Accept-Language 并把语言偏好写入请求 context。
 	// 放在业务处理器之前：让所有错误响应都能按用户语言返回（未携带时回退中文）。
 	engine.Use(middleware.Locale())

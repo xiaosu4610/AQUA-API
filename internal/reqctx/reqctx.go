@@ -75,6 +75,34 @@ func IdentityFrom(ctx context.Context) (Identity, bool) {
 	return id, ok
 }
 
+// requestIDKey 是「本次请求的追踪 ID」在 context 中的键。
+var requestIDKey = ctxKey{name: "request_id"}
+
+// WithRequestID 返回携带追踪 ID 的 context。
+//
+// 追踪 ID 与 Identity.RequestID 是两件不同的事，刻意不合并：
+//   - 追踪 ID 对外暴露（响应头 X-Request-Id），可由客户端带入以便全链路检索，
+//     取值不可信，因此必须经过白名单校验；
+//   - Identity.RequestID 是额度预留的【幂等键】，一旦被客户端控制就会让
+//     "重复请求被当成同一笔"而漏扣费，因此始终由服务端生成。
+//
+// 把两者混用一个字段，等于把计费正确性交给外部输入。
+func WithRequestID(ctx context.Context, id string) context.Context {
+	if id == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, requestIDKey, id)
+}
+
+// RequestID 取出本次请求的追踪 ID；未写入时返回空串。
+func RequestID(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	id, _ := ctx.Value(requestIDKey).(string)
+	return id
+}
+
 // groupKey 是「本次请求所用分组」在 context 中的键。
 //
 // 与 identityKey 分开存放（而非塞进 Identity）：分组是"路由与计费"的输入，
