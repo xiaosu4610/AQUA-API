@@ -6,7 +6,7 @@
 //     否则超限会从"413 请求体超过上限"退化成一个 io 读错误）；
 //  3. 已自行设限的备份校验端点不被外层限额挡住（否则大备份永远传不上来）。
 //
-// 参考：本测试取自 PR #8（作者 @jghuihui）的 internal/server/body_limit_test.go。
+// 来源说明：本用例对应的问题由一次社区 PR 指出，断言与实现按本站规范重写。
 package server
 
 import (
@@ -131,7 +131,7 @@ func TestBodyLimit_无请求体的方法不包装(t *testing.T) {
 // TestLoginUsernameKey_超大请求体退回固定限流键 验证 keyFunc 自己也会限读，
 // 且 body 会被完整放回（不截断业务解析）。
 //
-// 参考：本用例取自 PR #8（作者 @jghuihui）。
+// 来源说明：本用例对应的问题由一次社区 PR 指出，断言与实现按本站规范重写。
 func TestLoginUsernameKey_超大请求体退回固定限流键(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
