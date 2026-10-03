@@ -98,6 +98,11 @@ func (s *Server) registerRoutes() {
 	// 仅保留健康检查：站点首页由前端页面承载（见 static.go 的 SPA 回退）。
 	r.GET("/healthz", s.handleHealthz)
 
+	// Prometheus 指标端点。默认关闭：Metrics.Enabled 为 false 时处理器直接返回 404，
+	// 等同端点不存在（不暴露"这里有个监控端点"这一信息）；
+	// 站长显式开启（AQUA_METRICS_ENABLED=true）后可再配令牌（AQUA_METRICS_TOKEN）收紧。
+	r.GET("/metrics", s.handleMetrics)
+
 	// ── SEO：站点地图与爬虫规则（无需鉴权）────────────────────────
 	// 必须显式注册，否则会被 SPA 回退拦截成 index.html（爬虫将拿不到 XML/纯文本）。
 	// 它们不是 API 路径，走独立处理器，不受 isAPIPath 影响。

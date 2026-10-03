@@ -37,6 +37,7 @@ import (
 	"github.com/LTZY-ACU/ltzy-api/internal/config"
 	"github.com/LTZY-ACU/ltzy-api/internal/corpus"
 	"github.com/LTZY-ACU/ltzy-api/internal/mailer"
+	"github.com/LTZY-ACU/ltzy-api/internal/metrics"
 	"github.com/LTZY-ACU/ltzy-api/internal/model"
 	"github.com/LTZY-ACU/ltzy-api/internal/payment"
 	"github.com/LTZY-ACU/ltzy-api/internal/relay"
@@ -160,6 +161,13 @@ type Deps struct {
 	// 由 relay.Options 单独注入，与本字段无关。
 	Corpus        *corpus.Guard
 	CorpusSamples model.CorpusRepository
+
+	// Metrics 是进程内指标注册表。
+	//
+	// 为什么允许由外部传入而不是服务内部创建：后续的告警派发器也要往同一张表里
+	// 写（成功 / 失败 / 被抑制），若各自 new 一份，/metrics 只会显示其中一半，
+	// 表现为"指标时有时无"这种极难定位的问题。传 nil 时内部会兜底新建一份。
+	Metrics *metrics.Registry
 }
 
 // Server 是 HTTP 服务的运行时载体。
@@ -201,6 +209,9 @@ type Server struct {
 	// 高频读取；加一层短 TTL 缓存，避免每请求查一次设置表。后台保存后主动失效，
 	// 保证"改完立即生效"，而不是等 TTL 到期。
 	limitCache *ttlCache
+
+	// metrics 是进程内指标注册表（采集中间件与 /metrics 端点共用同一实例）。
+	metrics *metrics.Registry
 }
 
 // New 创建并装配 HTTP 服务（不启动监听，便于测试直接取用 Handler）。
@@ -211,6 +222,14 @@ func New(deps Deps) *Server {
 	// 使用 gin.New() 而非 gin.Default()：
 	// Default 会自带 Logger + Recovery，但我们希望显式控制中间件及其顺序。
 	engine := gin.New()
+
+	// 指标注册表必须【先于引擎装配】创建：采集中间件与 /metrics 端点要共用同一个
+	// 实例，否则端点渲染的是一个空表（最典型的"接了监控但看不到数据"）。
+	// 允许由 Deps 注入（后续告警派发器共用），未注入时内部兜底新建。
+	reg := deps.Metrics
+	if reg == nil {
+		reg = metrics.New()
+	}
 	// Recovery 必须最先装配：保证后续任何 panic 都不会导致进程退出
 	engine.Use(gin.Recovery())
 	// 追踪 ID：紧接 Recovery 之后、其余中间件之前，保证「每个请求都有 ID」，
@@ -219,6 +238,9 @@ func New(deps Deps) *Server {
 	// 结构化访问日志（slog）：输出 trace_id/method/path/status/latency/client_ip，
 	// 替换原 gin.Logger() 的非结构化文本输出（后者无法按字段检索、且无请求标识）。
 	engine.Use(middleware.AccessLog())
+	// 指标采集：放在追踪与访问日志之后、其余会拒绝请求的中间件（如请求体限额）
+	// 之前——它必须包住这些"提前拒绝"的路径，否则错误率会被系统性低估。
+	engine.Use(middleware.Metrics(reg))
 	// 解析 Accept-Language 并把语言偏好写入请求 context。
 	// 放在业务处理器之前：让所有错误响应都能按用户语言返回（未携带时回退中文）。
 	engine.Use(middleware.Locale())
@@ -244,7 +266,12 @@ func New(deps Deps) *Server {
 		nameCache: newTTLCache(30 * time.Second),
 		// 运行上限缓存：请求体限额等热路径高频读取，30 秒 TTL + 保存后主动失效。
 		limitCache: newTTLCache(30 * time.Second),
+		// 指标注册表：与采集中间件共用同一实例（见上方 reg 的说明）。
+		metrics: reg,
 	}
+
+	// 进程级指标：只能在拿到 s 之后注册（运行时长要以 startedAt 为基准）。
+	s.registerProcessMetrics()
 
 	// 请求体大小上限：必须在任何会读 body 的中间件（如登录限流的 keyFunc）
 	// 与业务处理器之前装配，否则它们会把无上限的整个请求体读进内存。

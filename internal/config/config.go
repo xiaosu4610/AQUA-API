@@ -115,6 +115,12 @@ type Config struct {
 
 	// ChannelHealth 配置「按成功率自动禁用渠道」后台任务的阈值与统计窗口。
 	ChannelHealth ChannelHealthConfig `json:"channel_health"`
+
+	// Metrics 控制 Prometheus 指标端点（/metrics）的开关与令牌。
+	//
+	// 默认【关闭】：指标暴露的是流量规模、错误率与路由清单这类内部信息，
+	// 应在站长显式开启后才对外可用（见 MetricsConfig 的说明）。
+	Metrics MetricsConfig `json:"metrics"`
 }
 
 // ServerConfig 描述 HTTP 服务的监听与运行模式。
@@ -249,6 +255,23 @@ type ChannelHealthConfig struct {
 	WindowMinutes int `json:"auto_disable_window_minutes"`
 }
 
+// MetricsConfig 描述 Prometheus 指标端点（/metrics）的开关与鉴权方式。
+//
+// 默认值取舍（本站整改要求）：Enabled 默认 false。
+// 指标会暴露流量规模、错误率与路由清单——不含密钥与用户数据，但属运营信息；
+// 「默认不开」比「默认开」更保守，站长需要时显式打开即可。
+type MetricsConfig struct {
+	// Enabled 为 false 时 /metrics 返回 404（等同端点不存在）。默认 false。
+	Enabled bool `json:"metrics_enabled"`
+	// Token 非空时，/metrics 需要携带 `Authorization: Bearer <token>`。
+	//
+	// 安全约束：json tag 为 "-"，即【不允许】从配置文件读取，
+	// 只能由环境变量 AQUA_METRICS_TOKEN 注入。理由与 AppKey 相同——
+	// 令牌一旦落入配置文件就可能被复制、备份甚至误提交。
+	// 留空则不鉴权，方便内网与 localhost 采集。
+	Token string `json:"-"`
+}
+
 // Default 返回一份带完整默认值的配置。
 //
 // 设计意图：所有字段都有合理默认，保证「零配置可启动」。
@@ -285,6 +308,10 @@ func Default() *Config {
 			MinRequests:   0,
 			SuccessRate:   DefaultChannelAutoDisableSuccessRate,
 			WindowMinutes: DefaultChannelAutoDisableWindowMinutes,
+		},
+		// 指标端点默认关闭：需站长显式设置 AQUA_METRICS_ENABLED=true 才对外可用。
+		Metrics: MetricsConfig{
+			Enabled: false,
 		},
 	}
 }
@@ -368,6 +395,10 @@ func applyEnv(cfg *Config) {
 	setIfNotEmptyInt(&cfg.ChannelHealth.MinRequests, EnvPrefix+"CHANNEL_AUTO_DISABLE_MIN_REQUESTS")
 	setIfNotEmptyFloat(&cfg.ChannelHealth.SuccessRate, EnvPrefix+"CHANNEL_AUTO_DISABLE_SUCCESS_RATE")
 	setIfNotEmptyInt(&cfg.ChannelHealth.WindowMinutes, EnvPrefix+"CHANNEL_AUTO_DISABLE_WINDOW_MINUTES")
+	// 指标端点：默认关闭，需显式设置 AQUA_METRICS_ENABLED=true 才对外可用。
+	// 令牌与安全类字段一致：仅允许环境变量注入（json tag 为 "-"）。
+	setIfNotEmptyBool(&cfg.Metrics.Enabled, EnvPrefix+"METRICS_ENABLED")
+	setIfNotEmpty(&cfg.Metrics.Token, EnvPrefix+"METRICS_TOKEN")
 	setIfNotEmpty(&cfg.SMTP.Host, EnvPrefix+"SMTP_HOST")
 	setIfNotEmptyInt(&cfg.SMTP.Port, EnvPrefix+"SMTP_PORT")
 	setIfNotEmpty(&cfg.SMTP.Username, EnvPrefix+"SMTP_USERNAME")
@@ -413,6 +444,22 @@ func setIfNotEmpty(dst *string, key string) {
 	if v, ok := os.LookupEnv(key); ok && strings.TrimSpace(v) != "" {
 		*dst = v
 	}
+}
+
+// setIfNotEmptyBool 是 setIfNotEmpty 的布尔版本：解析失败时保留原值。
+//
+// 与整数/浮点版本一样刻意不报错：某次手误写成 "ture" 不应让进程起不来，
+// 保留默认值（对指标端点而言即"保持关闭"）比启动失败更安全。
+func setIfNotEmptyBool(dst *bool, key string) {
+	v, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(v) == "" {
+		return
+	}
+	parsed, err := strconv.ParseBool(strings.TrimSpace(v))
+	if err != nil {
+		return
+	}
+	*dst = parsed
 }
 
 // setIfNotEmptyFloat 是 setIfNotEmpty 的浮点版本：解析失败时保留原值。
