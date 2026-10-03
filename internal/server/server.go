@@ -39,6 +39,7 @@ import (
 	"github.com/LTZY-ACU/ltzy-api/internal/mailer"
 	"github.com/LTZY-ACU/ltzy-api/internal/metrics"
 	"github.com/LTZY-ACU/ltzy-api/internal/model"
+	"github.com/LTZY-ACU/ltzy-api/internal/notify"
 	"github.com/LTZY-ACU/ltzy-api/internal/payment"
 	"github.com/LTZY-ACU/ltzy-api/internal/relay"
 	"github.com/LTZY-ACU/ltzy-api/internal/server/middleware"
@@ -168,6 +169,16 @@ type Deps struct {
 	// 写（成功 / 失败 / 被抑制），若各自 new 一份，/metrics 只会显示其中一半，
 	// 表现为"指标时有时无"这种极难定位的问题。传 nil 时内部会兜底新建一份。
 	Metrics *metrics.Registry
+
+	// AlertChannels 是告警通道配置仓储（后台 CRUD 与发送时读取已启用通道）。
+	//
+	// 为 nil 时告警相关接口统一返回 404（功能未启用），而不是 panic——
+	// 告警是可选运营能力，缺失不应拖垮整个服务。
+	AlertChannels model.AlertChannelRepository
+	// Notifier 是告警派发器（发送测试告警、按事件订阅投递）。
+	//
+	// 为 nil 时"发送测试"返回 503；总开关默认关闭，判定来源见 Server.AlertEnabled。
+	Notifier *notify.Dispatcher
 }
 
 // Server 是 HTTP 服务的运行时载体。
@@ -209,6 +220,13 @@ type Server struct {
 	// 高频读取；加一层短 TTL 缓存，避免每请求查一次设置表。后台保存后主动失效，
 	// 保证"改完立即生效"，而不是等 TTL 到期。
 	limitCache *ttlCache
+
+	// alertCache 缓存「告警外发总开关」（alert_enabled 键）。
+	//
+	// 投递发生在后台协程里，每次投递都去查一次设置表没有意义：
+	// 该值只有超管在后台主动切换，加一层短 TTL 缓存即可；切换后主动失效，
+	// 保证"改完立即生效"。为 nil 或未命中时按关闭处理（安全默认）。
+	alertCache *ttlCache
 
 	// metrics 是进程内指标注册表（采集中间件与 /metrics 端点共用同一实例）。
 	metrics *metrics.Registry
@@ -266,6 +284,8 @@ func New(deps Deps) *Server {
 		nameCache: newTTLCache(30 * time.Second),
 		// 运行上限缓存：请求体限额等热路径高频读取，30 秒 TTL + 保存后主动失效。
 		limitCache: newTTLCache(30 * time.Second),
+		// 告警总开关缓存：投递判定高频读取，30 秒 TTL + 切换后主动失效。
+		alertCache: newTTLCache(30 * time.Second),
 		// 指标注册表：与采集中间件共用同一实例（见上方 reg 的说明）。
 		metrics: reg,
 	}

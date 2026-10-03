@@ -52,7 +52,9 @@ import (
 	"github.com/LTZY-ACU/ltzy-api/internal/corpus"
 	"github.com/LTZY-ACU/ltzy-api/internal/crypto"
 	"github.com/LTZY-ACU/ltzy-api/internal/mailer"
+	"github.com/LTZY-ACU/ltzy-api/internal/metrics"
 	"github.com/LTZY-ACU/ltzy-api/internal/model"
+	"github.com/LTZY-ACU/ltzy-api/internal/notify"
 	"github.com/LTZY-ACU/ltzy-api/internal/payment"
 	"github.com/LTZY-ACU/ltzy-api/internal/relay"
 	"github.com/LTZY-ACU/ltzy-api/internal/server"
@@ -239,6 +241,8 @@ func run() error {
 	// 语料判定组件：把"采哪些模型""谁免计费"做成内存快照，
 	// 让转发热点路径上零数据库查询（与本项目敏感词过滤器同一套做法）。
 	corpusGuard := corpus.NewGuard(corpusRepo)
+	// 告警通道：把渠道熔断/自动停用/登录锁定等关键事件发到站长配置的外部通道。
+	alertChannels := store.NewAlertChannelRepository(st.DB())
 
 	// 启动时清理过期会话：会话表随登录次数持续增长，不清理会无限膨胀。
 	// 清理失败不阻断启动（这只是维护动作，不影响核心功能）。
@@ -369,6 +373,24 @@ func run() error {
 	// 从"发一封"变成难以推理的长调用（见 internal/mailer 文件头说明）。
 	// Options{} 表示用默认节奏（2 秒/封、每 50 封停 30 秒），见 broadcast 包的常量说明。
 	broadcastSender := broadcast.New(emailBroadcasts, users, mailerSender, broadcast.Options{})
+
+	// 指标注册表：本进程【唯一】一份，同时交给 HTTP 采集层与告警派发器，
+	// 这样两类指标（aqua_http_* 与 aqua_alerts_*）出现在同一份 /metrics 输出里。
+	//
+	// 为什么必须共享同一个实例：若各自 new 一份，/metrics 只会渲染其中一半，
+	// 表现为"指标时有时无"这种极难定位的问题（这也是 Deps.Metrics 存在的原因）。
+	// 两处注册的指标名互不重叠，不会触发"重复注册"的 panic。
+	metricsReg := metrics.New()
+
+	// 告警派发器：邮件通道复用 mailerSender，Webhook 类通道用带 netguard 护栏的
+	// HTTP 投递器（投递目标由站长填写，属外部输入，必须挡内网与云元数据地址）。
+	// 外发总开关默认关闭；判定函数在 server 构造完成后接线（见下方 SetEnabledFunc）。
+	alertNotifier := notify.NewDispatcher(alertChannels, mailerSender,
+		map[string]notify.Sender{
+			model.AlertChannelWebhook:  notify.NewHTTPSender(model.AlertChannelWebhook),
+			model.AlertChannelDingTalk: notify.NewHTTPSender(model.AlertChannelDingTalk),
+			model.AlertChannelWeCom:    notify.NewHTTPSender(model.AlertChannelWeCom),
+		}, metricsReg)
 
 	// 子命令：创建访问令牌（M2 遗留入口，保留以兼容既有脚本）
 	if *createToken != "" {
@@ -509,9 +531,20 @@ func run() error {
 		// 语料共建：后台清单/福利/样本/导出接口所需的仓储与判定组件
 		Corpus:        corpusGuard,
 		CorpusSamples: corpusRepo,
+		// 告警外发：通道仓储（后台 CRUD）+ 派发器（测试发送、按事件投递）。
+		// 外发默认关闭，总开关在 server 就绪后接线（见下方 SetEnabledFunc）。
+		AlertChannels: alertChannels,
+		Notifier:      alertNotifier,
+		// 指标注册表：与告警派发器共用同一实例（见上方 metricsReg 的说明）。
+		Metrics: metricsReg,
 		// 前端构建产物（web/dist）已通过根包的 go:embed 嵌入二进制
 		WebFS: ltzy.WebDist,
 	})
+
+	// 把"告警外发总开关"判定接到派发器上。
+	// 顺序原因：派发器要先于 server 构造才能注入 Deps，而判定需要 server 持有的
+	// 设置仓储与 TTL 缓存，二者构成先后依赖，故在装配完成后接线。
+	alertNotifier.SetEnabledFunc(srv.AlertEnabled)
 
 	logger.Info("HTTP 服务已就绪，等待请求", "addr", cfg.Server.Listen)
 

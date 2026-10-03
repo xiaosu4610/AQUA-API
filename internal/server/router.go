@@ -414,6 +414,21 @@ func (s *Server) registerRoutes() {
 	admin.GET("/limits", s.handleGetLimits)
 	admin.PUT("/limits", s.handleUpdateLimits)
 
+	// 告警外发：渠道配置（邮件/Webhook/钉钉/企微）、事件订阅与测试发送。
+	//
+	// 目标一律脱敏返回（钉钉/企微 URL 自带 access_token）；外发总开关默认关闭，
+	// 由 /alert-settings 显式开启。目录接口（kinds）单独列出通道类型与事件键，
+	// 供前端渲染下拉，新增类型时前端无需改版本。
+	admin.GET("/alert-channels", s.handleListAlertChannels)
+	admin.GET("/alert-channel-kinds", s.handleAlertChannelKinds)
+	admin.POST("/alert-channels", s.handleCreateAlertChannel)
+	admin.PUT("/alert-channels/:id", s.handleUpdateAlertChannel)
+	admin.DELETE("/alert-channels/:id", s.handleDeleteAlertChannel)
+	admin.POST("/alert-channels/:id/test", s.handleTestAlertChannel)
+	// 告警外发总开关（默认关闭；切换后主动失效缓存，立即生效）。
+	admin.GET("/alert-settings", s.handleGetAlertSettings)
+	admin.POST("/alert-settings", s.handleUpdateAlertSettings)
+
 	// 邮件通道（SMTP）配置：站长在后台填写自己的发信账号与授权码。
 	//
 	// 为什么单独成组而不是塞进 /settings：
